@@ -60,6 +60,7 @@
   "scripts": {
     "check": "node scripts/check.mjs",
     "test": "node --test \"**/*.test.mjs\"",
+    "verify": "node scripts/verify-evidence.mjs",
     "lint": "node scripts/check.mjs",
     "publish:github": "node scripts/publish-github.mjs",
     "publish:npm": "node scripts/publish.mjs",

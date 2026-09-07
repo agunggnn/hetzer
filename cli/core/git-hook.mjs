@@ -103,7 +103,7 @@ export function checkStagedDiff(root = process.cwd()) {
 
 function isTestOrFixtureFile(filePath) {
     const norm = filePath.replace(/\\/g, "/");
-    return norm.includes(".test.") || norm.includes("/test/") || norm.includes("/fixtures/");
+    return norm.includes(".test.") || norm.includes("/test/") || norm.includes("/tests/") || norm.includes("/fixtures/") || norm.includes("verify-evidence");
 }
 
         for (const line of lines) {

@@ -1,0 +1,79 @@
+{
+  "timestamp": "2026-09-07T15:15:18.524Z",
+  "nodeVersion": "v22.22.2",
+  "platform": "win32",
+  "results": [
+    {
+      "id": "VERIFY-SEC-001",
+      "name": "Stream Chunk-Boundary Redactor",
+      "target": "cli/vault/exec.mjs -> createStreamSanitizer()",
+      "threat": "Secret split across independent stream stdout chunks bypassing single-chunk regex matching",
+      "input": "Chunk 1: \"Execution started with key: sk-ant-api03-abc\" | Chunk 2: \"def1234567890abcdef123456 and continuing.\"",
+      "method": "Feed split buffer into createStreamSanitizer with sliding boundary buffer",
+      "expected": "Raw token must never appear in stream output; replaced by 'secretRef:anthropic-key'",
+      "observed": "Total output: \"Execution started with key: secretRef:anthropic-key and continuing.\". Raw secret present: false. secretRef present: true.",
+      "verdict": "PASS",
+      "boundary": "Only monitors stdout/stderr piped through 'hetzer exec'. Unmanaged terminal processes are outside this interceptor."
+    },
+    {
+      "id": "VERIFY-SEC-002",
+      "name": "Strict Scoping Child Environment Whitelist",
+      "target": "cli/vault/secret-env.mjs -> resolveSecretEnvironment()",
+      "threat": "Child process inherits parent environment credentials or master encryption key via process.env",
+      "input": "Parent env containing AWS_SECRET_ACCESS_KEY, UNAPPROVED_TOKEN, HETZER_GRIMOIRE_KEY with '--strict --allow allowed-api-key'",
+      "method": "Resolve environment with strictBaseEnvironment whitelist and scoped reference matching",
+      "expected": "Only explicitly allowed credential resolved; all unwhitelisted parent variables and master key dropped",
+      "observed": "ALLOWED_TOKEN resolved: true. Leaked AWS: false. Leaked unapproved: false. Leaked master key: false.",
+      "verdict": "PASS",
+      "boundary": "OS-level essential variables (PATH, SYSTEMROOT, TEMP) are retained to allow process execution."
+    },
+    {
+      "id": "VERIFY-SEC-003",
+      "name": "5-Generation Process Ancestry Guard",
+      "target": "cli/vault/creds.mjs -> detectAgentAncestor() & checkProcessAncestors()",
+      "threat": "Autonomous agent invoking 'hetzer creds reveal' through nested subprocess layers to steal plaintext",
+      "input": "Agent tree: [cmd.exe -> powershell.exe -> code.exe -> explorer.exe] vs Clean tree: [cmd.exe -> powershell.exe -> bash -> init]",
+      "method": "Inspect ancestor process names up to depth 5 across Windows CimInstance, macOS ps, and Linux /proc",
+      "expected": "Agent ancestors (code, cursor, claude, agy) detected and flagged with isAgent: true; clean trees pass",
+      "observed": "Agent chain flagged: true (code.exe). Clean chain flagged: false.",
+      "verdict": "PASS",
+      "boundary": "Safeguard heuristic against automated agent calls. Not a cryptographic OS sandboxing boundary against a malicious binary."
+    },
+    {
+      "id": "VERIFY-SEC-004",
+      "name": "Git Pre-Commit Leak Prevention & False-Positive Immunity",
+      "target": "cli/core/git-hook.mjs & cli/vault/sniffer.mjs",
+      "threat": "Accidental commit of raw PKCS#8 private keys vs Developer deadlock from false alarms on tool IDs & test fixtures",
+      "input": "Multiline private key PEM block, agent tool call ID ('call_...'), and synthetic test file ('*.test.mjs')",
+      "method": "Staged diff multiline chunk scanner with agent ID prefix filter and test file path exemption",
+      "expected": "Block true private key leak; permit agent tool IDs and test fixture files without error exit 1",
+      "observed": "Real leak detected: true. Agent ID false alarm triggered: false. Test files exempted: true.",
+      "verdict": "PASS",
+      "boundary": "Evaluates staged diffs in git. Commits made with 'git commit --no-verify' bypass git hooks by design in Git."
+    },
+    {
+      "id": "VERIFY-PERF-001",
+      "name": "Interactive Stream Sanitizer Latency",
+      "target": "cli/vault/exec.mjs -> createStreamSanitizer()",
+      "threat": "16KB buffering lag causing terminal output freeze and stalling interactive agent executions",
+      "input": "Small 30-byte build log line",
+      "method": "Measure write() processing latency with dynamic 128-byte retention buffer and bounded 512-byte window",
+      "expected": "Write execution completes in sub-5ms without buffering stalls or CPU spikes",
+      "observed": "Execution latency: 0.009 ms. Output delivered: \"Compiling module auth.mjs...\".",
+      "verdict": "PASS",
+      "boundary": "Streams with secrets exceeding 128 chars scale buffer to 2x secret length to ensure boundary integrity."
+    },
+    {
+      "id": "VERIFY-SEC-005",
+      "name": "Canary Honey-Token Tripwire Protocol",
+      "target": "cli/vault/canary.mjs -> triggerCanaryAlert()",
+      "threat": "Automated agent prompt injection or scraping attempting to resolve decoy honey-tokens",
+      "input": "Resolving or revealing credential with ID 'canary-token'",
+      "method": "Canary pattern detection, incident logging, audit recording, and throwing structured error",
+      "expected": "Throws ERR_CANARY_TRIPWIRE_TRIGGERED with explicit exitCode 43; guarded operation aborted",
+      "observed": "Tripwire triggered: true. Error code: \"ERR_CANARY_TRIPWIRE_TRIGGERED\". Exit code: 43.",
+      "verdict": "PASS",
+      "boundary": "Monitors guarded reference resolution and vault reveal. Arbitrary reads of OS disk outside Hetzer are not monitored."
+    }
+  ]
+}
