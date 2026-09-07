@@ -65,6 +65,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         process.exitCode = result.status === null ? 1 : result.status;
     } catch (error) {
         process.stderr.write(`Hetzer Compose failed: ${error.message}\n`);
-        process.exitCode = 1;
+        process.exitCode = error.exitCode || 1;
     }
 }

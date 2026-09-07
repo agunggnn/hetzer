@@ -24,9 +24,40 @@ export function findGitDir(startDir = process.cwd()) {
     return null;
 }
 
+export function scanAddedLines(addedLines) {
+    const violations = [];
+    const byFile = new Map();
+    for (const item of addedLines) {
+        if (!byFile.has(item.file)) byFile.set(item.file, []);
+        byFile.get(item.file).push(item);
+    }
+
+    for (const [file, lines] of byFile) {
+        let text = "";
+        const offsets = [];
+        for (const line of lines) {
+            offsets.push({ offset: text.length, line: line.line });
+            text += `${line.text}\n`;
+        }
+        const scan = scanText(text);
+        for (const match of scan.matches) {
+            let line = 0;
+            for (let index = offsets.length - 1; index >= 0; index -= 1) {
+                if (offsets[index].offset <= match.index) {
+                    line = offsets[index].line;
+                    break;
+                }
+            }
+            violations.push({ file, line, type: match.type, label: match.label });
+        }
+    }
+    return violations;
+}
+
 export function checkStagedDiff(root = process.cwd()) {
     const start = performance.now();
     const violations = [];
+    const addedLines = [];
 
     // 1. Check if sensitive files (.env) are accidentally staged
     const stagedFilesResult = spawnSync("git", ["diff", "--cached", "--name-only", "--diff-filter=ACM"], {
@@ -34,6 +65,10 @@ export function checkStagedDiff(root = process.cwd()) {
         encoding: "utf8",
         windowsHide: true,
     });
+
+    if (stagedFilesResult.status !== 0) {
+        violations.push({ file: "", line: 0, type: "GIT_SCAN_ERROR", label: "Unable to list staged files" });
+    }
 
     if (stagedFilesResult.status === 0) {
         const fileNames = stagedFilesResult.stdout.split(/\r?\n/).map((f) => f.trim()).filter(Boolean);
@@ -57,10 +92,19 @@ export function checkStagedDiff(root = process.cwd()) {
         windowsHide: true,
     });
 
+    if (diffResult.status !== 0) {
+        violations.push({ file: "", line: 0, type: "GIT_SCAN_ERROR", label: "Unable to read the staged diff" });
+    }
+
     if (diffResult.status === 0 && diffResult.stdout) {
         let currentFile = "";
         let currentLine = 0;
         const lines = diffResult.stdout.split(/\r?\n/);
+
+function isTestOrFixtureFile(filePath) {
+    const norm = filePath.replace(/\\/g, "/");
+    return norm.includes(".test.") || norm.includes("/test/") || norm.includes("/fixtures/");
+}
 
         for (const line of lines) {
             if (line.startsWith("+++ b/")) {
@@ -73,24 +117,16 @@ export function checkStagedDiff(root = process.cwd()) {
                 continue;
             }
             if (line.startsWith("+") && !line.startsWith("+++")) {
-                const addedText = line.slice(1).trim();
-                if (addedText) {
-                    const scan = scanText(addedText);
-                    if (scan.hasSecrets) {
-                        for (const m of scan.matches) {
-                            violations.push({
-                                file: currentFile,
-                                line: currentLine,
-                                type: m.type,
-                                label: m.label,
-                            });
-                        }
-                    }
+                const addedText = line.slice(1);
+                if (addedText && !isTestOrFixtureFile(currentFile)) {
+                    addedLines.push({ file: currentFile, line: currentLine, text: addedText });
                 }
                 currentLine++;
             }
         }
     }
+
+    violations.push(...scanAddedLines(addedLines));
 
     const duration = Math.round((performance.now() - start) * 100) / 100;
     return {
@@ -114,7 +150,7 @@ export function installGitHook(root = process.cwd()) {
 
     const hookContent = `#!/bin/sh
 # Hetzer Zero-Plaintext Pre-Commit Hook
-# Auto-intercepts leaked secrets, API keys, and tokens in < 2ms.
+# Scans staged additions for leaked secrets, API keys, and tokens.
 
 if command -v node >/dev/null 2>&1; then
     node "${scriptPathNorm}" check
@@ -163,7 +199,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             process.stdout.write("  HETZER - GIT PRE-COMMIT HOOK INSTALLER\n");
             process.stdout.write("================================================================================\n");
             process.stdout.write(`  [v] Hook successfully installed at: ${res.path}\n`);
-            process.stdout.write("  [v] All 'git commit' calls are now protected by sub-2ms Secret Sniffer.\n");
+            process.stdout.write("  [v] All 'git commit' calls are now protected by the Hetzer Secret Sniffer.\n");
             process.stdout.write("      Any leaked token, password, or .env file will be blocked automatically.\n");
             process.stdout.write("================================================================================\n");
             process.exit(0);

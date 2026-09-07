@@ -21,6 +21,10 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const cliRoot = path.resolve(here, "..");
 const hetzerBin = path.join(cliRoot, "bin", "hetzer.js");
 
+export function getInstallHome() {
+    return path.resolve(process.env.HETZER_INSTALL_HOME || os.homedir());
+}
+
 export const SUPPORTED_AGENTS = [
     { id: "antigravity", label: "Antigravity (AGY)", skillDir: ".agents/skills/hetzer", entryFile: "AGENTS.md" },
     { id: "hermes", label: "Hermes Agent", skillDir: ".hermes/skills/hetzer", entryFile: "AGENTS.md", globalOnly: true },
@@ -54,22 +58,30 @@ export function writePointerBlock(filePath, block = ENTRY_POINTER_BLOCK) {
 }
 
 export function getClaudeDesktopConfigPath() {
+    const installHome = getInstallHome();
     if (process.platform === "win32") {
-        return path.join(process.env.APPDATA || "", "Claude", "claude_desktop_config.json");
+        const appData = process.env.HETZER_INSTALL_HOME
+            ? path.join(installHome, "AppData", "Roaming")
+            : (process.env.APPDATA || "");
+        return path.join(appData, "Claude", "claude_desktop_config.json");
     }
     if (process.platform === "darwin") {
-        return path.join(os.homedir(), "Library", "Application Support", "Claude", "claude_desktop_config.json");
+        return path.join(installHome, "Library", "Application Support", "Claude", "claude_desktop_config.json");
     }
-    return path.join(os.homedir(), ".config", "Claude", "claude_desktop_config.json");
+    return path.join(installHome, ".config", "Claude", "claude_desktop_config.json");
 }
 
 export function getClineSettingsPaths() {
     const results = [];
+    const installHome = getInstallHome();
     const baseDir = process.platform === "win32"
-        ? path.join(process.env.APPDATA || "", "Code", "User", "globalStorage")
+        ? path.join(
+            process.env.HETZER_INSTALL_HOME ? path.join(installHome, "AppData", "Roaming") : (process.env.APPDATA || ""),
+            "Code", "User", "globalStorage"
+        )
         : (process.platform === "darwin"
-            ? path.join(os.homedir(), "Library", "Application Support", "Code", "User", "globalStorage")
-            : path.join(os.homedir(), ".config", "Code", "User", "globalStorage"));
+            ? path.join(installHome, "Library", "Application Support", "Code", "User", "globalStorage")
+            : path.join(installHome, ".config", "Code", "User", "globalStorage"));
 
     const plugins = ["saoudrizwan.claude-dev", "rooveterinaryinc.roo-cline"];
     for (const plugin of plugins) {
@@ -80,7 +92,7 @@ export function getClineSettingsPaths() {
 }
 
 export function detectPlatforms(root = process.cwd()) {
-    const home = os.homedir();
+    const home = getInstallHome();
     const platforms = [];
 
     // Cursor
@@ -126,7 +138,7 @@ export function detectPlatforms(root = process.cwd()) {
 
 export function installToAntigravity(root = process.cwd()) {
     const created = [];
-    const home = os.homedir();
+    const home = getInstallHome();
 
     // 1. Workspace skill (.agents/skills/hetzer/SKILL.md)
     const wsSkillDir = path.join(root, ".agents", "skills", "hetzer");
@@ -152,7 +164,7 @@ export function installToAntigravity(root = process.cwd()) {
 
 export function installToHermes() {
     const created = [];
-    const home = os.homedir();
+    const home = getInstallHome();
 
     // Hermes reads skills exclusively from ~/.hermes/skills/
     const skillDir = path.join(home, ".hermes", "skills", "hetzer");
@@ -226,8 +238,15 @@ export function installToCursor(root = process.cwd()) {
     const cursorRulesPath = path.join(root, ".cursorrules");
     if (!fs.existsSync(cursorRulesPath)) {
         fs.writeFileSync(cursorRulesPath, AGENT_SYSTEM_RULE, "utf8");
-        created.push(cursorRulesPath);
+    } else {
+        const existingRules = fs.readFileSync(cursorRulesPath, "utf8");
+        if (/^# Hetzer(?: Vault)?:/m.test(existingRules)) {
+            fs.writeFileSync(cursorRulesPath, AGENT_SYSTEM_RULE, "utf8");
+        } else {
+            writePointerBlock(cursorRulesPath);
+        }
     }
+    created.push(cursorRulesPath);
 
     // 4. AGENTS.md entry pointer
     const agentsMd = path.join(root, "AGENTS.md");
@@ -402,8 +421,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             process.stdout.write(`  [v] Configured: ${rel.startsWith("..") ? file : rel}\n`);
         }
         process.stdout.write("--------------------------------------------------------------------------------\n");
-        process.stdout.write("  [v] Complete! All AI Agents (Hermes, AGY, OpenCode, CommandCode, Cursor,\n");
-        process.stdout.write("      Claude, Cline, Codex, Gemini) are now protected by Zero-Plaintext Armor.\n");
+        process.stdout.write("  [v] Complete! Credential-safety guidance and supported MCP settings were installed for\n");
+        process.stdout.write("      Hermes, AGY, OpenCode, CommandCode, Cursor, Claude, Cline, Codex, and Gemini.\n");
         process.stdout.write("================================================================================\n");
         process.exit(0);
     }

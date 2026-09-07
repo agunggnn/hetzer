@@ -3,11 +3,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
 
 import { parseEnv } from "../core/env.mjs";
 import { resolveSecretEnvironment } from "./secret-env.mjs";
-import { DETECTION_RULES } from "./sniffer.mjs";
+import { MAX_DETECTION_MATCH_LENGTH, scanText } from "./sniffer.mjs";
 
 const FORBIDDEN_REFLECTION = [
     /^\s*(printenv|env|export|set)\b/i,
@@ -26,14 +27,69 @@ export function isReflectionCommand(command, commandArgs = []) {
 export function sanitizeStreamOutput(text, secretsToRedact = []) {
     let result = text;
     for (const { secret, id } of secretsToRedact) {
-        if (secret && typeof secret === "string" && secret.length >= 6) {
+        if (secret && typeof secret === "string") {
             result = result.replaceAll(secret, `secretRef:${id}`);
         }
     }
-    for (const rule of DETECTION_RULES) {
-        result = result.replace(rule.pattern, `secretRef:${rule.id}`);
+    for (const match of scanText(result).matches) {
+        result = result.split(match.value).join(`secretRef:${match.defaultId}`);
     }
     return result;
+}
+
+function crossingMatchStart(text, boundary, secretsToRedact) {
+    let earliest = boundary;
+    for (const { secret } of secretsToRedact) {
+        if (!secret || typeof secret !== "string") continue;
+        let index = text.indexOf(secret);
+        while (index !== -1) {
+            if (index < boundary && index + secret.length > boundary) earliest = Math.min(earliest, index);
+            index = text.indexOf(secret, index + 1);
+        }
+    }
+    const windowStart = Math.max(0, boundary - 256);
+    const windowEnd = Math.min(text.length, boundary + 256);
+    const windowText = text.slice(windowStart, windowEnd);
+    for (const match of scanText(windowText).matches) {
+        const matchIndex = windowStart + match.index;
+        if (matchIndex < boundary && matchIndex + match.value.length > boundary) {
+            earliest = Math.min(earliest, matchIndex);
+        }
+    }
+    return earliest;
+}
+
+export function createStreamSanitizer(secretsToRedact = []) {
+    const decoder = new StringDecoder("utf8");
+    const longestSecret = secretsToRedact.reduce((max, item) => Math.max(max, String(item.secret || "").length), 0);
+    const retention = Math.max(128, longestSecret * 2);
+    let pending = "";
+
+    const drain = (final = false) => {
+        if (final) {
+            const output = sanitizeStreamOutput(pending, secretsToRedact);
+            pending = "";
+            return output;
+        }
+        if (pending.length <= retention) return "";
+        const proposedBoundary = pending.length - retention;
+        const boundary = crossingMatchStart(pending, proposedBoundary, secretsToRedact);
+        if (boundary <= 0) return "";
+        const output = sanitizeStreamOutput(pending.slice(0, boundary), secretsToRedact);
+        pending = pending.slice(boundary);
+        return output;
+    };
+
+    return {
+        write(chunk) {
+            pending += Buffer.isBuffer(chunk) ? decoder.write(chunk) : String(chunk);
+            return drain(false);
+        },
+        end() {
+            pending += decoder.end();
+            return drain(true);
+        },
+    };
 }
 
 export function parseArguments(argv) {
@@ -96,16 +152,17 @@ export function executeProcess(options, { outStream = process.stdout, errStream 
             shell: process.platform === "win32",
         });
 
+        const stdoutSanitizer = createStreamSanitizer(secretsToRedact);
+        const stderrSanitizer = createStreamSanitizer(secretsToRedact);
+
         child.stdout.on("data", (chunk) => {
-            const text = chunk.toString("utf8");
-            const sanitized = sanitizeStreamOutput(text, secretsToRedact);
-            outStream.write(sanitized);
+            const sanitized = stdoutSanitizer.write(chunk);
+            if (sanitized) outStream.write(sanitized);
         });
 
         child.stderr.on("data", (chunk) => {
-            const text = chunk.toString("utf8");
-            const sanitized = sanitizeStreamOutput(text, secretsToRedact);
-            errStream.write(sanitized);
+            const sanitized = stderrSanitizer.write(chunk);
+            if (sanitized) errStream.write(sanitized);
         });
 
         child.on("error", (error) => {
@@ -113,6 +170,10 @@ export function executeProcess(options, { outStream = process.stdout, errStream 
         });
 
         child.on("close", (code) => {
+            const finalStdout = stdoutSanitizer.end();
+            const finalStderr = stderrSanitizer.end();
+            if (finalStdout) outStream.write(finalStdout);
+            if (finalStderr) errStream.write(finalStderr);
             resolve({ status: code ?? 0 });
         });
     });
@@ -127,10 +188,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             })
             .catch((error) => {
                 process.stderr.write(`Hetzer process failed: ${error.message}\n`);
-                process.exitCode = 1;
+                process.exitCode = error.exitCode || 1;
             });
     } catch (error) {
         process.stderr.write(`Hetzer process failed: ${error.message}\n`);
-        process.exitCode = 1;
+        process.exitCode = error.exitCode || 1;
     }
 }

@@ -30,7 +30,7 @@ export function triggerCanaryAlert({
         `🚨 Incident Time   : ${timestamp}`,
         `🚨 Suspected Actor : ${actor} (${action})`,
         `🚨 Threat Vector   : Unauthorized Credential Scraping / Agent Prompt Injection`,
-        "🚨 Action Taken    : Emergency Session Freeze. Access Terminated.",
+        "🚨 Action Taken    : Guarded operation aborted.",
         "🚨 ============================================================================",
     ].join("\n");
 
@@ -70,6 +70,7 @@ export function triggerCanaryAlert({
         "This honey-token is a tripwire for detecting prompt injection and automated credential scraping."
     );
     error.code = "ERR_CANARY_TRIPWIRE_TRIGGERED";
+    error.exitCode = 43;
     throw error;
 }
 
@@ -108,13 +109,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             process.stdout.write(`  [v] Decoy Binding  : HETZER_CANARY_TOKEN=${trap.ref}\n`);
             process.stdout.write(`  [v] Protection     : If any AI agent or prompt injection attempts to access\n`);
             process.stdout.write(`                       or dump this token, Hetzer immediately halts execution\n`);
-            process.stdout.write(`                       and triggers an emergency security alert.\n`);
+            process.stdout.write(`                       and aborts the guarded operation with exit code 43.\n`);
             process.stdout.write("================================================================================\n");
         } else {
             throw new Error(`Unknown canary action '${action}'. Use 'setup'.`);
         }
     } catch (err) {
         process.stderr.write(`[hetzer canary error] ${err.message}\n`);
-        process.exitCode = 1;
+        process.exitCode = err.exitCode || 1;
     }
 }

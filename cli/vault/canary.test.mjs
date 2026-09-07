@@ -49,6 +49,7 @@ test("revealCredential trips immediately when a canary honey-token is requested"
         revealCredential({ root, envFile, id: "canary-token" });
     }, (err) => {
         assert.equal(err.code, "ERR_CANARY_TRIPWIRE_TRIGGERED");
+        assert.equal(err.exitCode, 43);
         assert.match(err.message, /forbidden/);
         return true;
     });

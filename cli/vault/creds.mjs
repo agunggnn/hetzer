@@ -160,23 +160,60 @@ export async function promptSecret(promptText = "Enter secret value: ", { input 
 }
 
 
-export function checkProcessAncestors() {
+const AGENT_PROCESS_NAMES = ["agy", "cursor", "electron", "code", "claude", "hermes", "ollama"];
+
+export function detectAgentAncestor(names = []) {
+    for (const rawName of names) {
+        const name = String(rawName).toLowerCase().trim();
+        if (AGENT_PROCESS_NAMES.some((target) => name.includes(target))) {
+            return { isAgent: true, processName: name };
+        }
+    }
+    return { isAgent: false };
+}
+
+export function checkProcessAncestors({ platform = process.platform, pid = process.pid, run = spawnSync, maxDepth = 5 } = {}) {
     try {
-        if (process.platform === "win32") {
-            const res = spawnSync("powershell", [
+        if (platform === "win32") {
+            const script = [
+                `$current = Get-CimInstance Win32_Process -Filter "ProcessId = ${Number(pid)}"`,
+                `for ($i = 0; $i -lt ${Number(maxDepth)}; $i++) {`,
+                "if (-not $current -or $current.ParentProcessId -le 0) { break }",
+                "$current = Get-CimInstance Win32_Process -Filter \"ProcessId = $($current.ParentProcessId)\"",
+                "if ($current) { Write-Output ($current.ProcessId.ToString() + \"`t\" + $current.Name) }",
+                "}",
+            ].join("; ");
+            const res = run("powershell", [
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "$p = Get-Process -Id $PID; $p.Parent.ProcessName; $p.Parent.Parent.ProcessName",
+                script,
             ], { encoding: "utf8", timeout: 2500, windowsHide: true });
             if (res.status === 0 && res.stdout) {
-                const names = res.stdout.toLowerCase().split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-                const agentProcessNames = ["agy", "cursor", "electron", "code", "claude", "hermes", "ollama"];
-                for (const name of names) {
-                    if (agentProcessNames.some((target) => name.includes(target))) {
-                        return { isAgent: true, processName: name };
-                    }
+                const names = res.stdout.split(/\r?\n/).map((line) => line.split("\t").slice(1).join("\t")).filter(Boolean);
+                return detectAgentAncestor(names);
+            }
+        } else {
+            const res = run("ps", ["-axo", "pid=,ppid=,comm="], {
+                encoding: "utf8", timeout: 2500, windowsHide: true,
+            });
+            if (res.status === 0 && res.stdout) {
+                const processes = new Map();
+                for (const line of res.stdout.split(/\r?\n/)) {
+                    const match = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
+                    if (match) processes.set(Number(match[1]), { parentPid: Number(match[2]), name: match[3] });
                 }
+                const names = [];
+                let currentPid = Number(pid);
+                for (let depth = 0; depth < maxDepth; depth += 1) {
+                    const current = processes.get(currentPid);
+                    if (!current || current.parentPid <= 0 || current.parentPid === currentPid) break;
+                    const parent = processes.get(current.parentPid);
+                    if (!parent) break;
+                    names.push(parent.name);
+                    currentPid = current.parentPid;
+                }
+                return detectAgentAncestor(names);
             }
         }
     } catch {
@@ -185,23 +222,23 @@ export function checkProcessAncestors() {
     return { isAgent: false };
 }
 
-export function promptNativeOsConfirmation(id, { timeoutMs = 20000 } = {}) {
-    if (process.env.HETZER_ALLOW_NON_INTERACTIVE_REVEAL === "1") return true;
+export function promptNativeOsConfirmation(id, { timeoutMs = 20000, platform = process.platform, run = spawnSync } = {}) {
+    const displayId = String(id).replace(/[^a-zA-Z0-9._-]/g, "?");
     try {
-        if (process.platform === "win32") {
-            const script = `Add-Type -AssemblyName System.Windows.Forms; $r = [System.Windows.Forms.MessageBox]::Show('Hetzer Vault Guard: Reveal raw secret [${id}] to terminal context?','Hetzer Zero-Plaintext Security',[System.Windows.Forms.MessageBoxButtons]::YesNo,[System.Windows.Forms.MessageBoxIcon]::Warning,[System.Windows.Forms.MessageBoxDefaultButton]::Button2); if ($r -eq [System.Windows.Forms.DialogResult]::Yes) { exit 0 } else { exit 1 }`;
-            const res = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
+        if (platform === "win32") {
+            const script = `Add-Type -AssemblyName System.Windows.Forms; $r = [System.Windows.Forms.MessageBox]::Show('Hetzer Vault Guard: Reveal raw secret [${displayId}] to terminal context?','Hetzer Credential Guard',[System.Windows.Forms.MessageBoxButtons]::YesNo,[System.Windows.Forms.MessageBoxIcon]::Warning,[System.Windows.Forms.MessageBoxDefaultButton]::Button2); if ($r -eq [System.Windows.Forms.DialogResult]::Yes) { exit 0 } else { exit 1 }`;
+            const res = run("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
                 timeout: timeoutMs,
                 windowsHide: false,
                 stdio: ["ignore", "ignore", "ignore"],
             });
             return res.status === 0;
-        } else if (process.platform === "darwin") {
-            const osa = `display dialog "Hetzer Vault Guard: Reveal raw secret '${id}' to terminal context?" with title "Hetzer Zero-Plaintext Security" buttons {"Deny", "Reveal"} default button "Deny" with icon caution`;
-            const res = spawnSync("osascript", ["-e", osa], { timeout: timeoutMs, stdio: ["ignore", "ignore", "ignore"] });
+        } else if (platform === "darwin") {
+            const osa = `display dialog "Hetzer Vault Guard: Reveal raw secret '${displayId}' to terminal context?" with title "Hetzer Credential Guard" buttons {"Deny", "Reveal"} default button "Deny" with icon caution`;
+            const res = run("osascript", ["-e", osa], { timeout: timeoutMs, stdio: ["ignore", "ignore", "ignore"] });
             return res.status === 0;
         } else {
-            const res = spawnSync("zenity", ["--question", "--title=Hetzer Zero-Plaintext Security", `--text=Reveal secret ${id}?`], { timeout: timeoutMs, stdio: ["ignore", "ignore", "ignore"] });
+            const res = run("zenity", ["--question", "--title=Hetzer Credential Guard", `--text=Reveal secret ${displayId}?`], { timeout: timeoutMs, stdio: ["ignore", "ignore", "ignore"] });
             return res.status === 0;
         }
     } catch {
@@ -209,11 +246,8 @@ export function promptNativeOsConfirmation(id, { timeoutMs = 20000 } = {}) {
     }
 }
 
-export function assertInteractiveHumanSession() {
-    if (process.env.HETZER_ALLOW_NON_INTERACTIVE_REVEAL === "1" || process.env.HETZER_ALLOW_NON_INTERACTIVE_REVEAL === "true") {
-        return;
-    }
-    if (!process.stdin.isTTY) {
+export function assertInteractiveHumanSession({ input = process.stdin, env = process.env, ancestor } = {}) {
+    if (!input.isTTY) {
         throw new Error(
             "Access Denied: 'hetzer creds reveal' requires a direct human interactive TTY terminal.\n" +
             "Autonomous agent / non-interactive programmatic secret revelation is blocked to prevent context window leakage."
@@ -229,7 +263,7 @@ export function assertInteractiveHumanSession() {
         ["CI", "Continuous Integration / non-interactive pipeline detected"],
     ];
     for (const [envVar, desc] of agentIndicators) {
-        if (process.env[envVar]) {
+        if (env[envVar]) {
             throw new Error(
                 `Access Denied: 'hetzer creds reveal' blocked by Zero-Plaintext Agent Guard.\n` +
                 `Reason: ${desc} ($${envVar} is set).\n` +
@@ -238,11 +272,11 @@ export function assertInteractiveHumanSession() {
             );
         }
     }
-    const ancestor = checkProcessAncestors();
-    if (ancestor.isAgent) {
+    const ancestry = ancestor || checkProcessAncestors();
+    if (ancestry.isAgent) {
         throw new Error(
             `Access Denied: 'hetzer creds reveal' blocked by Zero-Plaintext Agent Guard.\n` +
-            `Reason: Agent runtime '${ancestor.processName}' detected in process tree ancestry.\n` +
+            `Reason: Agent runtime '${ancestry.processName}' detected in process tree ancestry.\n` +
             `Autonomous agents running in YOLO/unrestricted mode cannot extract raw secrets into context.\n` +
             `To execute commands with injected secrets safely, use 'hetzer exec -- <command>'.`
         );
@@ -490,6 +524,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         }
     } catch (error) {
         process.stderr.write(`[hetzer creds error] ${error.message}\n`);
-        process.exitCode = 1;
+        process.exitCode = error.exitCode || 1;
     }
 }

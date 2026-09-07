@@ -8,6 +8,7 @@ import {
     checkStagedDiff,
     findGitDir,
     installGitHook,
+    scanAddedLines,
     uninstallGitHook,
 } from "./git-hook.mjs";
 
@@ -15,6 +16,15 @@ test("findGitDir locates current git root directory", () => {
     const gitDir = findGitDir(process.cwd());
     assert.ok(gitDir, "Must locate .git directory");
     assert.ok(fs.existsSync(gitDir));
+});
+
+test("scanAddedLines detects a multiline PKCS8 key and reports its opening line", () => {
+    const violations = scanAddedLines([
+        { file: "fixture.pem", line: 8, text: "-----BEGIN PRIVATE KEY-----" },
+        { file: "fixture.pem", line: 9, text: "c3ludGhldGljLXRlc3QtZGF0YS1vbmx5" },
+        { file: "fixture.pem", line: 10, text: "-----END PRIVATE KEY-----" },
+    ]);
+    assert.equal(violations.some((item) => item.type === "private_key" && item.line === 8), true);
 });
 
 test("checkStagedDiff reports clean on clean tree", () => {

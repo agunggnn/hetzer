@@ -130,6 +130,7 @@ test("validate CLI command validates modules successfully", async () => {
 
 test("protect command arms workspace with universal skills and git hook", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-protect-test-"));
+    const originalInstallHome = process.env.HETZER_INSTALL_HOME;
     fs.mkdirSync(path.join(tempDir, ".git", "hooks"), { recursive: true });
     fs.writeFileSync(path.join(tempDir, ".env"), "SAMPLE_KEY=test-token\n");
     let output = "";
@@ -139,15 +140,17 @@ test("protect command arms workspace with universal skills and git hook", async 
         return true;
     };
     try {
+        process.env.HETZER_INSTALL_HOME = path.join(tempDir, "home");
         await main(["protect"], { root: tempDir });
         assert.match(output, /HETZER ARMOR ACTIVATED/);
         assert.equal(fs.existsSync(path.join(tempDir, ".cursor", "rules", "hetzer.mdc")), true);
         assert.equal(fs.existsSync(path.join(tempDir, ".git", "hooks", "pre-commit")), true);
         assert.equal(fs.existsSync(path.join(tempDir, "AGENTS.md")), true);
     } finally {
+        if (originalInstallHome === undefined) delete process.env.HETZER_INSTALL_HOME;
+        else process.env.HETZER_INSTALL_HOME = originalInstallHome;
         process.stdout.write = originalStdout;
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });
-
 

@@ -76,7 +76,9 @@ test("installToCursor writes rules and AGENTS.md entry pointer", () => {
 
 test("installToCline writes .clinerules in workspace", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-skill-cline-"));
+    const originalInstallHome = process.env.HETZER_INSTALL_HOME;
     try {
+        process.env.HETZER_INSTALL_HOME = path.join(tempDir, "home");
         const created = installToCline(tempDir);
         assert.ok(created.length >= 1);
 
@@ -86,6 +88,8 @@ test("installToCline writes .clinerules in workspace", () => {
         assert.ok(content.includes("Zero-Plaintext"));
         assert.ok(content.includes("secretRef:"));
     } finally {
+        if (originalInstallHome === undefined) delete process.env.HETZER_INSTALL_HOME;
+        else process.env.HETZER_INSTALL_HOME = originalInstallHome;
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });
@@ -104,12 +108,16 @@ test("installToOpenCode writes .opencode/skills and AGENTS.md", () => {
 
 test("installToAntigravity writes workspace .agents/skills and AGENTS.md", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-skill-agy-"));
+    const originalInstallHome = process.env.HETZER_INSTALL_HOME;
     try {
+        process.env.HETZER_INSTALL_HOME = path.join(tempDir, "home");
         const created = installToAntigravity(tempDir);
         assert.ok(created.length >= 2);
         assert.ok(fs.existsSync(path.join(tempDir, ".agents", "skills", "hetzer", "SKILL.md")));
         assert.ok(fs.existsSync(path.join(tempDir, "AGENTS.md")));
     } finally {
+        if (originalInstallHome === undefined) delete process.env.HETZER_INSTALL_HOME;
+        else process.env.HETZER_INSTALL_HOME = originalInstallHome;
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });

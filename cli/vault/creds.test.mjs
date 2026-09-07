@@ -5,7 +5,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 
-import { assertInteractiveHumanSession, checkProcessAncestors, promptNativeOsConfirmation, listCredentials, promptSecret, revealCredential, setCredential } from "./creds.mjs";
+import { assertInteractiveHumanSession, checkProcessAncestors, detectAgentAncestor, promptNativeOsConfirmation, listCredentials, promptSecret, revealCredential, setCredential } from "./creds.mjs";
 import { Grimoire, isolateMasterKey, resolveMasterKey } from "./hetzer-vault.mjs";
 
 test("creds module can list, set, and reveal credentials in Grimoire Vault", () => {
@@ -70,31 +70,15 @@ test("promptSecret reads from non-TTY input stream cleanly", async () => {
 });
 
 test("assertInteractiveHumanSession blocks non-TTY or agent environments", () => {
-    // Save original env
-    const origOverride = process.env.HETZER_ALLOW_NON_INTERACTIVE_REVEAL;
-    const origCursor = process.env.CURSOR_PROJECT_DIR;
-    const origAntigravity = process.env.ANTIGRAVITY_AGENT;
-    delete process.env.HETZER_ALLOW_NON_INTERACTIVE_REVEAL;
-
-    try {
-        // In this automated test process, stdin is either non-TTY or ANTIGRAVITY_AGENT is set
-        assert.throws(() => {
-            assertInteractiveHumanSession();
-        }, /Access Denied/);
-
-        // Allowed when explicit override is provided
-        process.env.HETZER_ALLOW_NON_INTERACTIVE_REVEAL = "1";
-        assert.doesNotThrow(() => {
-            assertInteractiveHumanSession();
-        });
-    } finally {
-        if (origOverride !== undefined) process.env.HETZER_ALLOW_NON_INTERACTIVE_REVEAL = origOverride;
-        else delete process.env.HETZER_ALLOW_NON_INTERACTIVE_REVEAL;
-        if (origCursor !== undefined) process.env.CURSOR_PROJECT_DIR = origCursor;
-        else delete process.env.CURSOR_PROJECT_DIR;
-        if (origAntigravity !== undefined) process.env.ANTIGRAVITY_AGENT = origAntigravity;
-        else delete process.env.ANTIGRAVITY_AGENT;
-    }
+    assert.throws(() => assertInteractiveHumanSession({
+        input: { isTTY: false }, env: {}, ancestor: { isAgent: false },
+    }), /Access Denied/);
+    assert.throws(() => assertInteractiveHumanSession({
+        input: { isTTY: true }, env: { CURSOR_PROJECT_DIR: "fixture" }, ancestor: { isAgent: false },
+    }), /Cursor IDE Agent runtime detected/);
+    assert.doesNotThrow(() => assertInteractiveHumanSession({
+        input: { isTTY: true }, env: {}, ancestor: { isAgent: false },
+    }));
 });
 
 test("checkProcessAncestors runs safely and reports inspection result", () => {
@@ -103,15 +87,19 @@ test("checkProcessAncestors runs safely and reports inspection result", () => {
     assert.equal(typeof result.isAgent, "boolean");
 });
 
-test("promptNativeOsConfirmation respects non-interactive bypass", () => {
-    const orig = process.env.HETZER_ALLOW_NON_INTERACTIVE_REVEAL;
-    try {
-        process.env.HETZER_ALLOW_NON_INTERACTIVE_REVEAL = "1";
-        assert.equal(promptNativeOsConfirmation("test-id"), true);
-    } finally {
-        if (orig !== undefined) process.env.HETZER_ALLOW_NON_INTERACTIVE_REVEAL = orig;
-        else delete process.env.HETZER_ALLOW_NON_INTERACTIVE_REVEAL;
-    }
+test("detectAgentAncestor checks process names across a five-generation result", () => {
+    assert.deepEqual(detectAgentAncestor(["pwsh", "terminal", "claude-agent", "init"]), {
+        isAgent: true,
+        processName: "claude-agent",
+    });
+    assert.deepEqual(detectAgentAncestor(["pwsh", "terminal", "init"]), { isAgent: false });
+});
+
+test("promptNativeOsConfirmation returns the native dialog result without an environment bypass", () => {
+    const allow = () => ({ status: 0 });
+    const deny = () => ({ status: 1 });
+    assert.equal(promptNativeOsConfirmation("test-id", { platform: "linux", run: allow }), true);
+    assert.equal(promptNativeOsConfirmation("test-id", { platform: "linux", run: deny }), false);
 });
 
 test("resolveMasterKey and isolateMasterKey manage key isolation lifecycle", () => {
@@ -139,4 +127,3 @@ test("resolveMasterKey and isolateMasterKey manage key isolation lifecycle", () 
 
     fs.rmSync(tempDir, { recursive: true, force: true });
 });
-

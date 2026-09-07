@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 import { Grimoire, resolveMasterKey, resolveVaultPath } from "./hetzer-vault.mjs";
 import { parseEnv } from "../core/env.mjs";
 
+export const MAX_DETECTION_MATCH_LENGTH = 16384;
+
 export const DETECTION_RULES = [
     {
         id: "npm-token",
@@ -17,16 +19,16 @@ export const DETECTION_RULES = [
         pattern: /\bnpm_[A-Za-z0-9]{36}\b/g,
     },
     {
-        id: "openai-api-key",
-        type: "openai_key",
-        label: "OpenAI API Key",
-        pattern: /\bsk-[A-Za-z0-9_-]{24,}\b/g,
-    },
-    {
         id: "anthropic-api-key",
         type: "anthropic_key",
         label: "Anthropic API Key",
-        pattern: /\bsk-ant-[A-Za-z0-9_-]{24,}\b/g,
+        pattern: /\bsk-ant-[A-Za-z0-9_-]{24,512}\b/g,
+    },
+    {
+        id: "openai-api-key",
+        type: "openai_key",
+        label: "OpenAI API Key",
+        pattern: /\bsk-(?!ant-)[A-Za-z0-9_-]{24,512}\b/g,
     },
     {
         id: "gemini-api-key",
@@ -62,18 +64,40 @@ export const DETECTION_RULES = [
         id: "private-key",
         type: "private_key",
         label: "Private Key Certificate",
-        pattern: /-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]+?-----END [A-Z ]+PRIVATE KEY-----/g,
+        pattern: /-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----[\s\S]{1,16256}?-----END (?:[A-Z0-9]+ )?PRIVATE KEY-----/g,
+    },
+    {
+        id: "database-url",
+        type: "database_url",
+        label: "Database URL with embedded credentials",
+        pattern: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis):\/\/[^\s:@/]{1,256}:[^\s@/]{1,512}@[^\s]{1,1024}/gi,
     },
 ];
 
-const FAST_PREFIXES = ["npm_", "sk-", "AIza", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "xox", "AKIA", "eyJ", "-----BEGIN"];
+const FAST_PREFIXES = [
+    "npm_", "sk-", "AIza", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "xox",
+    "AKIA", "eyJ", "-----BEGIN", "postgres://", "postgresql://", "mysql://",
+    "mongodb://", "mongodb+srv://", "redis://",
+];
 
 function quickBailout(text) {
     if (!text || typeof text !== "string" || text.length < 16) return true;
     for (let i = 0; i < FAST_PREFIXES.length; i++) {
         if (text.includes(FAST_PREFIXES[i])) return false;
     }
-    return true;
+    return !/[A-Za-z0-9+/_=-]{24}/.test(text);
+}
+
+export function shannonEntropy(value) {
+    if (!value) return 0;
+    const counts = new Map();
+    for (const char of value) counts.set(char, (counts.get(char) || 0) + 1);
+    let entropy = 0;
+    for (const count of counts.values()) {
+        const probability = count / value.length;
+        entropy -= probability * Math.log2(probability);
+    }
+    return entropy;
 }
 
 export function scanText(text) {
@@ -87,11 +111,16 @@ export function scanText(text) {
     }
 
     const matches = [];
+    const addMatch = (item) => {
+        const end = item.index + item.value.length;
+        if (matches.some((existing) => item.index < existing.end && end > existing.index)) return;
+        matches.push({ ...item, end });
+    };
     for (const rule of DETECTION_RULES) {
         rule.pattern.lastIndex = 0;
         let match;
         while ((match = rule.pattern.exec(text)) !== null) {
-            matches.push({
+            addMatch({
                 type: rule.type,
                 label: rule.label,
                 defaultId: rule.id,
@@ -101,9 +130,30 @@ export function scanText(text) {
         }
     }
 
+
+    const candidatePattern = /\b[A-Za-z0-9][A-Za-z0-9+/_=-]{23,511}\b/g;
+    const NON_SECRET_PREFIXES = [
+        "call_", "tool_", "chunk_", "resp_", "turn_", "session_",
+        "msg_", "exec-", "item-", "ctc_", "ctco_", "node_modules"
+    ];
+    let candidate;
+    while ((candidate = candidatePattern.exec(text)) !== null) {
+        const val = candidate[0];
+        if (NON_SECRET_PREFIXES.some((prefix) => val.startsWith(prefix))) continue;
+        if (/^[0-9a-fA-F]+$/.test(val)) continue; // Git commit hashes, MD5, SHA256 checksums
+        if (shannonEntropy(val) < 4.3) continue;
+        addMatch({
+            type: "high_entropy",
+            label: "High-entropy secret candidate",
+            defaultId: "candidate-secret",
+            value: val,
+            index: candidate.index,
+        });
+    }
+
     return {
         hasSecrets: matches.length > 0,
-        matches,
+        matches: matches.map(({ end: _end, ...item }) => item).sort((a, b) => a.index - b.index),
         latencyMs: Number((performance.now() - start).toFixed(4)),
     };
 }
@@ -116,6 +166,8 @@ export function redactAndVault(text, { root, envFile, masterKey, autoVault = tru
         return {
             text,
             redactedCount: 0,
+            vaultedCount: 0,
+            vaultErrors: [],
             detected: [],
             latencyMs: Number((performance.now() - start).toFixed(4)),
         };
@@ -124,6 +176,7 @@ export function redactAndVault(text, { root, envFile, masterKey, autoVault = tru
     let resultText = text;
     const detected = [];
     let vaultInstance = null;
+    const vaultErrors = [];
 
     if (autoVault && root) {
         try {
@@ -137,8 +190,9 @@ export function redactAndVault(text, { root, envFile, masterKey, autoVault = tru
                     masterKey: key,
                 });
             }
-        } catch {
-            // If vault cannot be opened, continue with redaction without vaulting
+            if (!vaultInstance) vaultErrors.push("Vault unavailable: master key not configured.");
+        } catch (error) {
+            vaultErrors.push(`Vault unavailable: ${error.message}`);
         }
     }
 
@@ -150,22 +204,29 @@ export function redactAndVault(text, { root, envFile, masterKey, autoVault = tru
             }
         }
 
-        let counter = 1;
         for (const [rawVal, item] of uniqueValues.entries()) {
             const hash = crypto.createHash("sha256").update(rawVal).digest("hex").slice(0, 8);
-            const refId = uniqueValues.size === 1 ? item.defaultId : `${item.defaultId}-${hash}`;
-            const refString = `secretRef:${refId}`;
-
-            resultText = resultText.split(rawVal).join(refString);
+            let refId = uniqueValues.size === 1 ? item.defaultId : `${item.defaultId}-${hash}`;
+            let vaulted = false;
 
             if (vaultInstance) {
                 try {
-                    const existing = vaultInstance.find(refId);
+                    let existing = vaultInstance.find(refId);
+                    if (existing && vaultInstance.reveal(refId) !== rawVal) {
+                        const collisionBase = `${item.defaultId}-${hash}`;
+                        refId = collisionBase;
+                        existing = vaultInstance.find(refId);
+                        let suffix = 2;
+                        while (existing && vaultInstance.reveal(refId) !== rawVal) {
+                            refId = `${collisionBase}-${suffix}`;
+                            existing = vaultInstance.find(refId);
+                            suffix += 1;
+                        }
+                    }
+
                     const allowedActions = ["compose.start", "process.start"];
                     vaultInstance.upsertTarget({ id: "sniffed-secrets", name: "sniffed-secrets", target_type: "hetzer-module" });
-                    if (existing) {
-                        vaultInstance.update(refId, { secret: rawVal, allowedActions });
-                    } else {
+                    if (!existing) {
                         vaultInstance.create({
                             id: refId,
                             projectId: "sniffed-secrets",
@@ -179,18 +240,23 @@ export function redactAndVault(text, { root, envFile, masterKey, autoVault = tru
                             source: "secret-sniffer",
                         });
                     }
-                } catch {
-                    // Ignore vault write errors
+                    vaulted = true;
+                } catch (error) {
+                    vaultErrors.push(`Could not vault '${refId}': ${error.message}`);
                 }
             }
+
+            const refString = `secretRef:${refId}`;
+
+            resultText = resultText.split(rawVal).join(refString);
 
             detected.push({
                 type: item.type,
                 label: item.label,
                 id: refId,
                 ref: refString,
+                vaulted,
             });
-            counter++;
         }
     } finally {
         if (vaultInstance) {
@@ -201,6 +267,8 @@ export function redactAndVault(text, { root, envFile, masterKey, autoVault = tru
     return {
         text: resultText,
         redactedCount: detected.length,
+        vaultedCount: detected.filter((item) => item.vaulted).length,
+        vaultErrors,
         detected,
         latencyMs: Number((performance.now() - start).toFixed(4)),
     };

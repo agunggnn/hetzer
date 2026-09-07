@@ -50,3 +50,21 @@ test("secret environment resolves explicit references without exposing unrelated
     assert.equal(empty.WORKER_TOKEN, undefined);
     fs.rmSync(root, { recursive: true, force: true });
 });
+
+test("strict secret environment drops unapproved inherited values and the master key", () => {
+    const resolved = resolveSecretEnvironment({
+        root: process.cwd(),
+        envFile: path.join(os.tmpdir(), "missing-hetzer-strict.env"),
+        baseEnv: {
+            PATH: process.env.PATH || "",
+            UNAPPROVED_TOKEN: "synthetic-unapproved-value",
+            HETZER_GRIMOIRE_KEY: "synthetic-master-key-value",
+        },
+        allowNames: ["approved-only"],
+        strict: true,
+    });
+
+    assert.equal(resolved.PATH, process.env.PATH || "");
+    assert.equal(resolved.UNAPPROVED_TOKEN, undefined);
+    assert.equal(resolved.HETZER_GRIMOIRE_KEY, undefined);
+});

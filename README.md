@@ -5,8 +5,8 @@
 </p>
 
 <p align="center">
-  <strong>Zero-Plaintext Armor & Secret Interceptor for AI Agents</strong><br>
-  <em>Sub-2ms DFA Secret Sniffer • AES-256-GCM Grimoire Vault • Git Pre-Commit Guard • 0 Docker Overhead Universal Skills for Hermes, AGY, OpenCode, CommandCode, Cursor, and Claude.</em>
+  <strong>Local Credential Vault and Leak-Reduction Tools for AI Agents</strong><br>
+  <em>Regex and entropy scanner • AES-256-GCM Grimoire Vault • Git pre-commit guard • Agent integration skills.</em>
 </p>
 
 <p align="center">
@@ -28,10 +28,10 @@ Hetzer runs instantly on any machine with Node.js installed without requiring gl
 npx hetzer protect
 
 # Or perform individual actions:
-# 1. Install Zero-Plaintext Armor into your AI Agents (Cursor, Claude, AGY, Cline, OpenCode)
+# 1. Install credential-safety guidance for supported AI agents
 npx hetzer skill install
 
-# 2. Install Git Pre-Commit Guard (blocks leaked tokens & .env from Git in < 2ms)
+# 2. Install Git Pre-Commit Guard (blocks supported token patterns and .env files)
 npx hetzer hook install
 
 # 3. Store credentials & API keys into encrypted Grimoire Vault (AES-256-GCM)
@@ -69,7 +69,7 @@ For structured navigation and deep architectural insights, explore the dedicated
 | 🚀 **[Installation Guide (`docs/installation.md`)](docs/installation.md)** | Multi-OS setup (Ubuntu, Debian, CentOS, Windows WSL2, macOS, VPS), Docker requirements, and troubleshooting. |
 | 🏛️ **[System Architecture (`docs/architecture.md`)](docs/architecture.md)** | Grimoire Vault (AES-256-GCM), 7-layer defense shield, 9Router Gateway, Cognee Memory, and network boundaries. |
 | 🔬 **[System Logic & Progress Tracker (`docs/system-logic-and-progress.md`)](docs/system-logic-and-progress.md)** | Deep subsystem implementation specs, execution flows, test coverage status, and upcoming roadmap. |
-| 📊 **[Enterprise Value Benchmark (`docs/value-benchmark.md`)](docs/value-benchmark.md)** | Comparative value analysis vs HashiCorp Vault/Doppler, PCI-DSS v4.0.1, NIST SP 800-218, and 92% TCO reduction. |
+| 📊 **[Measurement & Evaluation Guide (`docs/value-benchmark.md`)](docs/value-benchmark.md)** | Reproducible local measurements, comparison rules, and limits on compliance/TCO claims. |
 | 🏦 **[Enterprise & Banking Readiness (`docs/enterprise-readiness.md`)](docs/enterprise-readiness.md)** | Regulatory compliance evaluation (PCI-DSS 4.0, SOC 2, ISO 27001, OJK, Bank Indonesia), threat models, and financial hardening guide. |
 | 🌐 **[Model Context Protocol Guide (`docs/mcp-guide.md`)](docs/mcp-guide.md)** | Connect Hetzer to Claude Desktop, Cursor, Cline, OpenCode, `[OFFLINE]`/`[HYBRID]`/`[LLM]` classification, and CLI testing. |
 | 🧠 **[Cognee Persistent Memory Module (`docs/modules/cognee.md`)](docs/modules/cognee.md)** | Graph and vector persistent memory, local Ollama integration, and memory tools. |
@@ -78,31 +78,28 @@ For structured navigation and deep architectural insights, explore the dedicated
 
 ## ⚡ What is Hetzer?
 
-**Hetzer** is a high-performance, local-first **Zero-Plaintext Security Armor & AI Command Plane** engineered to shield autonomous AI agents and developer workstations from credential leaks, prompt injections, and accidental Git exposure.
+**Hetzer** is a local-first credential vault and command-line defense layer. It reduces accidental credential exposure in supported workflows; it is not a complete security boundary for an OS user or an AI agent with unrestricted file and process access.
 
 With Hetzer, you get:
-1. **Sub-2ms Transparent Secret Sniffer**: Intercepts and replaces raw API keys, bearer tokens, and private keys with `secretRef:<id>` references in real-time.
-2. **Grimoire Vault (AES-256-GCM)**: SQLite-backed local encrypted credential storage (*Zero-Plaintext Contract*). Secrets never live in plaintext in `.env` files or Git repositories.
-3. **Universal AI Agent Skills (Headless Mode - 0 Docker, 0 RAM)**: One-click setup protecting Hermes Agent, Google Antigravity (AGY), OpenCode, CommandCode, Cursor IDE, Claude Desktop, and Cline.
-4. **Git Pre-Commit Guard**: A zero-overhead pre-commit hook that inspects staged changes and blocks leaked secrets in < 2ms before they ever leave your laptop.
+1. **Secret scanner**: Scans explicitly supplied text for supported provider tokens, credentialed database URLs, bounded private-key blocks, and high-entropy candidates.
+2. **Grimoire Vault (AES-256-GCM)**: SQLite-backed encrypted credential storage. Configuration can use `secretRef:<id>` in place of plaintext values.
+3. **Agent integrations**: Installs guidance and MCP configuration for Hermes Agent, Google Antigravity, OpenCode, CommandCode, Cursor, Claude, Cline, Codex, and Gemini. These integrations do not intercept unrelated agent actions.
+4. **Git Pre-Commit Guard**: Inspects staged filenames and added text before a commit. Runtime depends on repository size and Git startup cost.
 5. **9Router AI Gateway & Cognee Memory (Optional Full-Stack)**: Multi-provider model routing with automatic fallback and tri-layer relational/vector/graph persistent memory in ~1.4 GiB RAM.
 
 All built with **0 external npm dependencies** (100% Node.js standard library: `node:crypto`, `node:sqlite`, `node:fs`, `node:perf_hooks`).
 
 ---
 
-## 🥊 Comparison: Hetzer vs Other AI Tools
+## Security boundary
 
-| Feature / Dimension | Hetzer | LLM-Guard (Protect AI) | LiteLLM / One-API | Mem0 / Letta |
-|---|:---:|:---:|:---:|:---:|
-| **Primary Focus** | Zero-Plaintext Armor & Command Plane | Enterprise LLM Scanner | Model Gateway & Proxy | Agent Memory Layer |
-| **Active Maintenance** | 🟢 **Active & Open-Source** | ⚠️ Archived (PANW Acquisition) | 🟢 Active | 🟢 Active |
-| **External Dependencies** | ✅ **0 Dependencies (Pure Node stdlib)** | ❌ Heavy (PyTorch, Transformers) | ❌ Many Python/Go deps | ❌ Heavy Python deps |
-| **Hardware Encryption** | ✅ **Hardware AES-NI Accelerated** | ❌ Software loops | ❌ None (Plaintext .env) | ❌ None (Plaintext keys) |
-| **Laptop Scan Latency** | 🟢 **< 2 milliseconds (Instant)** | 🔴 800 ms – 2,500 ms (Laggy) | ❌ N/A | ❌ N/A |
-| **Memory Consumption** | 🟢 **< 10 MiB RAM (Headless Skill)** | 🔴 1.5 GiB – 3.0 GiB RAM | 🟡 ~300 MiB – 800 MiB | 🟡 ~800 MiB – 1.5 GiB |
-| **Git Pre-Commit Hook** | ✅ **Built-in (`hetzer hook install`)** | ❌ None | ❌ None | ❌ None |
-| **Universal Agent Skills** | ✅ **Hermes, AGY, OpenCode, Cursor, Claude** | ❌ None | ❌ None | ⚠️ Client SDK only |
+| Control | Covered | Boundary |
+|---|---|---|
+| Vault at rest | AES-256-GCM encryption with a unique random IV and authenticated metadata | A process that can read both the database and master-key file can decrypt entries |
+| `hetzer exec` | Resolves allowed references and sanitizes child stdout/stderr with a bounded rolling buffer | Child memory contains resolved values; unrelated processes and tools are outside this path |
+| Scanner | Supported patterns, database URLs, private-key blocks up to 16 KiB, and high-entropy candidates | Pattern matching can produce false positives and false negatives |
+| Git hook | Staged `.env` filenames and supported candidates in added text | Hooks can be skipped and do not scan repository history |
+| Agent skills | Instructions and MCP metadata-only vault tools | Instructions do not enforce access control against the local OS user |
 
 ---
 
@@ -122,7 +119,7 @@ flowchart TB
     end
 
     subgraph HostPlane["Hetzer Command Plane (Host Process)"]
-        SecretSniffer["Sub-2ms DFA Secret Sniffer\n(Pure V8 DFA + Entropy Detector)"]
+        SecretSniffer["Secret Scanner\n(Regex Rules + Entropy Detector)"]
         GrimoireVault[("Grimoire Vault\nSQLite WAL + AES-256-GCM\ndata/hetzer-vault.db")]
         MCPBridge["Universal MCP Bridge\n(stdio & JSON-RPC Protocol)"]
         ModuleResolver["Module & Profile Resolver\n(Docker Compose Merger)"]
@@ -159,89 +156,81 @@ flowchart TB
 
 ---
 
-## 🔐 Zero-Plaintext Security: The Seven Defense Layers
+## Credential defense layers
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                     HETZER SEVEN-LAYER DEFENSE MATRIX                       │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  Layer 1: Transparent Secret Sniffer (< 2 ms Latency)                       │
-│  ► Real-time scan of user prompts, agent tool arguments, and code diffs.    │
-│  ► Automatically vaults raw credentials and outputs safe 'secretRef:<id>'.  │
-│  ► AI models (Claude, GPT, Gemini) NEVER see raw tokens in context windows! │
+│  Layer 1: Explicit Secret Scanner                                            │
+│  ► Scans input passed to the CLI/MCP scanner and staged Git additions.       │
+│  ► Redaction reports whether each detected value was successfully vaulted.  │
+│  ► Agent prompts outside integrated paths are not intercepted.               │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  Layer 2: Real-Time Stream Sanitizer & Ephemeral Scoping (hetzer exec)      │
 │  ► Intercepts child process stdout/stderr in memory before terminal emit.   │
-│  ► Auto-redacts crash stack traces & debug logs back into 'secretRef:<id>'. │
-│  ► Scoped credential injection: only permits approved tokens (--allow).     │
+│  ► Uses a bounded rolling buffer to redact values across output chunks.      │
+│  ► --strict starts with a minimal environment and injects approved refs.     │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  Layer 3: Anti-Reflection Execution Guard                                   │
 │  ► Blocks reflection commands ('printenv', 'env', 'export', 'docker inspect'│
 │    and inline 'os.environ' scripts) before process spawning.                │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  Layer 4: Multi-Layer Anti-Agent TTY & Process Tree Ancestry Guard          │
+│  Layer 4: TTY and Process Ancestry Safeguards                               │
 │  ► Validates process.stdin.isTTY and sniffs autonomous agent env flags.     │
 │  ► Traverses 5 generations of parent processes (PPID) to block autonomous   │
-│    AI agents running in YOLO/Turbo mode from calling 'hetzer creds reveal'. │
+│    recognized agent processes before allowing 'hetzer creds reveal'.         │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  Layer 5: Out-of-Band (OOB) Human Presence Proof (--confirm-ui)              │
 │  ► Launches native OS modal dialogs (Windows Forms / AppleScript / Zenity). │
-│  ► Bypasses terminal stream; requires physical human click to reveal keys.  │
+│  ► Optional modal confirmation is enabled with --confirm-ui.                 │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  Layer 6: Dynamic Canary Honey-Tokens (Intrusion Tripwires)                 │
 │  ► Deploys enticing decoy canary tokens ('HETZER_CANARY_TOKEN') into .env.  │
-│  ► Any access or extraction attempt triggers an emergency freeze (exit 43)  │
-│    and logs high-priority forensic intrusion alerts to SQLite & log file.   │
+│  ► Guarded resolution/reveal attempts abort with exit code 43 and log an     │
+│    incident. Arbitrary file reads are outside this tripwire.                 │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  Layer 7: Master Key Workspace Isolation (~/.hetzer/grimoire.key)           │
 │  ► 'hetzer creds isolate-key' relocates master key out of project directory │
-│    with 0600 POSIX permissions. Workspace contains ZERO decryption keys.    │
+│    with 0600 POSIX permissions. Same-user processes may still read it.       │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Latency Benchmark: Hetzer Sniffer vs LLM-Guard
+### Performance measurement
 
-| Benchmark Metric | LLM-Guard (Python / PyTorch) | Hetzer Sniffer (Pure Node.js stdlib) |
-|---|:---:|:---:|
-| **Scanning Engine** | Heavy Deep Learning (BERT / DeBERTa) | C++ V8 DFA Regex + Shannon Entropy |
-| **Hardware Acceleration** | Software Python Loop | **Hardware Silicon (AES-NI)** |
-| **Developer Laptop Latency** | 🔴 **800 ms – 2,500 ms** | 🟢 **< 2 milliseconds (Instant)** |
-| **External Dependencies** | ~2 GB (PyTorch, HuggingFace) | **0 Dependencies** (Pure Node stdlib) |
-| **Memory Footprint** | 1.5 GiB – 3.0 GiB RAM | **< 10 MiB RAM** |
+Scanner latency varies with input length, candidate count, CPU, Node version, and cold-start effects. The Git hook also starts Git subprocesses, so scanner microbenchmarks must not be presented as end-to-end hook latency. Run `node benchmarks/vault-bench.mjs` and measure `hetzer hook check` on the target repository before setting a performance objective.
 
 ---
 
 ## 🏦 Enterprise & Banking Readiness (PCI-DSS, SOC 2, ISO 27001, OJK)
 
-Hetzer was architected from the ground up for high-compliance environments, including **commercial banking, payment processing, and regulated fintech**:
+Hetzer can contribute technical evidence to a broader security program, but this repository has not been independently audited or certified against the frameworks below.
 
 ### 🎯 Strategic Enterprise Role: The "Agent Sidecar Armor"
 Banks deploying AI coding agents (Claude Code, Cursor, Copilot, Antigravity) face an acute compliance threat: **engineers accidentally leaking core-banking API keys, staging database URLs, or customer PII into third-party LLM context windows**.
 
 Hetzer acts as a client-side **Defense-in-Depth Armor**:
-- 🛡️ **0 NPM Dependencies**: Zero supply-chain attack surface. No third-party package poisoning, typosquatting, or dependency rot (`node_modules` is empty in production).
-- ⚡ **Sub-2ms Deterministic Interception**: Sanitizes prompt inputs and tool parameters into `secretRef:<id>` before network egress.
-- 🛑 **Git Pre-Commit Guard**: Stops leaked tokens and `.env` files from reaching internal GitLab or GitHub repositories in < 2ms.
-- 🔒 **AES-256-GCM Hardware Silicon Encryption**: Hardware-accelerated at rest with strict `chmod 600` POSIX file confinement.
+- **0 runtime npm dependencies** reduces one source of dependency risk. Node.js, Hetzer itself, container images, and installers remain in the supply chain.
+- **Explicit scanning and guarded execution** reduce exposure in the paths that invoke them.
+- **Git Pre-Commit Guard** blocks supported patterns and `.env` filenames when the hook runs.
+- **AES-256-GCM encryption** protects vault values at rest while the master key remains separate and protected.
 
 ### 📋 Compliance Quick Reference
 
 | Framework / Regulation | Control Scope | Hetzer Capability & Verdict |
 |---|---|:---:|
-| **PCI-DSS v4.0** | **Req 3.4 & 3.5**: Cardholder & Credential At-Rest Encryption | 🟢 **Compliant** (AES-256-GCM + unique 12B IVs) |
-| **PCI-DSS v4.0** | **Req 6.4.3 & 6.5**: Secure SDLC & Credential Leak Prevention | 🟢 **Compliant** (Git Pre-Commit Guard blocks commits) |
-| **SOC 2 Type II** | **CC6.1 – CC6.3**: Logical Access & Credential Separation | 🟢 **Compliant** (Role isolation & zero plaintext on disk) |
-| **ISO/IEC 27001:2022** | **A.8.24 & A.8.28**: Cryptography & Secure Development | 🟢 **Compliant** (AES-NI silicon acceleration) |
-| **OJK (SEOJK 29/2022)** | Cyber Resilience & Sensitive Financial Data Protection | 🟢 **Compliant** (Prevents AI context data leakage) |
-| **Bank Indonesia (PBI 23/2021)** | Payment System Transaction & Key Integrity | 🟢 **Compliant** (Eliminates plaintext payment gateway keys) |
+| **PCI DSS v4.x** | Vault encryption and development leak detection may support selected controls | Requires a scoped assessment; the Git hook does not establish payment-page script control 6.4.3 |
+| **SOC 2** | Audit records and credential handling may support control evidence | Compliance applies to an audited organization and system, not this component alone |
+| **ISO/IEC 27001:2022** | Cryptography and secure-development features may support selected controls | Certification requires an assessed information-security management system |
+| **OJK / Bank Indonesia** | Local storage and leak-reduction controls may form part of an implementation | Applicability and sufficiency require qualified legal and regulatory review |
 
 > 📖 **Read the Complete Technical Whitepaper**: For full regulatory analysis, threat vector models, and enterprise deployment blueprints, see **[Enterprise & Banking Readiness Guide (`docs/enterprise-readiness.md`)](docs/enterprise-readiness.md)**.
 
 ---
 
-## 🧩 Universal AI Agent Skills (Headless Mode - 0 Docker, 0 RAM)
+## Universal AI Agent Skills (no Docker required)
 
-Protect your tokens across **all modern AI coding agents** with zero container overhead:
+Install credential-handling guidance across the supported AI coding agents. The installed files consume disk space and the CLI uses memory when invoked.
 
 ```bash
 # Install to all detected agents on your system:
@@ -281,12 +270,12 @@ hetzer hook check
 hetzer hook uninstall
 ```
 
-Whenever you or an AI agent attempts to run `git commit` with an exposed API key or `.env` file, Hetzer blocks the commit in < 2ms:
+When the installed hook runs, it blocks supported credential patterns and `.env` files in staged changes. The reported latency includes Git startup and varies by repository:
 ```text
 ================================================================================
   🛑 HETZER ARMOR: GIT COMMIT BLOCKED (TOKEN LEAK DETECTED!)
 ================================================================================
-  Scan Latency : 1.45 ms
+  Scan Latency : 183.00 ms
   Violations   : Detected 1 raw credential in staged changes:
 
   * src/config.js:14 -> [OPENAI_API_KEY] OpenAI secret key
@@ -317,8 +306,8 @@ All Hetzer commands are executed via the `hetzer` CLI:
 | `hetzer creds set <id> [val]` | Encrypts and saves a credential via AES-256-GCM (masked prompt) |
 | `hetzer creds isolate-key` | Moves master key outside workspace to `~/.hetzer/grimoire.key` (mode 0600) |
 | `hetzer canary [setup]` | Deploys decoy canary honey-tokens to catch prompt injection & extraction |
-| `hetzer exec [--allow <ids>] [--strict] -- <c>` | Runs command with scoped secret injection & real-time stream sanitization |
-| `hetzer sniffer [scan\|redact]` | Scans or redacts credentials from input text in < 2ms |
+| `hetzer exec [--allow <ids>] [--strict] -- <c>` | Runs a command with scoped secret injection and buffered stream sanitization |
+| `hetzer sniffer [scan\|redact]` | Scans or redacts supported credential candidates from input text |
 | `hetzer skill [install\|status]`| Deploys Universal AI Agent Skills to Hermes, AGY, OpenCode, Cursor, Claude |
 | `hetzer hook [install\|check]` | Installs or tests the Git pre-commit credential leak guard |
 | `hetzer modules` | Displays available and active native extension modules |
@@ -346,25 +335,24 @@ hetzer creds reveal nine-router-initial-password
 ```
 
 ### 2. Can AI Agents (Claude, Cursor, Cline, GPT) see these credentials?
-**No, never.** This is the core guarantee of the *Zero-Plaintext* architecture:
+Hetzer keeps plaintext out of MCP vault-list and vault-existence responses, and `hetzer exec` injects approved values directly into a child process. This does not guarantee that an unrestricted agent can never access a credential:
 - The MCP tools exposed to AI (`hetzer_vault_has` and `hetzer_vault_list`) **only return metadata** and abstract reference strings (`secretRef:<id>`).
-- **No `reveal` tool is ever exposed over MCP**. AI models have neither permission nor functions to read plaintext strings from Grimoire Vault.
-- AI agents complete tasks (such as calling APIs or publishing packages) because credentials are injected *out-of-band* directly into subprocess memory by the host OS without ever traversing the chat window (*context window*).
-- **Immune to Prompt Injection & Jailbreaks**: Even if an attacker commands the AI to dump the vault, the AI cannot read it.
+- **No `reveal` tool is exposed by Hetzer's MCP server**. This limits that interface; it does not restrict other tools or same-user file/process access.
+- Credentials injected into a child exist in that process environment and memory. `hetzer exec` blocks common reflection commands and sanitizes supported output, but these are application safeguards rather than OS isolation.
+- Agent instructions do not intercept arbitrary prompts, files, debuggers, alternate processes, or tools. Use OS account separation and a centrally managed secret system for hostile-code boundaries.
 
 ### 3. What credential scenarios does Hetzer support?
-Grimoire Vault and Secret Sniffer support the entire modern credential spectrum:
-- **API Keys & Bearer Tokens**: OpenAI (`sk-...`), Anthropic (`sk-ant-...`), Google Gemini (`AIza...`), Groq, DeepSeek, Stripe, etc.
-- **Developer Registry Tokens**: NPM tokens (`npm_...`), GitHub PATs (`ghp_...`), GitLab, HuggingFace, Docker Hub.
+Grimoire Vault can store arbitrary values up to its configured size limit. Automatic scanning recognizes a narrower set:
+- **Provider tokens**: OpenAI, Anthropic, Google Gemini, npm, GitHub, Slack, AWS access-key IDs, and JWT-shaped strings.
 - **Service & Database Passwords**: 9Router admin passwords, PostgreSQL, Redis, MySQL credentials.
-- **Multi-line Credentials**: SSH/RSA private keys (`-----BEGIN PRIVATE KEY-----`), SSL PEM certificates, and Google Cloud Service Account JSON keys (`cat key.json | hetzer creds set gcp-key`).
+- **Private keys**: PKCS#8 and algorithm-prefixed PEM private-key blocks up to 16 KiB.
 - **Database Connection URIs**: `postgresql://user:pass@host:5432/db`, `mongodb+srv://...`, `redis://...`.
-- **Cloud Key Pairs**: AWS (`AWS_ACCESS_KEY_ID` & `AWS_SECRET_ACCESS_KEY`), Azure Client Secrets.
+- **High-entropy candidates**: 24–512 character candidate strings above the entropy threshold. Review false positives and false negatives.
 
 ### 4. Who does Hetzer protect you from?
-- 🛡️ **Third-Party AI Vendors**: Your tokens and passwords are never transmitted to OpenAI, Anthropic, or Google servers, preventing them from being logged or used for model training.
-- 🛡️ **Accidental Git Exposure**: Files and code only hold abstract references (`secretRef:<id>`). If a file is committed, attackers gain zero functional credentials.
-- 🛡️ **Local OS Users**: Files are automatically secured with strict POSIX permissions (`chmod 600`), restricting read/write access to your user account.
+- **Third-party AI vendors**: References reduce exposure when users and agents follow the installed guidance and use the integrated scanner paths.
+- **Accidental Git exposure**: The hook catches supported candidates and staged `.env` filenames unless hooks are bypassed.
+- **Other OS accounts**: POSIX mode `0600` restricts ordinary cross-account access. Administrators, the same account, backups, and platform-specific ACL behavior remain in scope.
 
 ### 5. How do I achieve maximum security on production servers?
 If you prefer not to store `HETZER_GRIMOIRE_KEY` on disk, omit it from `.env` and provide it strictly via the in-memory terminal environment:

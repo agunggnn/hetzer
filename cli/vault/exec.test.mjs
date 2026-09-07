@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { executeProcess, isReflectionCommand, sanitizeStreamOutput } from "./exec.mjs";
+import { createStreamSanitizer, executeProcess, isReflectionCommand, sanitizeStreamOutput } from "./exec.mjs";
 import { setCredential } from "./creds.mjs";
 
 test("isReflectionCommand accurately detects and blocks environment reflection attempts", () => {
@@ -39,6 +39,19 @@ test("sanitizeStreamOutput redacts resolved secrets and raw tokens back to secre
     const tokenOutput = `Crash log: token=${mockToken}`;
     const sanitizedToken = sanitizeStreamOutput(tokenOutput, []);
     assert.match(sanitizedToken, /secretRef:npm-token/);
+
+    assert.equal(
+        sanitizeStreamOutput("PIN=demo", [{ id: "short-value", secret: "demo" }]),
+        "PIN=secretRef:short-value"
+    );
+});
+
+test("createStreamSanitizer redacts secrets split across output chunks", () => {
+    const sanitizer = createStreamSanitizer([{ id: "split-value", secret: "synthetic-split-value" }]);
+    const output = sanitizer.write(Buffer.from("result=synthetic-"))
+        + sanitizer.write(Buffer.from("split-value\n"))
+        + sanitizer.end();
+    assert.equal(output, "result=secretRef:split-value\n");
 });
 
 test("executeProcess blocks reflection commands from running", async () => {

@@ -5,6 +5,18 @@ import { parseEnv } from "../core/env.mjs";
 import { isCanaryCredential, triggerCanaryAlert } from "./canary.mjs";
 import { Grimoire, resolveMasterKey, resolveVaultPath } from "./hetzer-vault.mjs";
 
+const STRICT_BASE_ENV_NAMES = new Set([
+    "APPDATA", "COLORTERM", "COMSPEC", "HOME", "LANG", "LC_ALL", "LC_CTYPE",
+    "LOCALAPPDATA", "PATH", "PATHEXT", "PROGRAMDATA", "SHELL", "SYSTEMDRIVE",
+    "SYSTEMROOT", "TEMP", "TERM", "TMP", "TZ", "USERPROFILE", "WINDIR",
+]);
+
+export function strictBaseEnvironment(baseEnv = {}) {
+    return Object.fromEntries(
+        Object.entries(baseEnv).filter(([name]) => STRICT_BASE_ENV_NAMES.has(name.toUpperCase()))
+    );
+}
+
 export function resolveSecretEnvironment({
     root,
     envFile,
@@ -30,7 +42,7 @@ export function resolveSecretEnvironment({
         const id = String(value).slice("secretRef:".length).toLowerCase();
         return allow.has(name.toLowerCase()) || allow.has(id);
     });
-    const resolved = { ...baseEnv, HETZER_ROOT: root };
+    const resolved = { ...(strict ? strictBaseEnvironment(baseEnv) : baseEnv), HETZER_ROOT: root };
     if (!bindings.length) return resolved;
 
     const masterKey = resolveMasterKey({ root, envValues: values, baseEnv });

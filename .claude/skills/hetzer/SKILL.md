@@ -1,12 +1,11 @@
 ---
 name: hetzer
-description: Zero-Plaintext Credential Protection, Sub-2ms Secret Sniffer, and Grimoire Vault integration for autonomous agents.
+description: Local credential references, scanning, and Grimoire Vault integration for autonomous agents.
 ---
 
-# Hetzer: Zero-Plaintext Security & Credential Protection
+# Hetzer credential handling
 
-You are operating under the protection of the **Hetzer Grimoire Vault**.
-Your environment enforces strict **Zero-Plaintext** credential handling:
+Hetzer provides a local encrypted vault, explicit secret references, a staged-diff scanner, and guarded process execution. Treat these controls as defense in depth; installing this skill does not intercept arbitrary prompts, file reads, or tools.
 
 ## 1. Strict Zero-Plaintext Policy
 - **NEVER** ask the user to type or paste plaintext API keys, passwords, private keys, or tokens in conversation.
@@ -19,21 +18,21 @@ Your environment enforces strict **Zero-Plaintext** credential handling:
   NODE_AUTH_TOKEN=secretRef:npm-token
   OPENAI_API_KEY=secretRef:openai-api-key
   ```
-- Plaintext secrets in `.env` are automatically intercepted and vaulted on boot.
-- The master encryption key `HETZER_GRIMOIRE_KEY` is isolated outside the repository in secure user home storage (`~/.hetzer/grimoire.key`).
+- Run `hetzer protect` or the migration command to replace supported plaintext values in `.env`; do not assume arbitrary files are intercepted.
+- `hetzer creds isolate-key` can move the master key outside the workspace to `~/.hetzer/grimoire.key`. The file remains accessible to processes running as the same OS user.
 
 ## 3. Execution with Secrets (Least Privilege)
 - To run commands, test suites, builds, or scripts requiring credentials, use out-of-band scoped injection:
   ```bash
   hetzer exec --allow <credential-id> -- <command> [args]
   ```
-- For strict zero-leakage enforcement, pass `--strict`:
+- To start the child with a minimal inherited environment, pass `--strict`:
   ```bash
   hetzer exec --allow npm-token --strict -- npm run publish-pkg
   ```
-- **DO NOT** attempt to run `hetzer creds reveal` — programmatic or agent-driven secret extraction is strictly blocked by TTY, environment, and process tree inspection.
+- **DO NOT** run `hetzer creds reveal` from an agent. The CLI checks for a TTY, agent environment markers, and up to five ancestor processes; these checks are safeguards rather than an OS security boundary.
 - Environment reflection commands (`printenv`, `env`, `export`, `set`, `/proc/*/environ`, `docker inspect`) are forbidden under Zero-Plaintext policy.
-- Output streams (`stdout` / `stderr`) and MCP responses are automatically intercepted and sanitized in real time.
+- `hetzer exec` sanitizes its child stdout/stderr with a bounded rolling buffer. MCP responses are scanned before return. Commands and tools outside these paths are not intercepted.
 
 ## 4. Writing & Running Scripts (Python, Bash, Node)
 - When writing scripts that need secrets, write code that reads environment variables normally:
@@ -41,11 +40,11 @@ Your environment enforces strict **Zero-Plaintext** credential handling:
   token = os.environ.get("NODE_AUTH_TOKEN") # Available in memory during hetzer exec
   ```
 - Run the script through Hetzer: `hetzer exec --allow <id> -- python my_script.py`.
-- Legitimate execution works seamlessly in memory. Any accidental or deliberate token output in stdout/stderr will be automatically redacted back to `secretRef:<id>`.
+- Known injected values and supported scanner candidates are redacted from `hetzer exec` output. Keep application logging controls in place because pattern scanners cannot identify every secret format.
 
 ## 5. Autonomous MCP Defense Tools
 If connected via MCP, you have access to Hetzer's native defense tools:
-- `hetzer_sniffer_scan(text)`: Inspect whether user input, code, or logs contain candidate credentials in < 2ms.
+- `hetzer_sniffer_scan(text)`: Inspect text for supported token formats, credentialed database URLs, bounded private keys, and high-entropy candidates.
 - `hetzer_sniffer_redact(text)`: Sanitize text by automatically replacing raw credentials with `secretRef:<id>`.
 - `hetzer_vault_has(id)`: Verify if a required secret exists in Vault without exposing its plaintext value.
 - `hetzer_vault_list()`: Inspect configured credential references safely.

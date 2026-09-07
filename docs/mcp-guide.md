@@ -24,8 +24,8 @@
 
 The **Model Context Protocol (MCP)** standardizes how AI applications connect to external tools, databases, and context servers. Hetzer acts as an **autonomous MCP orchestrator and security bridge**, providing:
 - **Embedded Stdio FastMCP Server** (`hetzer mcp serve`): Direct high-speed JSON-RPC bridge for Claude Desktop, Cursor, and Cline.
-- **Native Defense Tools**: Real-time prompt secret scanning (`hetzer_sniffer_scan`), auto-redaction (`hetzer_sniffer_redact`), and safe credential existence checks (`hetzer_vault_has`, `hetzer_vault_list`).
-- **Real-Time MCP Output Sanitization**: Automatically intercepts all tool return values and error messages via `sanitizeStreamOutput`, scrubbing accidental plaintext tokens into `secretRef:<id>` before context transmission.
+- **Native Defense Tools**: Explicit text scanning (`hetzer_sniffer_scan`), redaction with per-item vault status (`hetzer_sniffer_redact`), and credential existence checks (`hetzer_vault_has`, `hetzer_vault_list`).
+- **MCP Output Sanitization**: Scans serialized Hetzer tool return values and error messages via `sanitizeStreamOutput` before return. Other MCP servers and client tools are outside this path.
 - **Automated Loopback Networking**: Zero-plaintext API key injection and port bindings (`127.0.0.1:8001/mcp`) for Cognee and active modules.
 - **Operational Tool Classification**: Automated labeling as `[OFFLINE]`, `[HYBRID]`, and `[LLM REASONING]`.
 
@@ -191,7 +191,7 @@ When the `cognee` module is active, the following cognitive tools are exposed:
 When connected to Hetzer's stdio FastMCP server (`hetzer mcp serve`), AI agents gain access to local defense utilities designed to inspect and secure credentials without exposing plaintext values:
 
 ### `hetzer_sniffer_scan` `[OFFLINE]`
-- **Description**: Scans provided text or code snippets for candidate credentials (API keys, private keys, database connection strings) in < 2ms using V8 DFA regular expressions and Shannon entropy.
+- **Description**: Scans provided text or code snippets for supported API-key patterns, private-key blocks up to 16 KiB, credentialed database URLs, and bounded high-entropy candidates. Runtime depends on input and environment.
 - **Parameters**:
   - `text` *(string, required)*: The text payload to scan.
 
@@ -215,7 +215,7 @@ When connected to Hetzer's stdio FastMCP server (`hetzer mcp serve`), AI agents 
 
 ## 7. Real-Time Tool Output Sanitization
 
-To eliminate prompt-injection or tool-output credential exfiltration, Hetzer's MCP protocol handler (`cli/mcp/protocol.mjs`) automatically pipes all tool responses (`tools/call`) through `sanitizeStreamOutput`:
+To reduce accidental credential exposure in Hetzer tool output, the MCP protocol handler (`cli/mcp/protocol.mjs`) pipes serialized `tools/call` responses through `sanitizeStreamOutput`:
 - If an upstream tool or database query accidentally returns a known secret, Hetzer detects the plaintext string in memory and redacts it back into `secretRef:<id>`.
 - Structured JSON outputs and error messages are symmetrically sanitized.
 - **Result**: Third-party LLM providers never ingest plaintext credentials even if a backend tool dumps raw configurations.

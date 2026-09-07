@@ -3,7 +3,7 @@
 > **Target OS**: Ubuntu/Debian, RHEL/CentOS, Windows (WSL2/Native), macOS (Apple Silicon & Intel)  
 > **Node.js**: >= 22.5.0  
 > **Docker (Optional for Full Stack)**: Engine >= 24.0, Docker Compose >= v2.20  
-> **Headless Mode**: 0 Docker, 0 RAM, pure Node stdlib  
+> **Headless Mode**: no Docker required; the Node CLI consumes resources only while invoked
 > **Documentation Type**: Modular Reference & Step-by-Step Tutorial
 
 ---
