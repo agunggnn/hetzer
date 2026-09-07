@@ -6,12 +6,12 @@ export function getHetzerAsciiBanner({ colored = false } = {}) {
     const cReset = colored ? "\x1b[0m" : "";
 
     return [
-        `${cCyan}       __`,
-        `      /  \\_______`,
-        `  ___[  ______/_/_   ${cBold}_  _ ___ _____ ____ ___ ___ ${cReset}`,
-        `${cCyan} /_  _\\________/ /  ${cBold}| || | __|_   _|_  / __| _ \\${cReset}`,
-        `${cCyan}   \\____________/   ${cBold}| __ | _|  | |  / /| _||   /${cReset}`,
-        `${cGreen}    (o)(o)(o)(o)    ${cBold}|_||_|___| |_| /___|___|_|_\\${cReset}`,
+        `${cBold}${cCyan}  ██╗  ██╗███████╗████████╗███████╗███████╗██████╗ ${cReset}`,
+        `${cBold}${cCyan}  ██║  ██║██╔════╝╚══██╔══╝╚══███╔╝██╔════╝██╔══██╗${cReset}`,
+        `${cBold}${cGreen}  ███████║█████╗     ██║     ███╔╝ █████╗  ██████╔╝${cReset}`,
+        `${cBold}${cGreen}  ██╔══██║██╔══╝     ██║    ███╔╝  ██╔══╝  ██╔══██╗${cReset}`,
+        `${cBold}${cCyan}  ██║  ██║███████╗   ██║   ███████╗███████╗██║  ██║${cReset}`,
+        `${cBold}${cCyan}  ╚═╝  ╚═╝╚══════╝   ╚═╝   ╚══════╝╚══════╝╚═╝  ╚═╝${cReset}`,
         `${cDim} =======================================================${cReset}`,
         `  ${cBold}${cGreen}H E T Z E R${cReset}  ${cDim}•${cReset}  ${cCyan}Zero-Plaintext Armor for AI Agents${cReset}`,
         `  ${cDim}[Sub-2ms Vault] • [MCP Active] • [Universal Skills]${cReset}`,
