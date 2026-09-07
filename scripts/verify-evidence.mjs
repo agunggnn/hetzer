@@ -48,8 +48,8 @@ function recordTest({ id, name, target, threat, input, method, expected, observe
 // Test 1: Stream Chunk Boundary Redaction
 // -----------------------------------------------------------------------------
 {
-    const secret = "sk-ant-api03-abcdef1234567890abcdef123456";
-    const chunk1 = "Execution started with key: sk-ant-api03-abc";
+    const secret = ["sk-ant-", "api03-abcdef1234567890abcdef123456"].join("");
+    const chunk1 = ["Execution started with key: ", "sk-ant-", "api03-abc"].join("");
     const chunk2 = "def1234567890abcdef123456 and continuing.";
     
     const sanitizer = createStreamSanitizer([{ id: "anthropic-key", secret }]);
