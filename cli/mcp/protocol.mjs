@@ -16,6 +16,20 @@ function error(id, code, message) {
     return { jsonrpc: "2.0", id: id ?? null, error: { code, message } };
 }
 
+function sanitizeMcpValue(value) {
+    if (typeof value === "string") return sanitizeStreamOutput(value);
+    if (Array.isArray(value)) return value.map((item) => sanitizeMcpValue(item));
+    if (value && typeof value === "object") {
+        return Object.fromEntries(
+            Object.entries(value).map(([key, item]) => [
+                sanitizeStreamOutput(key),
+                sanitizeMcpValue(item),
+            ])
+        );
+    }
+    return value;
+}
+
 export async function handleMcpRequest(request, catalog) {
     if (!request || request.jsonrpc !== "2.0" || typeof request.method !== "string") {
         return error(request?.id, -32600, "Invalid Request");
@@ -54,15 +68,9 @@ export async function handleMcpRequest(request, catalog) {
         try {
             const value = await catalog.call(name, request.params?.arguments || {});
             const rawJson = JSON.stringify(value);
-            const sanitizedText = sanitizeStreamOutput(rawJson);
-            let sanitizedStructured = value;
-            if (sanitizedText !== rawJson) {
-                try {
-                    sanitizedStructured = JSON.parse(sanitizedText);
-                } catch {
-                    // Fall back to original value if JSON parse fails
-                }
-            }
+            if (rawJson === undefined) throw new Error("Tool returned a non-serializable value.");
+            const sanitizedStructured = sanitizeMcpValue(JSON.parse(rawJson));
+            const sanitizedText = JSON.stringify(sanitizedStructured);
             return result(request.id, {
                 ...(modern ? { resultType: "complete" } : {}),
                 content: [{ type: "text", text: sanitizedText }],

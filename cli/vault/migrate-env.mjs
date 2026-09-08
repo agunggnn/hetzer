@@ -34,6 +34,7 @@ export function autoIngestPlaintextEnv({ root, envFile, masterKey }) {
     const envVault = resolveVaultPath(root);
     const vault = new Grimoire({ dbPath: envVault || path.join(root, "data", "hetzer-vault.db"), masterKey: resolvedMasterKey });
     const migrated = [];
+    const candidates = [];
 
     try {
         for (const [name, [id, targetId, keyName]] of Object.entries(BINDINGS)) {
@@ -41,25 +42,16 @@ export function autoIngestPlaintextEnv({ root, envFile, masterKey }) {
             if (!value || value.startsWith("replace-") || value.startsWith("secretRef:")) {
                 continue;
             }
-            vault.upsertTarget({ id: targetId, name: targetId, target_type: "hetzer-module" });
-            const allowedActions = ["compose.start", "process.start"];
-            const canonicalExisting = vault.find(id);
-            const input = {
+            candidates.push({
+                name,
                 id,
-                projectId: targetId,
+                targetId,
                 keyName,
                 label: name,
                 authType: name.includes("PASSWORD") ? "password" : "api-key",
-                scope: "env",
-                accessRole: "operator",
-                allowedActions,
-                secret: value,
-                source: "auto-env-ingest",
-            };
-            if (canonicalExisting) vault.update(id, input);
-            else vault.create(input);
-            text = replaceValue(text, name, `secretRef:${id}`);
-            migrated.push(name);
+                value,
+                targetType: "hetzer-module",
+            });
         }
 
         for (const [name, rawVal] of Object.entries(values)) {
@@ -69,27 +61,60 @@ export function autoIngestPlaintextEnv({ root, envFile, masterKey }) {
             const isSensitiveKey = /(?:_KEY|_SECRET|_TOKEN|_PASSWORD|_AUTH)$/i.test(name) || name === "NODE_AUTH_TOKEN";
             if (isSensitiveKey) {
                 const targetId = name.toLowerCase().replace(/_/g, "-");
-                const id = targetId;
-                vault.upsertTarget({ id: "env", name: "env", target_type: "environment" });
-                const allowedActions = ["compose.start", "process.start"];
-                const canonicalExisting = vault.find(id);
-                const input = {
-                    id,
-                    projectId: "env",
+                candidates.push({
+                    name,
+                    id: targetId,
+                    targetId: "env",
                     keyName: name.toLowerCase(),
                     label: name,
                     authType: name.includes("PASSWORD") ? "password" : "api-key",
+                    value: rawVal,
+                    targetType: "environment",
+                });
+            }
+        }
+
+        const candidateValues = new Map();
+        const conflicts = new Set();
+        for (const candidate of candidates) {
+            const priorValue = candidateValues.get(candidate.id);
+            if (priorValue !== undefined && priorValue !== candidate.value) conflicts.add(candidate.id);
+            candidateValues.set(candidate.id, candidate.value);
+
+            const existing = vault.find(candidate.id);
+            if (!existing) continue;
+            const existingValue = vault.reveal(candidate.id);
+            if (existingValue === null || existingValue !== candidate.value) conflicts.add(candidate.id);
+        }
+        if (conflicts.size) {
+            throw new Error(
+                `Automatic migration refused to overwrite existing credential ID(s): ${[...conflicts].sort().join(", ")}. ` +
+                "Use 'hetzer creds set <id>' for an explicit update."
+            );
+        }
+
+        for (const candidate of candidates) {
+            if (!vault.find(candidate.id)) {
+                vault.upsertTarget({
+                    id: candidate.targetId,
+                    name: candidate.targetId,
+                    target_type: candidate.targetType,
+                });
+                vault.create({
+                    id: candidate.id,
+                    projectId: candidate.targetId,
+                    keyName: candidate.keyName,
+                    label: candidate.label,
+                    authType: candidate.authType,
                     scope: "env",
                     accessRole: "operator",
-                    allowedActions,
-                    secret: rawVal,
+                    allowedActions: ["compose.start", "process.start"],
+                    secret: candidate.value,
                     source: "auto-env-ingest",
-                };
-                if (canonicalExisting) vault.update(id, input);
-                else vault.create(input);
-                text = replaceValue(text, name, `secretRef:${id}`);
-                migrated.push(name);
+                });
             }
+            text = replaceValue(text, candidate.name, `secretRef:${candidate.id}`);
+            migrated.push(candidate.name);
         }
 
         if (migrated.length) {

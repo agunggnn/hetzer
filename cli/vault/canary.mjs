@@ -107,9 +107,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             process.stdout.write("================================================================================\n");
             process.stdout.write(`  [v] Honey-Token ID : ${trap.id}\n`);
             process.stdout.write(`  [v] Decoy Binding  : HETZER_CANARY_TOKEN=${trap.ref}\n`);
-            process.stdout.write(`  [v] Protection     : If any AI agent or prompt injection attempts to access\n`);
-            process.stdout.write(`                       or dump this token, Hetzer immediately halts execution\n`);
-            process.stdout.write(`                       and aborts the guarded operation with exit code 43.\n`);
+            process.stdout.write(`  [v] Protection     : Guarded reveal or environment resolution of this ID\n`);
+            process.stdout.write(`                       logs an incident and aborts with exit code 43.\n`);
             process.stdout.write("================================================================================\n");
         } else {
             throw new Error(`Unknown canary action '${action}'. Use 'setup'.`);

@@ -8,7 +8,15 @@ import { fileURLToPath } from "node:url";
 
 import { parseEnv } from "../core/env.mjs";
 import { resolveSecretEnvironment } from "./secret-env.mjs";
-import { MAX_DETECTION_MATCH_LENGTH, scanText } from "./sniffer.mjs";
+import { scanText } from "./sniffer.mjs";
+
+const FORMAT_CONTROL = /\p{Cf}/u;
+const LEXICAL_CHARACTER = /[A-Za-z0-9+/_=.-]/;
+const PRIVATE_KEY_BEGIN = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/;
+const PRIVATE_KEY_END = /-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----/;
+const DATABASE_SCHEME = /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis):\/\//i;
+const STRUCTURED_MARKER_TAIL = 128;
+const LEXICAL_SCAN_LIMIT = 512;
 
 const FORBIDDEN_REFLECTION = [
     /^\s*(printenv|env|export|set)\b/i,
@@ -37,6 +45,198 @@ export function sanitizeStreamOutput(text, secretsToRedact = []) {
     return result;
 }
 
+export function collectResolvedSecrets(envFile, env) {
+    if (!envFile || !fs.existsSync(envFile)) return [];
+    const rawValues = parseEnv(fs.readFileSync(envFile, "utf8"));
+    const secrets = [];
+    for (const [name, rawValue] of Object.entries(rawValues)) {
+        if (!String(rawValue).startsWith("secretRef:")) continue;
+        const secret = env[name];
+        if (!secret || typeof secret !== "string" || secret.startsWith("secretRef:")) continue;
+        secrets.push({ id: String(rawValue).slice("secretRef:".length), secret });
+    }
+    return secrets;
+}
+
+function createTerminalControlFilter() {
+    let escapeMode = "text";
+
+    return {
+        write(text) {
+            let output = "";
+            for (const char of text) {
+                const code = char.codePointAt(0);
+
+                if (escapeMode === "csi") {
+                    if (code >= 0x40 && code <= 0x7e) escapeMode = "text";
+                    continue;
+                }
+                if (escapeMode === "osc") {
+                    if (char === "\u0007") escapeMode = "text";
+                    else if (char === "\u001b") escapeMode = "osc-escape";
+                    continue;
+                }
+                if (escapeMode === "osc-escape") {
+                    escapeMode = char === "\\" ? "text" : "osc";
+                    continue;
+                }
+                if (escapeMode === "escape") {
+                    if (char === "[") escapeMode = "csi";
+                    else if (char === "]") escapeMode = "osc";
+                    else escapeMode = "text";
+                    continue;
+                }
+
+                if (char === "\u001b") {
+                    escapeMode = "escape";
+                    continue;
+                }
+                if (code === 0x9b) {
+                    escapeMode = "csi";
+                    continue;
+                }
+                if (code === 0x9d) {
+                    escapeMode = "osc";
+                    continue;
+                }
+                if (
+                    char === "\r"
+                    || (code >= 0 && code <= 8)
+                    || code === 11
+                    || code === 12
+                    || (code >= 14 && code <= 31)
+                    || (code >= 0x7f && code <= 0x9f)
+                    || FORMAT_CONTROL.test(char)
+                ) {
+                    continue;
+                }
+                output += char;
+            }
+            return output;
+        },
+        end() {
+            escapeMode = "text";
+            return "";
+        },
+    };
+}
+
+function findStructuredStart(text) {
+    const privateKey = PRIVATE_KEY_BEGIN.exec(text);
+    const database = DATABASE_SCHEME.exec(text);
+    if (!privateKey) return database ? { index: database.index, length: database[0].length, mode: "database" } : null;
+    if (!database || privateKey.index <= database.index) {
+        return { index: privateKey.index, length: privateKey[0].length, mode: "private-key" };
+    }
+    return { index: database.index, length: database[0].length, mode: "database" };
+}
+
+function createStructuredSecretFilter() {
+    let pending = "";
+    let mode = "text";
+
+    const drain = (final = false) => {
+        let output = "";
+        while (pending) {
+            if (mode === "private-key") {
+                const end = PRIVATE_KEY_END.exec(pending);
+                if (end) {
+                    pending = pending.slice(end.index + end[0].length);
+                    mode = "text";
+                    continue;
+                }
+                if (final) pending = "";
+                else if (pending.length > STRUCTURED_MARKER_TAIL) pending = pending.slice(-STRUCTURED_MARKER_TAIL);
+                return output;
+            }
+
+            if (mode === "database") {
+                const delimiter = pending.search(/\s/);
+                if (delimiter === -1) {
+                    pending = "";
+                    return output;
+                }
+                output += pending[delimiter];
+                pending = pending.slice(delimiter + 1);
+                mode = "text";
+                continue;
+            }
+
+            const start = findStructuredStart(pending);
+            if (start) {
+                output += pending.slice(0, start.index);
+                output += start.mode === "private-key" ? "secretRef:private-key" : "secretRef:database-url";
+                pending = pending.slice(start.index + start.length);
+                mode = start.mode;
+                continue;
+            }
+
+            if (final) {
+                output += pending;
+                pending = "";
+            } else if (pending.length > STRUCTURED_MARKER_TAIL) {
+                output += pending.slice(0, -STRUCTURED_MARKER_TAIL);
+                pending = pending.slice(-STRUCTURED_MARKER_TAIL);
+            }
+            return output;
+        }
+        return output;
+    };
+
+    return {
+        write(text) {
+            pending += text;
+            return drain(false);
+        },
+        end() {
+            return drain(true);
+        },
+    };
+}
+
+function createLexicalSecretFilter(secretsToRedact) {
+    let pending = "";
+    let suppressRemainder = false;
+
+    const sanitizePending = () => {
+        const output = sanitizeStreamOutput(pending, secretsToRedact);
+        pending = "";
+        return output;
+    };
+
+    return {
+        write(text) {
+            let output = "";
+            for (const char of text) {
+                if (LEXICAL_CHARACTER.test(char)) {
+                    if (suppressRemainder) continue;
+                    pending += char;
+                    if (pending.length >= LEXICAL_SCAN_LIMIT) {
+                        const sanitized = sanitizePending();
+                        output += sanitized;
+                        suppressRemainder = sanitized.includes("secretRef:");
+                    }
+                    continue;
+                }
+
+                if (!suppressRemainder && pending) output += sanitizePending();
+                pending = "";
+                suppressRemainder = false;
+                output += char;
+            }
+            return output;
+        },
+        end() {
+            if (suppressRemainder) {
+                pending = "";
+                suppressRemainder = false;
+                return "";
+            }
+            return pending ? sanitizePending() : "";
+        },
+    };
+}
+
 function crossingMatchStart(text, boundary, secretsToRedact) {
     let earliest = boundary;
     for (const { secret } of secretsToRedact) {
@@ -61,9 +261,18 @@ function crossingMatchStart(text, boundary, secretsToRedact) {
 
 export function createStreamSanitizer(secretsToRedact = []) {
     const decoder = new StringDecoder("utf8");
+    const terminalControls = createTerminalControlFilter();
+    const structuredSecrets = createStructuredSecretFilter();
+    const lexicalSecrets = createLexicalSecretFilter(secretsToRedact);
     const longestSecret = secretsToRedact.reduce((max, item) => Math.max(max, String(item.secret || "").length), 0);
     const retention = Math.max(128, longestSecret * 2);
     let pending = "";
+
+    const preprocess = (text) => {
+        const normalized = terminalControls.write(text);
+        const structured = structuredSecrets.write(normalized);
+        return lexicalSecrets.write(structured);
+    };
 
     const drain = (final = false) => {
         if (final) {
@@ -82,14 +291,45 @@ export function createStreamSanitizer(secretsToRedact = []) {
 
     return {
         write(chunk) {
-            pending += Buffer.isBuffer(chunk) ? decoder.write(chunk) : String(chunk);
+            const decoded = Buffer.isBuffer(chunk) ? decoder.write(chunk) : String(chunk);
+            pending += preprocess(decoded);
             return drain(false);
         },
         end() {
-            pending += decoder.end();
+            pending += preprocess(decoder.end());
+            pending += lexicalSecrets.write(structuredSecrets.write(terminalControls.end()));
+            pending += lexicalSecrets.write(structuredSecrets.end());
+            pending += lexicalSecrets.end();
             return drain(true);
         },
     };
+}
+
+export function pipeSanitizedChild(child, secretsToRedact = [], {
+    outStream = process.stdout,
+    errStream = process.stderr,
+} = {}) {
+    return new Promise((resolve, reject) => {
+        const stdoutSanitizer = createStreamSanitizer(secretsToRedact);
+        const stderrSanitizer = createStreamSanitizer(secretsToRedact);
+
+        child.stdout.on("data", (chunk) => {
+            const sanitized = stdoutSanitizer.write(chunk);
+            if (sanitized) outStream.write(sanitized);
+        });
+        child.stderr.on("data", (chunk) => {
+            const sanitized = stderrSanitizer.write(chunk);
+            if (sanitized) errStream.write(sanitized);
+        });
+        child.once("error", reject);
+        child.once("close", (code) => {
+            const finalStdout = stdoutSanitizer.end();
+            const finalStderr = stderrSanitizer.end();
+            if (finalStdout) outStream.write(finalStdout);
+            if (finalStderr) errStream.write(finalStderr);
+            resolve({ status: code ?? 1 });
+        });
+    });
 }
 
 export function parseArguments(argv) {
@@ -126,20 +366,7 @@ export function executeProcess(options, { outStream = process.stdout, errStream 
 
         const env = resolveSecretEnvironment({ ...options, action: "process.start" });
 
-        // Collect secrets that were injected so we can redact them in real-time from output stream
-        const secretsToRedact = [];
-        if (fs.existsSync(options.envFile)) {
-            const rawValues = parseEnv(fs.readFileSync(options.envFile, "utf8"));
-            for (const [key, rawVal] of Object.entries(rawValues)) {
-                if (String(rawVal).startsWith("secretRef:")) {
-                    const id = rawVal.slice("secretRef:".length);
-                    const resolvedSecret = env[key];
-                    if (resolvedSecret && typeof resolvedSecret === "string" && !resolvedSecret.startsWith("secretRef:")) {
-                        secretsToRedact.push({ id, secret: resolvedSecret });
-                    }
-                }
-            }
-        }
+        const secretsToRedact = collectResolvedSecrets(options.envFile, env);
 
         const targetCmd = (process.platform === "win32" && options.command.includes(" ") && !options.command.startsWith('"'))
             ? `"${options.command}"`
@@ -152,30 +379,7 @@ export function executeProcess(options, { outStream = process.stdout, errStream 
             shell: process.platform === "win32",
         });
 
-        const stdoutSanitizer = createStreamSanitizer(secretsToRedact);
-        const stderrSanitizer = createStreamSanitizer(secretsToRedact);
-
-        child.stdout.on("data", (chunk) => {
-            const sanitized = stdoutSanitizer.write(chunk);
-            if (sanitized) outStream.write(sanitized);
-        });
-
-        child.stderr.on("data", (chunk) => {
-            const sanitized = stderrSanitizer.write(chunk);
-            if (sanitized) errStream.write(sanitized);
-        });
-
-        child.on("error", (error) => {
-            reject(error);
-        });
-
-        child.on("close", (code) => {
-            const finalStdout = stdoutSanitizer.end();
-            const finalStderr = stderrSanitizer.end();
-            if (finalStdout) outStream.write(finalStdout);
-            if (finalStderr) errStream.write(finalStderr);
-            resolve({ status: code ?? 0 });
-        });
+        pipeSanitizedChild(child, secretsToRedact, { outStream, errStream }).then(resolve, reject);
     });
 }
 

@@ -88,7 +88,12 @@ export function checkDockerDaemon(exec = spawnSync, osInfo = getOperatingSystemI
 
         if (isPermissionDenied) {
             errorSummary = "Docker socket access denied (Permission Denied).";
-            const user = os.userInfo().username || "ubuntu";
+            let user = "current-user";
+            try {
+                user = os.userInfo().username || user;
+            } catch {
+                user = process.env.USERNAME || process.env.USER || user;
+            }
             guide = osInfo.platform === "linux"
                 ? `On Linux Ubuntu/Debian, user '${user}' needs to be added to the 'docker' group:\n    sudo usermod -aG docker ${user}\n    newgrp docker\n    (or log out and log in again)`
                 : "Ensure your user account has permission to access the Docker daemon.";

@@ -27,8 +27,9 @@ sequenceDiagram
 |---|---|---|
 | Grimoire vault | `cli/vault/hetzer-vault.mjs` | AES-256-GCM credential values in SQLite with target/action/expiry checks |
 | Secret scanner | `cli/vault/sniffer.mjs` | Provider regexes, database URLs, bounded PEM keys, and Shannon-entropy candidates |
-| Process runner | `cli/vault/exec.mjs` | Scope resolution, strict base environment, reflection guard, rolling output sanitizer |
-| Credential CLI | `cli/vault/creds.mjs` | Set/list/reveal, TTY and agent heuristics, optional native UI confirmation |
+| Process runner | `cli/vault/exec.mjs` | Scope resolution, strict base environment, reflection guard, shared stdout/stderr sanitizer |
+| Compose runner | `cli/vault/compose-runner.mjs` | Scoped Compose environment and sanitized Docker/containers output pipes |
+| Credential CLI | `cli/vault/creds.mjs` | Set/list/reveal, TTY and agent heuristics, required native UI confirmation |
 | Canary | `cli/vault/canary.mjs` | Aborts guarded canary reveal/resolution and maps to CLI exit code 43 |
 | Git hook | `cli/core/git-hook.mjs` | Scans staged `.env` names and added text grouped by file |
 | MCP | `cli/mcp/` | Metadata-only credential tools, scanner tools, module tools, response sanitation |

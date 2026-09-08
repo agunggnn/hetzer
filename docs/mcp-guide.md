@@ -35,23 +35,23 @@ The **Model Context Protocol (MCP)** standardizes how AI applications connect to
 
 In high-throughput AI agent environments, knowing whether a tool call consumes cloud tokens or executes locally is critical for latency, cost control, and privacy. Hetzer tags all discovered tools:
 
-### `[OFFLINE]` (Zero Cost, Zero Latency)
-- **Execution**: 100% on localhost machine.
-- **Latency**: < 5 ms.
-- **Cost**: 0 LLM tokens, 0 network bandwidth.
-- **Privacy**: No data leaves the local machine.
+### `[OFFLINE]` (local operation)
+- **Execution**: Implemented by a local process without intended model inference.
+- **Latency**: Depends on the operation, host, and local services.
+- **Cost**: Does not directly request LLM generation tokens.
+- **Privacy**: Review the implementation and configured services; classification is metadata, not network enforcement.
 - **Use Cases**: System health probes, local cache lookups, database status checks.
 
 ### `[HYBRID]` (Local Indexing & Graph Search)
 - **Execution**: Local embedded engines (LanceDB vector search, Kùzu graph traversal, SQLite queries).
-- **Latency**: 10 ms – 50 ms.
+- **Latency**: Depends on index size, host resources, and configuration.
 - **Cost**: 0 generation tokens (may use local embeddings if configured with Ollama).
-- **Privacy**: Fully contained within Docker volumes on local disk.
+- **Privacy**: Local configurations can keep data on the machine; remote embedding or model providers change this boundary.
 - **Use Cases**: Semantic retrieval (`recall`), subgraph relationship queries.
 
 ### `[LLM REASONING]` (Cognitive Synthesis)
 - **Execution**: Requires model inference (OpenAI, Anthropic, Gemini, or local Ollama).
-- **Latency**: 500 ms – 3000 ms.
+- **Latency**: Depends on the selected local or remote model provider.
 - **Cost**: Incurs token usage on upstream model provider.
 - **Privacy**: Text payloads routed securely through 9Router or configured upstream endpoint.
 - **Use Cases**: Knowledge graph distillation (`remember`), memory summarization (`improve`).
@@ -216,9 +216,9 @@ When connected to Hetzer's stdio FastMCP server (`hetzer mcp serve`), AI agents 
 ## 7. Real-Time Tool Output Sanitization
 
 To reduce accidental credential exposure in Hetzer tool output, the MCP protocol handler (`cli/mcp/protocol.mjs`) pipes serialized `tools/call` responses through `sanitizeStreamOutput`:
-- If an upstream tool or database query accidentally returns a known secret, Hetzer detects the plaintext string in memory and redacts it back into `secretRef:<id>`.
+- If an upstream tool returns a value matching a supported scanner rule, Hetzer replaces the matched value with a `secretRef:<id>` placeholder.
 - Structured JSON outputs and error messages are symmetrically sanitized.
-- **Result**: Third-party LLM providers never ingest plaintext credentials even if a backend tool dumps raw configurations.
+- **Boundary**: This reduces exposure through Hetzer's MCP response path. Unsupported or transformed secrets and responses from other tools may still reach a client or model provider.
 
 ---
 

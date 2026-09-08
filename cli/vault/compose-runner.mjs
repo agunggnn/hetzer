@@ -2,10 +2,11 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { loadModuleRegistry } from "../modules/registry.mjs";
+import { collectResolvedSecrets, pipeSanitizedChild } from "./exec.mjs";
 import { resolveSecretEnvironment } from "./secret-env.mjs";
 
 function parseArguments(argv) {
@@ -51,8 +52,22 @@ export function composeInvocation({ root, envFile, composeArgs }) {
     return { file: "docker", args, secretNames: [...secretNames] };
 }
 
+export function runComposeChild(invocation, env, {
+    spawnProcess = spawn,
+    outStream = process.stdout,
+    errStream = process.stderr,
+    secretsToRedact = [],
+} = {}) {
+    const child = spawnProcess(invocation.file, invocation.args, {
+        stdio: ["inherit", "pipe", "pipe"],
+        env,
+        windowsHide: true,
+    });
+    return pipeSanitizedChild(child, secretsToRedact, { outStream, errStream });
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-    try {
+    const main = async () => {
         const options = parseArguments(process.argv.slice(2));
         const invocation = composeInvocation(options);
         const env = resolveSecretEnvironment({
@@ -60,11 +75,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             action: "compose.start",
             allowNames: invocation.secretNames,
         });
-        const result = spawnSync(invocation.file, invocation.args, { stdio: "inherit", env, windowsHide: true });
-        if (result.error) throw result.error;
-        process.exitCode = result.status === null ? 1 : result.status;
-    } catch (error) {
+        const secretsToRedact = collectResolvedSecrets(options.envFile, env);
+        const result = await runComposeChild(invocation, env, { secretsToRedact });
+        process.exitCode = result.status;
+    };
+
+    main().catch((error) => {
         process.stderr.write(`Hetzer Compose failed: ${error.message}\n`);
         process.exitCode = error.exitCode || 1;
-    }
+    });
 }

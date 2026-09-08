@@ -65,7 +65,7 @@ For structured navigation and deep architectural insights, explore the dedicated
 
 | Guide | Summary & Topics |
 |---|---|
-| ⚡ **[Vibe Coder's Guide (`docs/vibe-coders.md`)](docs/vibe-coders.md)** | Zero-overhead, 1-command armor for developers building fast with Cursor, Claude, and Antigravity. |
+| ⚡ **[Practical Credential-Safety Guide (`docs/vibe-coders.md`)](docs/vibe-coders.md)** | One-command setup and the boundaries developers and agent users need to understand. |
 | 🚀 **[Installation Guide (`docs/installation.md`)](docs/installation.md)** | Multi-OS setup (Ubuntu, Debian, CentOS, Windows WSL2, macOS, VPS), Docker requirements, and troubleshooting. |
 | 🏛️ **[System Architecture (`docs/architecture.md`)](docs/architecture.md)** | Grimoire Vault (AES-256-GCM), 7-layer defense shield, 9Router Gateway, Cognee Memory, and network boundaries. |
 | 🔬 **[System Logic & Progress Tracker (`docs/system-logic-and-progress.md`)](docs/system-logic-and-progress.md)** | Deep subsystem implementation specs, execution flows, test coverage status, and upcoming roadmap. |
@@ -96,7 +96,7 @@ All built with **0 external npm dependencies** (100% Node.js standard library: `
 | Control | Covered | Boundary |
 |---|---|---|
 | Vault at rest | AES-256-GCM encryption with a unique random IV and authenticated metadata | A process that can read both the database and master-key file can decrypt entries |
-| `hetzer exec` | Resolves allowed references and sanitizes child stdout/stderr with a bounded rolling buffer | Child memory contains resolved values; unrelated processes and tools are outside this path |
+| `hetzer exec` | Resolves allowed references and sanitizes child stdout/stderr with bounded rolling and structured-stream filters | Child memory contains resolved values; transformed output, direct device/file/network writes, and unrelated processes remain outside this path |
 | Scanner | Supported patterns, database URLs, private-key blocks up to 16 KiB, and high-entropy candidates | Pattern matching can produce false positives and false negatives |
 | Git hook | Staged `.env` filenames and supported candidates in added text | Hooks can be skipped and do not scan repository history |
 | Agent skills | Instructions and MCP metadata-only vault tools | Instructions do not enforce access control against the local OS user |
@@ -169,7 +169,8 @@ flowchart TB
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  Layer 2: Real-Time Stream Sanitizer & Ephemeral Scoping (hetzer exec)      │
 │  ► Intercepts child process stdout/stderr in memory before terminal emit.   │
-│  ► Uses a bounded rolling buffer to redact values across output chunks.      │
+│  ► Known injected values are redacted even when split across output chunks. │
+│  ► Terminal controls and supported long structured values are filtered.     │
 │  ► --strict starts with a minimal environment and injects approved refs.     │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  Layer 3: Anti-Reflection Execution Guard                                   │
@@ -181,9 +182,9 @@ flowchart TB
 │  ► Traverses 5 generations of parent processes (PPID) to block autonomous   │
 │    recognized agent processes before allowing 'hetzer creds reveal'.         │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  Layer 5: Out-of-Band (OOB) Human Presence Proof (--confirm-ui)              │
+│  Layer 5: Native OS Confirmation                                              │
 │  ► Launches native OS modal dialogs (Windows Forms / AppleScript / Zenity). │
-│  ► Optional modal confirmation is enabled with --confirm-ui.                 │
+│  ► Every plaintext reveal requires a native modal confirmation.              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  Layer 6: Dynamic Canary Honey-Tokens (Intrusion Tripwires)                 │
 │  ► Deploys enticing decoy canary tokens ('HETZER_CANARY_TOKEN') into .env.  │
@@ -281,7 +282,7 @@ When the installed hook runs, it blocks supported credential patterns and `.env`
   * src/config.js:14 -> [OPENAI_API_KEY] OpenAI secret key
 
   HOW TO FIX:
-  1. Save credential to Vault : hetzer creds set openai-api-key <secret>
+  1. Save credential to Vault : hetzer creds set openai-api-key
   2. Replace in your code with: secretRef:openai-api-key
 ================================================================================
 ```
@@ -299,11 +300,11 @@ All Hetzer commands are executed via the `hetzer` CLI:
 | `hetzer up [srv\|all] [--wait]` | Launches containers with active healthcheck polling and HTTP smoke tests |
 | `hetzer down [-v]` | Stops services (`-v` removes persistent data volumes for clean teardown) |
 | `hetzer status` | Displays live container states, forwarded ports, and image digests |
-| `hetzer logs [service]` | Streams container logs in real time |
+| `hetzer logs [service]` | Streams container logs through the same bounded stdout/stderr sanitizer |
 | `hetzer tui` | Opens the interactive terminal operations dashboard |
 | `hetzer creds [list]` | Lists all stored credential references in Grimoire Vault |
-| `hetzer creds reveal <id> [--confirm-ui]` | Decrypts and prints plaintext secret (guarded by TTY, process tree, & OS modal) |
-| `hetzer creds set <id> [val]` | Encrypts and saves a credential via AES-256-GCM (masked prompt) |
+| `hetzer creds reveal <id>` | Decrypts and prints plaintext after TTY, process-tree, and required native-modal checks |
+| `hetzer creds set <id>` | Encrypts and saves a credential via AES-256-GCM using a masked prompt |
 | `hetzer creds isolate-key` | Moves master key outside workspace to `~/.hetzer/grimoire.key` (mode 0600) |
 | `hetzer canary [setup]` | Deploys decoy canary honey-tokens to catch prompt injection & extraction |
 | `hetzer exec [--allow <ids>] [--strict] -- <c>` | Runs a command with scoped secret injection and buffered stream sanitization |

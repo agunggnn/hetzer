@@ -21,7 +21,7 @@ Publish the benchmark harness, fixtures, raw results, and date with every numeri
 - The package declares no third-party runtime npm dependencies. Node.js, Hetzer source and release artifacts, installation channels, and pinned container images remain supply-chain inputs.
 - Vault values use AES-256-GCM with random 12-byte IVs, authentication tags, and authenticated metadata. This does not prove hardware acceleration on every supported machine.
 - `hetzer exec --strict` starts with a minimal inherited environment and resolves only allowed `secretRef` bindings. Resolved values exist in child-process memory.
-- Output sanitation uses a bounded rolling buffer so known values and supported candidates can be recognized across stream chunks. Pattern scanners still have false-positive and false-negative risk.
+- Output sanitation uses a bounded rolling buffer so known injected values can be recognized across stream chunks. Streaming filters suppress supported long structured values and normalize terminal controls, while deliberately transformed or unsupported values can still evade pattern scanning and false positives remain possible.
 - The Git hook scans staged `.env` filenames and added text. Git hooks can be bypassed and are not a replacement for server-side scanning.
 
 Run `npm run check` to execute the repository's syntax checks, unit tests, and public-file credential-pattern scan. Passing those checks is implementation evidence, not an independent security audit.

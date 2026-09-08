@@ -50,7 +50,7 @@ Hetzer is engineered for high density and low memory consumption. It does not re
 If your machine has Node.js (>= 22.5), run instantly without permanent installation:
 
 ```bash
-# 1. Protect all your local AI agents (Hermes, AGY, OpenCode, Cursor, Claude, Cline)
+# 1. Install credential-safety guidance for supported local agents
 npx hetzer skill install
 
 # 2. Guard your Git repository from accidental token leaks

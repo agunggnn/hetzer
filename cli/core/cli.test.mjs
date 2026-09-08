@@ -13,11 +13,13 @@ import {
     resolveProjectRoot,
 } from "./cli.mjs";
 import { parseEnv } from "./env.mjs";
+import { Grimoire } from "../vault/hetzer-vault.mjs";
 
 test("initializeProject creates a secured, repeatable project contract", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-core-init-"));
     const initResult = initializeProject(root);
-    assert.ok(initResult.initialPassword && initResult.initialPassword.length > 0);
+    assert.equal(initResult.initialPassword, undefined);
+    assert.equal(initResult.initialPasswordRef, "secretRef:nine-router-initial-password");
     const first = fs.readFileSync(path.join(root, ".env"), "utf8");
     const values = parseEnv(first);
     assert.match(values.NINE_ROUTER_JWT_SECRET, /^secretRef:/);
@@ -28,6 +30,32 @@ test("initializeProject creates a secured, repeatable project contract", () => {
     initializeProject(root);
     assert.equal(fs.readFileSync(path.join(root, ".env"), "utf8"), first);
     fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("init output never includes the stored initial password", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-core-init-output-"));
+    let output = "";
+    const originalWrite = process.stdout.write;
+    process.stdout.write = (chunk) => {
+        output += String(chunk);
+        return true;
+    };
+    try {
+        await main(["init", root], { root });
+        const values = parseEnv(fs.readFileSync(path.join(root, ".env"), "utf8"));
+        const vault = new Grimoire({
+            dbPath: path.join(root, "data", "hetzer-vault.db"),
+            masterKey: values.HETZER_GRIMOIRE_KEY,
+        });
+        const initialPassword = vault.reveal("nine-router-initial-password");
+        vault.close();
+        assert.ok(initialPassword);
+        assert.equal(output.includes(initialPassword), false);
+        assert.match(output, /secretRef:nine-router-initial-password/);
+    } finally {
+        process.stdout.write = originalWrite;
+        fs.rmSync(root, { recursive: true, force: true });
+    }
 });
 
 test("Compose startup encodes dynamic route chunks before 9Router starts", () => {
@@ -142,7 +170,9 @@ test("protect command arms workspace with universal skills and git hook", async 
     try {
         process.env.HETZER_INSTALL_HOME = path.join(tempDir, "home");
         await main(["protect"], { root: tempDir });
-        assert.match(output, /HETZER ARMOR ACTIVATED/);
+        assert.match(output, /HETZER CREDENTIAL GUARDS CONFIGURED/);
+        assert.match(output, /No credentials migrated/);
+        assert.doesNotMatch(output, /Plaintext tokens vaulted/);
         assert.equal(fs.existsSync(path.join(tempDir, ".cursor", "rules", "hetzer.mdc")), true);
         assert.equal(fs.existsSync(path.join(tempDir, ".git", "hooks", "pre-commit")), true);
         assert.equal(fs.existsSync(path.join(tempDir, "AGENTS.md")), true);
@@ -154,3 +184,15 @@ test("protect command arms workspace with universal skills and git hook", async 
     }
 });
 
+test("creds set rejects positional values that would remain in shell history", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-creds-argv-"));
+    fs.writeFileSync(path.join(tempDir, ".env"), "HETZER_ENABLED_MODULES=\n");
+    try {
+        await assert.rejects(
+            () => main(["creds", "set", "audit-id", "synthetic-positional-value"], { root: tempDir }),
+            /Do not pass a secret as a command-line argument/
+        );
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});

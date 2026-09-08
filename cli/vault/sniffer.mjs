@@ -64,7 +64,7 @@ export const DETECTION_RULES = [
         id: "private-key",
         type: "private_key",
         label: "Private Key Certificate",
-        pattern: /-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----[\s\S]{1,16256}?-----END (?:[A-Z0-9]+ )?PRIVATE KEY-----/g,
+        pattern: /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]{1,16256}?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----/g,
     },
     {
         id: "database-url",

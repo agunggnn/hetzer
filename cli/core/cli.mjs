@@ -14,7 +14,7 @@ import { loadModuleRegistry } from "../modules/registry.mjs";
 import { resolveModuleProfiles } from "../modules/resolve.mjs";
 import { setModuleEnabled } from "../modules/toggle.mjs";
 import { formatValidationReport, validateAllModules, validateModuleRecipe } from "../modules/validate.mjs";
-import { KNOWN_CREDENTIALS, assertInteractiveHumanSession, promptNativeOsConfirmation, listCredentials, promptSecret, revealCredential, setCredential } from "../vault/creds.mjs";
+import { KNOWN_CREDENTIALS, authorizeCredentialReveal, listCredentials, promptSecret, revealCredential, setCredential } from "../vault/creds.mjs";
 import { isolateMasterKey, resolveMasterKey } from "../vault/hetzer-vault.mjs";
 import { autoIngestPlaintextEnv, migrateEnvCredentials } from "../vault/migrate-env.mjs";
 import { setupCanaryTrap } from "../vault/canary.mjs";
@@ -194,15 +194,14 @@ export function initializeProject(root) {
         masterKey: process.env.HETZER_GRIMOIRE_KEY || current.HETZER_GRIMOIRE_KEY,
         authorizationRef: "user:hetzer-init",
     });
-    let initialPassword = generated.NINE_ROUTER_INITIAL_PASSWORD;
-    try {
-        const revealed = revealCredential({ root: resolvedRoot, envFile, id: "nine-router-initial-password" });
-        if (revealed?.secret) initialPassword = revealed.secret;
-    } catch { /* ignore */ }
     try {
         configureMcp(resolvedRoot);
     } catch { /* ignore */ }
-    return { root: resolvedRoot, envFile, initialPassword };
+    return {
+        root: resolvedRoot,
+        envFile,
+        initialPasswordRef: "secretRef:nine-router-initial-password",
+    };
 }
 
 function printInitWizard(result) {
@@ -221,8 +220,9 @@ function printInitWizard(result) {
     process.stdout.write("  9ROUTER INITIAL LOGIN & CREDENTIAL INFORMATION:\n");
     process.stdout.write("--------------------------------------------------------------------------------\n");
     process.stdout.write("  Web UI URL       : http://127.0.0.1:20140\n");
-    process.stdout.write("  Login Form       : Enter the password below (9Router requires only Password)\n");
-    process.stdout.write(`  Initial Password : ${result.initialPassword || "(saved in vault)"}\n\n`);
+    process.stdout.write("  Login Form       : 9Router requires the password stored in Grimoire Vault\n");
+    process.stdout.write(`  Password Ref     : ${result.initialPasswordRef}\n`);
+    process.stdout.write("  Human retrieval  : hetzer creds reveal nine-router-initial-password\n\n");
     process.stdout.write("  IMPORTANT INITIALIZATION NOTE:\n");
     process.stdout.write("  9Router only reads the Initial Password when its database is first created.\n");
     process.stdout.write("  If 9Router was previously initialized, run:\n");
@@ -235,15 +235,16 @@ function printInitWizard(result) {
     process.stdout.write("  protecting your secrets from accidental git exposure.\n\n");
     process.stdout.write("  CREDENTIAL MANAGEMENT:\n");
     process.stdout.write("  - Reveal password anytime   : hetzer creds reveal nine-router-initial-password\n");
-    process.stdout.write("  - Update password in vault  : hetzer creds set nine-router-initial-password <new-password>\n");
+    process.stdout.write("  - Update password in vault  : hetzer creds set nine-router-initial-password\n");
     process.stdout.write("  - Inspect all credentials   : hetzer creds list\n");
     process.stdout.write("--------------------------------------------------------------------------------\n");
     process.stdout.write("  NEXT STEPS:\n");
     process.stdout.write("--------------------------------------------------------------------------------\n");
     process.stdout.write("  1. Start services      : hetzer up\n");
-    process.stdout.write("  2. Open Web UI         : http://127.0.0.1:20140 (login with password above)\n");
-    process.stdout.write("  3. Open live dashboard : hetzer tui\n");
-    process.stdout.write("  4. View extra modules  : hetzer modules\n");
+    process.stdout.write("  2. Retrieve password   : hetzer creds reveal nine-router-initial-password\n");
+    process.stdout.write("  3. Open Web UI         : http://127.0.0.1:20140\n");
+    process.stdout.write("  4. Open live dashboard : hetzer tui\n");
+    process.stdout.write("  5. View extra modules  : hetzer modules\n");
     process.stdout.write("================================================================================\n");
 }
 
@@ -259,7 +260,7 @@ function printModuleGuide(moduleId, action) {
             process.stdout.write("  This module requires an LLM API key (OpenAI, Anthropic, OpenRouter, etc.).\n\n");
             process.stdout.write("HOW TO CONFIGURE CREDENTIALS:\n");
             process.stdout.write("  Run the following command to store the API key in the encrypted Vault:\n");
-            process.stdout.write("    hetzer creds set cognee-llm-api-key <your-api-key>\n\n");
+            process.stdout.write("    hetzer creds set cognee-llm-api-key\n\n");
             process.stdout.write("HOW TO START & CONNECT:\n");
             process.stdout.write("  1. Start service   : hetzer up cognee\n");
             process.stdout.write("  2. Setup MCP       : hetzer mcp configure\n");
@@ -340,7 +341,7 @@ export function printModuleHelp(moduleId, root, values) {
             process.stdout.write(`   - Reveal secret '${cred.id}':\n`);
             process.stdout.write(`       hetzer creds reveal ${cred.id}\n`);
             process.stdout.write(`   - Configure secret '${cred.id}':\n`);
-            process.stdout.write(`       hetzer creds set ${cred.id} <value>\n`);
+            process.stdout.write(`       hetzer creds set ${cred.id}\n`);
         }
         process.stdout.write("\n");
     }
@@ -399,7 +400,7 @@ Commands:
   creds [list|reveal|set]   Manage encrypted secrets in Grimoire Vault (AES-256-GCM)
   canary [setup]            Deploy decoy canary honey-token tripwire to catch prompt injections
   exec [--allow <ids>] [--strict] -- <c> Run command with scoped secret injection & real-time stream sanitization
-  sniffer [scan|redact] <t> Intercept and secure credentials from input text in < 2ms
+  sniffer [scan|redact] <t> Detect or redact credentials supported by the scanner rules
   protect                   One-command Zero-Plaintext Armor for Vibe Coders (skills + git hook + .env)
   skill [install|status]    Deploy Universal AI Skills to Hermes, AGY, OpenCode, Cursor, Claude
   hook [install|uninstall|check] Manage Git Pre-Commit Guard to prevent accidental token leaks
@@ -469,27 +470,28 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         }
 
         // 3. Scan & auto-ingest .env if present
-        let envSecured = false;
+        let envStatus = "No .env file found";
         const envFile = path.join(workspaceRoot, ".env");
         if (fs.existsSync(envFile)) {
             try {
-                autoIngestPlaintextEnv({ root: workspaceRoot, envFile });
-                envSecured = true;
+                const migrated = autoIngestPlaintextEnv({ root: workspaceRoot, envFile });
+                envStatus = migrated.length
+                    ? `${migrated.length} credential(s) vaulted into AES-256-GCM`
+                    : "No credentials migrated; review Vault key and .env values";
             } catch {
-                // non-fatal
+                envStatus = "Migration failed; run the migration command for diagnostics";
             }
         }
 
         process.stdout.write("\n================================================================================\n");
-        process.stdout.write("  🛡️ HETZER ARMOR ACTIVATED (ZERO-PLAINTEXT FOR VIBE CODERS)\n");
+        process.stdout.write("  🛡️ HETZER CREDENTIAL GUARDS CONFIGURED\n");
         process.stdout.write("================================================================================\n");
-        process.stdout.write("  [v] Universal Skills   : Active across Cursor, Claude, Antigravity, Cline, OpenCode\n");
-        process.stdout.write(`  [v] Git Pre-Commit     : ${gitHookInstalled ? "Hook installed (< 2ms sniffer active)" : "Skipped (no .git directory found)"}\n`);
-        process.stdout.write(`  [v] Workspace .env     : ${envSecured ? "Plaintext tokens vaulted into AES-256-GCM" : "Clean / No .env file"}\n`);
+        process.stdout.write("  [v] Agent Skills       : Installation attempted for supported detected agents\n");
+        process.stdout.write(`  [v] Git Pre-Commit     : ${gitHookInstalled ? "Hook installed for supported scanner rules" : "Skipped (no .git directory found)"}\n`);
+        process.stdout.write(`  [v] Workspace .env     : ${envStatus}\n`);
         process.stdout.write("  [v] Resource Overhead  : 0 Docker containers, 0 background RAM, 0 npm dependencies\n");
         process.stdout.write("--------------------------------------------------------------------------------\n");
-        process.stdout.write("  Your code and tokens are safe from accidental leaks into LLMs and Git.\n");
-        process.stdout.write("  Keep vibe coding with total peace of mind! 🚀\n");
+        process.stdout.write("  These controls reduce accidental credential disclosure; review the documented boundaries.\n");
         process.stdout.write("================================================================================\n");
         return;
     }
@@ -580,20 +582,14 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             process.stdout.write("--------------------------------------------------------------------------------\n");
             process.stdout.write("Commands:\n");
             process.stdout.write("  - View secret value   : hetzer creds reveal <id>\n");
-            process.stdout.write("  - Save/update value   : hetzer creds set <id> <value>\n");
+            process.stdout.write("  - Save/update value   : hetzer creds set <id>\n");
             process.stdout.write("================================================================================\n");
             return;
         }
         if (subCommand === "reveal" || subCommand === "get") {
             const id = args[1];
-            if (!id) throw new Error("Usage: hetzer creds reveal <id> [--confirm-ui]");
-            assertInteractiveHumanSession();
-            if (process.env.HETZER_REQUIRE_OOB_CONFIRM === "1" || args.includes("--confirm-ui")) {
-                const confirmed = promptNativeOsConfirmation(id);
-                if (!confirmed) {
-                    throw new Error(`Access Denied: Out-of-Band (OOB) OS confirmation for '${id}' was rejected or timed out.`);
-                }
-            }
+            if (!id) throw new Error("Usage: hetzer creds reveal <id>");
+            authorizeCredentialReveal(id);
             const cred = revealCredential({ root, envFile, id });
             process.stdout.write("================================================================================\n");
             process.stdout.write(`  CREDENTIAL DETAIL: ${cred.id}\n`);
@@ -610,11 +606,9 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         }
         if (subCommand === "set") {
             const id = args[1];
-            let secret = args[2];
-            if (!id) throw new Error("Usage: hetzer creds set <id> [value]");
-            if (!secret) {
-                secret = await promptSecret(`Enter secret value for '${id}': `);
-            }
+            if (!id) throw new Error("Usage: hetzer creds set <id>");
+            if (args[2]) throw new Error("Do not pass a secret as a command-line argument. Run 'hetzer creds set <id>' and use the masked prompt.");
+            const secret = await promptSecret(`Enter secret value for '${id}': `);
             if (!secret) throw new Error("Secret value is required.");
             const result = setCredential({ root, envFile, id, secret });
             process.stdout.write("================================================================================\n");
@@ -643,8 +637,8 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             process.stdout.write(`  [v] Master Key moved to : ${res.isolatedFile} (mode 0600)\n`);
             process.stdout.write(`  [v] Workspace Stripped  : ${res.envFile}\n`);
             process.stdout.write("--------------------------------------------------------------------------------\n");
-            process.stdout.write("  Result: The repository workspace now contains ZERO master keys.\n");
-            process.stdout.write("  Autonomous AI agents running in this workspace can no longer access the vault key.\n");
+            process.stdout.write("  Result: The workspace .env no longer contains the master key.\n");
+            process.stdout.write("  Note: Processes running as the same OS user may still read the isolated key file.\n");
             process.stdout.write("================================================================================\n");
             return;
         }
@@ -662,7 +656,11 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             process.stdout.write("  HETZER - SECRET SNIFFER (REDACT & AUTO-VAULT)\n");
             process.stdout.write("================================================================================\n");
             process.stdout.write(`  Execution Time   : ${res.latencyMs} ms\n`);
-            process.stdout.write(`  Secured Count    : ${res.redactedCount}\n`);
+            process.stdout.write(`  Redacted Count   : ${res.redactedCount}\n`);
+            process.stdout.write(`  Vaulted Count    : ${res.vaultedCount}\n`);
+            if (res.vaultErrors.length) {
+                process.stdout.write(`  Vault Warnings   : ${res.vaultErrors.join("; ")}\n`);
+            }
             process.stdout.write("--------------------------------------------------------------------------------\n");
             process.stdout.write(`  Safe Redacted Text for AI:\n  ${res.text}\n`);
             process.stdout.write("================================================================================\n");
@@ -679,9 +677,8 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             process.stdout.write("================================================================================\n");
             process.stdout.write(`  [v] Honey-Token ID : ${trap.id}\n`);
             process.stdout.write(`  [v] Decoy Binding  : HETZER_CANARY_TOKEN=${trap.ref}\n`);
-            process.stdout.write(`  [v] Protection     : If any AI agent or prompt injection attempts to access\n`);
-            process.stdout.write(`                       or dump this token, Hetzer immediately halts execution\n`);
-            process.stdout.write(`                       and triggers an emergency security alert.\n`);
+            process.stdout.write(`  [v] Protection     : Guarded reveal or environment resolution of this ID\n`);
+            process.stdout.write(`                       logs an incident and aborts with exit code 43.\n`);
             process.stdout.write("================================================================================\n");
             return;
         }

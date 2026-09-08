@@ -54,6 +54,40 @@ test("createStreamSanitizer redacts secrets split across output chunks", () => {
     assert.equal(output, "result=secretRef:split-value\n");
 });
 
+test("createStreamSanitizer blocks terminal-control and long scanner bypasses", () => {
+    const known = ["synthetic", "-", "guard", "-", "value", "-", "987654321"].join("");
+    const ansiObfuscated = known.split("").join("\u001b[0m");
+    const nulObfuscated = known.split("").join("\0");
+    const privateKey = [
+        "-----BEGIN ",
+        "PRIVATE KEY-----\n",
+        "A".repeat(900),
+        "\n-----END ",
+        "PRIVATE KEY-----",
+    ].join("");
+    const databaseUrl = ["postgres://user:", "B".repeat(700), "@localhost/app"].join("");
+    const longProviderToken = ["gh", "p_", "C".repeat(700)].join("");
+    const sanitizer = createStreamSanitizer([{ id: "guard-value", secret: known }]);
+
+    const output = [
+        sanitizer.write(Buffer.from(ansiObfuscated.slice(0, 37))),
+        sanitizer.write(Buffer.from(ansiObfuscated.slice(37) + "\n" + nulObfuscated + "\n")),
+        sanitizer.write(Buffer.from(privateKey.slice(0, 300))),
+        sanitizer.write(Buffer.from(privateKey.slice(300) + "\n" + databaseUrl.slice(0, 350))),
+        sanitizer.write(Buffer.from(databaseUrl.slice(350) + "\n" + longProviderToken)),
+        sanitizer.end(),
+    ].join("");
+
+    assert.doesNotMatch(output, new RegExp(known));
+    assert.doesNotMatch(output, /A{100}/);
+    assert.doesNotMatch(output, /B{100}/);
+    assert.doesNotMatch(output, /C{100}/);
+    assert.match(output, /secretRef:guard-value/);
+    assert.match(output, /secretRef:private-key/);
+    assert.match(output, /secretRef:database-url/);
+    assert.match(output, /secretRef:github-token/);
+});
+
 test("executeProcess blocks reflection commands from running", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-exec-test-"));
     const envFile = path.join(tempDir, ".env");
@@ -76,7 +110,7 @@ test("executeProcess blocks reflection commands from running", async () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
-test("executeProcess sanitizes stdout stream in real time", async () => {
+test("executeProcess sanitizes stdout and stderr streams", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-exec-stream-"));
     const dataDir = path.join(tempDir, "data");
     fs.mkdirSync(dataDir, { recursive: true });
@@ -93,15 +127,26 @@ test("executeProcess sanitizes stdout stream in real time", async () => {
     });
 
     let capturedOutput = "";
+    let capturedError = "";
     const mockOutStream = {
         write(chunk) {
             capturedOutput += chunk;
             return true;
         },
     };
+    const mockErrStream = {
+        write(chunk) {
+            capturedError += chunk;
+            return true;
+        },
+    };
 
-    // Run a node script that tries to print the secret directly
-    const script = `process.stdout.write("Resolved secret: " + process.env.NODE_AUTH_TOKEN + "\\n");`;
+    // Run a child that sends the resolved value to both output pipes.
+    const script = [
+        `const value = process.env.NODE_AUTH_TOKEN;`,
+        `process.stdout.write("Resolved secret: " + value + "\\n");`,
+        `process.stderr.write("Rejected secret: " + value + "\\n");`,
+    ].join("\n");
     const scriptFile = path.join(tempDir, "test-script.js");
     fs.writeFileSync(scriptFile, script);
 
@@ -110,12 +155,14 @@ test("executeProcess sanitizes stdout stream in real time", async () => {
         envFile,
         command: process.execPath,
         commandArgs: [scriptFile],
-    }, { outStream: mockOutStream });
+    }, { outStream: mockOutStream, errStream: mockErrStream });
 
     assert.equal(result.status, 0);
     // Verified: The raw secret is REDACTED into secretRef:npm-token!
     assert.match(capturedOutput, /Resolved secret: secretRef:npm-token/);
     assert.doesNotMatch(capturedOutput, new RegExp(secretValue));
+    assert.match(capturedError, /Rejected secret: secretRef:npm-token/);
+    assert.doesNotMatch(capturedError, new RegExp(secretValue));
 
     fs.rmSync(tempDir, { recursive: true, force: true });
 });

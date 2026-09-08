@@ -1,19 +1,19 @@
 {
-  "timestamp": "2026-09-07T15:26:05.988Z",
+  "timestamp": "2026-09-08T02:30:21.379Z",
   "nodeVersion": "v22.22.2",
   "platform": "win32",
   "results": [
     {
       "id": "VERIFY-SEC-001",
-      "name": "Stream Chunk-Boundary Redactor",
+      "name": "Adversarial Stdout/Stderr Stream Redactor",
       "target": "cli/vault/exec.mjs -> createStreamSanitizer()",
-      "threat": "Secret split across independent stream stdout chunks bypassing single-chunk regex matching",
-      "input": "Chunk 1: \"Execution started with key: sk-ant-api03-abc\" | Chunk 2: \"def1234567890abcdef123456 and continuing.\"",
-      "method": "Feed split buffer into createStreamSanitizer with sliding boundary buffer",
-      "expected": "Raw token must never appear in stream output; replaced by 'secretRef:anthropic-key'",
-      "observed": "Total output: \"Execution started with key: secretRef:anthropic-key and continuing.\". Raw secret present: false. secretRef present: true.",
+      "threat": "Known or supported secret output bypasses redaction through chunk splits, terminal controls, or values longer than the boundary scan",
+      "input": "Synthetic split value, ANSI-obfuscated value, long private-key block, long credentialed database URL, and oversized provider token",
+      "method": "Feed adversarial chunks through the same sanitizer independently attached to child stdout and stderr",
+      "expected": "No synthetic secret material is emitted; typed secretRef placeholders are emitted instead",
+      "observed": "knownValueRemoved: true. terminalControlBypassRemoved: true. longPrivateKeyRemoved: true. longDatabaseUrlRemoved: true. longProviderTokenRemoved: true.",
       "verdict": "PASS",
-      "boundary": "Only monitors stdout/stderr piped through 'hetzer exec'. Unmanaged terminal processes are outside this interceptor."
+      "boundary": "Only monitors UTF-8 stdout/stderr piped through 'hetzer exec'. Deliberate transformations, direct terminal/device writes, files, network output, and unmanaged processes remain outside this interceptor."
     },
     {
       "id": "VERIFY-SEC-002",
@@ -29,27 +29,27 @@
     },
     {
       "id": "VERIFY-SEC-003",
-      "name": "5-Generation Process Ancestry Guard",
-      "target": "cli/vault/creds.mjs -> detectAgentAncestor() & checkProcessAncestors()",
+      "name": "Process Ancestry Name Heuristic",
+      "target": "cli/vault/creds.mjs -> detectAgentAncestor()",
       "threat": "Autonomous agent invoking 'hetzer creds reveal' through nested subprocess layers to steal plaintext",
       "input": "Agent tree: [cmd.exe -> powershell.exe -> code.exe -> explorer.exe] vs Clean tree: [cmd.exe -> powershell.exe -> bash -> init]",
-      "method": "Inspect ancestor process names up to depth 5 across Windows CimInstance, macOS ps, and Linux /proc",
+      "method": "Feed representative process-name chains into the ancestry name classifier",
       "expected": "Agent ancestors (code, cursor, claude, agy) detected and flagged with isAgent: true; clean trees pass",
       "observed": "Agent chain flagged: true (code.exe). Clean chain flagged: false.",
       "verdict": "PASS",
-      "boundary": "Safeguard heuristic against automated agent calls. Not a cryptographic OS sandboxing boundary against a malicious binary."
+      "boundary": "This protocol tests name classification, not live Windows/macOS/Linux process collection or an OS security boundary."
     },
     {
       "id": "VERIFY-SEC-004",
-      "name": "Git Pre-Commit Leak Prevention & False-Positive Immunity",
-      "target": "cli/core/git-hook.mjs & cli/vault/sniffer.mjs",
+      "name": "Git Scanner Match and Exemption Rules",
+      "target": "cli/core/git-hook.mjs -> scanAddedLines() and cli/vault/sniffer.mjs -> scanText()",
       "threat": "Accidental commit of raw PKCS#8 private keys vs Developer deadlock from false alarms on tool IDs & test fixtures",
       "input": "Multiline private key PEM block, agent tool call ID ('call_...'), and synthetic test file ('*.test.mjs')",
-      "method": "Staged diff multiline chunk scanner with agent ID prefix filter and test file path exemption",
+      "method": "Run grouped multiline additions through the scanner and evaluate documented exemption rules",
       "expected": "Block true private key leak; permit agent tool IDs and test fixture files without error exit 1",
       "observed": "Real leak detected: true. Agent ID false alarm triggered: false. Test files exempted: true.",
       "verdict": "PASS",
-      "boundary": "Evaluates staged diffs in git. Commits made with 'git commit --no-verify' bypass git hooks by design in Git."
+      "boundary": "This protocol does not invoke Git or an installed hook. Git collection is covered by unit tests; --no-verify bypasses hooks by design."
     },
     {
       "id": "VERIFY-PERF-001",
@@ -59,7 +59,7 @@
       "input": "Small 30-byte build log line",
       "method": "Measure write() processing latency with dynamic 128-byte retention buffer and bounded 512-byte window",
       "expected": "Write execution completes in sub-5ms without buffering stalls or CPU spikes",
-      "observed": "Execution latency: 0.01 ms. Output delivered: \"Compiling module auth.mjs...\".",
+      "observed": "Execution latency: 0.048 ms. Output delivered: \"Compiling module auth.mjs...\".",
       "verdict": "PASS",
       "boundary": "Streams with secrets exceeding 128 chars scale buffer to 2x secret length to ensure boundary integrity."
     },
@@ -69,9 +69,9 @@
       "target": "cli/vault/canary.mjs -> triggerCanaryAlert()",
       "threat": "Automated agent prompt injection or scraping attempting to resolve decoy honey-tokens",
       "input": "Resolving or revealing credential with ID 'canary-token'",
-      "method": "Canary pattern detection, incident logging, audit recording, and throwing structured error",
+      "method": "Canary pattern detection, isolated incident logging, and structured error assertion",
       "expected": "Throws ERR_CANARY_TRIPWIRE_TRIGGERED with explicit exitCode 43; guarded operation aborted",
-      "observed": "Tripwire triggered: true. Error code: \"ERR_CANARY_TRIPWIRE_TRIGGERED\". Exit code: 43.",
+      "observed": "Tripwire triggered: true. Incident logged: true. Error code: \"ERR_CANARY_TRIPWIRE_TRIGGERED\". Exit code: 43.",
       "verdict": "PASS",
       "boundary": "Monitors guarded reference resolution and vault reveal. Arbitrary reads of OS disk outside Hetzer are not monitored."
     }

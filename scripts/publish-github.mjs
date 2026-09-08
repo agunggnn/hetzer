@@ -5,10 +5,29 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { revealCredential, setCredential, promptSecret } from "../cli/vault/creds.mjs";
+import { promptSecret, setCredential } from "../cli/vault/creds.mjs";
+import { parseEnv } from "../cli/core/env.mjs";
+import { redactExactValues, runNpmWithAuth } from "../cli/core/npm-auth.mjs";
+import { resolveSecretEnvironment } from "../cli/vault/secret-env.mjs";
 
 const root = path.resolve(process.env.HETZER_ROOT || process.cwd());
 const envFile = path.resolve(process.env.HETZER_ENV_FILE || path.join(root, ".env"));
+const githubRegistry = "https://npm.pkg.github.com/";
+
+function resolveConfiguredToken() {
+    const fileValues = parseEnv(fs.readFileSync(envFile, "utf8"));
+    const resolved = resolveSecretEnvironment({
+        root,
+        envFile,
+        baseEnv: process.env,
+        allowNames: ["github-token"],
+        strict: true,
+    });
+    for (const [name, reference] of Object.entries(fileValues)) {
+        if (reference === "secretRef:github-token" && typeof resolved[name] === "string") return resolved[name];
+    }
+    return "";
+}
 
 async function main() {
     process.stdout.write("================================================================================\n");
@@ -24,10 +43,9 @@ async function main() {
     let githubToken = process.env.GITHUB_TOKEN || process.env.NODE_AUTH_TOKEN || "";
     if (!githubToken && fs.existsSync(envFile)) {
         try {
-            const revealed = revealCredential({ root, envFile, id: "github-token" });
-            githubToken = revealed.secret;
+            githubToken = resolveConfiguredToken();
         } catch {
-            // Token not in vault yet
+            // Credential is not configured or cannot be resolved; prompt below.
         }
     }
 
@@ -52,19 +70,16 @@ async function main() {
 
     // 2. Validate GitHub Packages Authentication
     process.stdout.write("[i] Verifying authentication with GitHub Packages (https://npm.pkg.github.com/)...\n");
-    const whoami = spawnSync("npm", [
-        "whoami",
-        "--registry=https://npm.pkg.github.com/",
-        `--//npm.pkg.github.com/:_authToken=${githubToken}`,
-    ], {
+    const whoami = runNpmWithAuth({
+        args: ["whoami", "--registry", githubRegistry],
+        registry: githubRegistry,
+        token: githubToken,
         cwd: root,
-        encoding: "utf8",
-        windowsHide: true,
-        shell: process.platform === "win32",
+        baseEnv: process.env,
     });
 
     if (whoami.status !== 0) {
-        const err = (whoami.stderr || whoami.stdout || "").trim();
+        const err = redactExactValues((whoami.stderr || whoami.stdout || "").trim(), [githubToken]);
         throw new Error(`GitHub Packages authentication failed (Status ${whoami.status}): ${err}\nEnsure your GitHub PAT has 'write:packages' and 'read:packages' permissions.`);
     }
 
@@ -99,20 +114,15 @@ async function main() {
 
     // 5. Publish to GitHub Packages
     process.stdout.write(`[i] Publishing ${pkgJson.name}@${pkgJson.version} to https://npm.pkg.github.com/ ...\n`);
-    const publish = spawnSync("npm", [
-        "publish",
-        "--registry=https://npm.pkg.github.com/",
-        `--//npm.pkg.github.com/:_authToken=${githubToken}`,
-    ], {
+    const publish = runNpmWithAuth({
+        args: ["publish", "--registry", githubRegistry],
+        registry: githubRegistry,
+        token: githubToken,
         cwd: root,
-        stdio: "inherit",
-        windowsHide: true,
-        shell: process.platform === "win32",
-        env: {
-            ...process.env,
-            NODE_AUTH_TOKEN: githubToken,
-        },
+        baseEnv: process.env,
     });
+    if (publish.stdout) process.stdout.write(redactExactValues(publish.stdout, [githubToken]));
+    if (publish.stderr) process.stderr.write(redactExactValues(publish.stderr, [githubToken]));
 
     if (publish.status !== 0) {
         throw new Error(`npm publish failed with exit code ${publish.status}`);

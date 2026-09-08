@@ -44,11 +44,11 @@ Specific matches take priority over overlapping generic entropy matches. These h
 
 Common environment-reflection command strings are rejected before spawn. This is a misuse safeguard, not a sandbox: equivalent code, native binaries, debuggers, encodings, and external side effects remain possible inside an authorized child.
 
-Stdout and stderr pass through independent UTF-8 rolling sanitizers. They retain up to the scanner's 16 KiB match window, detect known injected values even when writes split them across chunks, and flush sanitized output at process close. This adds bounded output delay and memory. Transformed or unsupported secrets may evade scanning.
+Guarded child and Docker Compose stdout/stderr pass through independent UTF-8 rolling sanitizers. Each retains `max(128, longest injected secret × 2)` characters and scans a bounded 512-character lexical window. Before emission, a streaming filter removes terminal control/format characters and suppresses supported private-key blocks, credentialed database URLs, and provider-token candidates without waiting for a fixed 16 KiB window. Known injected values are detected even when writes split them across chunks. Deliberately transformed values, unsupported formats, non-UTF-8 output, and output written directly to a terminal device, file, or network remain outside this filter.
 
 ## Credential reveal and canaries
 
-The reveal CLI requires an interactive TTY, rejects known agent environment markers, and inspects up to five parent processes on Windows, macOS, and Linux. `--confirm-ui` adds a native modal prompt. These are heuristics and user-presence safeguards rather than authentication or OS isolation.
+The reveal CLI requires an interactive TTY, rejects known agent environment markers, inspects up to five parent processes on Windows, macOS, and Linux, and requires a native modal confirmation. These are heuristics and user-presence safeguards rather than authentication or OS isolation.
 
 Canary IDs are checked by guarded vault reveal and reference-resolution paths. A hit logs an incident, attempts an SQLite audit record, throws `ERR_CANARY_TRIPWIRE_TRIGGERED`, and maps to CLI exit code 43. Arbitrary reads of vault, key, environment, process memory, or incident files are not monitored by the canary.
 

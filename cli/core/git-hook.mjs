@@ -199,8 +199,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             process.stdout.write("  HETZER - GIT PRE-COMMIT HOOK INSTALLER\n");
             process.stdout.write("================================================================================\n");
             process.stdout.write(`  [v] Hook successfully installed at: ${res.path}\n`);
-            process.stdout.write("  [v] All 'git commit' calls are now protected by the Hetzer Secret Sniffer.\n");
-            process.stdout.write("      Any leaked token, password, or .env file will be blocked automatically.\n");
+            process.stdout.write("  [v] Git commits now run the Hetzer Secret Sniffer hook.\n");
+            process.stdout.write("      Supported token patterns and staged .env files are blocked when the hook runs.\n");
             process.stdout.write("================================================================================\n");
             process.exit(0);
         } catch (err) {
@@ -235,7 +235,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
                 }
             }
             process.stderr.write("\n  HOW TO FIX:\n");
-            process.stderr.write("  1. Save value to Vault: hetzer creds set <id> <value>\n");
+            process.stderr.write("  1. Save value to Vault: hetzer creds set <id>\n");
             process.stderr.write("  2. Replace token in your code with: secretRef:<id>\n");
             process.stderr.write("  3. If .env was staged by mistake, run: git rm --cached .env\n");
             process.stderr.write("================================================================================\n\n");

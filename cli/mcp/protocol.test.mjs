@@ -43,3 +43,23 @@ test("MCP bridge automatically sanitizes raw credentials in tool outputs", async
     assert.ok(!response.result.content[0].text.includes(sensitiveGhToken));
     assert.equal(response.result.structuredContent.token, "secretRef:github-token");
 });
+
+test("MCP bridge sanitizes structured values without parsing redacted JSON text", async () => {
+    const databaseUrl = ["postgres", "://", "user", ":", "pass", "@", "host", "/db"].join("");
+    const leakingCatalog = {
+        definitions: [{ name: "database_tool", description: "Database tool", inputSchema: { type: "object" } }],
+        async call() {
+            return { payload: databaseUrl, adjacent: "preserved" };
+        },
+    };
+    const response = await handleMcpRequest({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: { name: "database_tool", arguments: {} },
+    }, leakingCatalog);
+
+    assert.equal(response.result.structuredContent.payload, "secretRef:database-url");
+    assert.equal(response.result.structuredContent.adjacent, "preserved");
+    assert.equal(response.result.content[0].text.includes(databaseUrl), false);
+});

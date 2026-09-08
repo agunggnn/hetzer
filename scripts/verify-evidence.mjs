@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Standardized Verification Evidence Runner for Hetzer
- * Format aligns with NIST SP 800-115 / OWASP ASVS testing protocol.
+ * Repository Verification Evidence Runner for Hetzer.
  * Generates an empirical, reproducible test evidence report.
  */
 
@@ -16,9 +15,9 @@ import { fileURLToPath } from "node:url";
 
 import { createStreamSanitizer, sanitizeStreamOutput } from "../cli/vault/exec.mjs";
 import { resolveSecretEnvironment } from "../cli/vault/secret-env.mjs";
-import { checkProcessAncestors, detectAgentAncestor } from "../cli/vault/creds.mjs";
+import { detectAgentAncestor } from "../cli/vault/creds.mjs";
 import { scanText, redactAndVault } from "../cli/vault/sniffer.mjs";
-import { scanAddedLines, checkStagedDiff } from "../cli/core/git-hook.mjs";
+import { scanAddedLines } from "../cli/core/git-hook.mjs";
 import { isCanaryCredential, triggerCanaryAlert } from "../cli/vault/canary.mjs";
 import { Grimoire } from "../cli/vault/hetzer-vault.mjs";
 
@@ -45,34 +44,47 @@ function recordTest({ id, name, target, threat, input, method, expected, observe
 }
 
 // -----------------------------------------------------------------------------
-// Test 1: Stream Chunk Boundary Redaction
+// Test 1: Adversarial stdout/stderr stream redaction
 // -----------------------------------------------------------------------------
 {
-    const secret = ["sk-ant-", "api03-abcdef1234567890abcdef123456"].join("");
-    const chunk1 = ["Execution started with key: ", "sk-ant-", "api03-abc"].join("");
-    const chunk2 = "def1234567890abcdef123456 and continuing.";
-    
+    const secret = ["synthetic", "-", "guard", "-", "value", "-", "987654321"].join("");
+    const ansiObfuscated = secret.split("").join("\u001b[0m");
+    const privateBody = "A".repeat(900);
+    const privateKey = ["-----BEGIN ", "PRIVATE KEY-----\n", privateBody, "\n-----END ", "PRIVATE KEY-----"].join("");
+    const databasePassword = "B".repeat(700);
+    const databaseUrl = ["postgres://user:", databasePassword, "@localhost/app"].join("");
+    const providerBody = "C".repeat(700);
+    const providerToken = ["gh", "p_", providerBody].join("");
     const sanitizer = createStreamSanitizer([{ id: "anthropic-key", secret }]);
-    const out1 = sanitizer.write(Buffer.from(chunk1));
-    const out2 = sanitizer.write(Buffer.from(chunk2));
-    const finalOut = sanitizer.end();
-    const fullOut = out1 + out2 + finalOut;
+    const fullOut = [
+        sanitizer.write(Buffer.from(`stdout=${secret.slice(0, 11)}`)),
+        sanitizer.write(Buffer.from(`${secret.slice(11)}\nstderr-equivalent=${ansiObfuscated}\n`)),
+        sanitizer.write(Buffer.from(privateKey.slice(0, 300))),
+        sanitizer.write(Buffer.from(`${privateKey.slice(300)}\n${databaseUrl.slice(0, 350)}`)),
+        sanitizer.write(Buffer.from(`${databaseUrl.slice(350)}\n${providerToken}`)),
+        sanitizer.end(),
+    ].join("");
 
-    const leaked = fullOut.includes(secret);
-    const hasReference = fullOut.includes("secretRef:anthropic-key");
-    const pass = !leaked && hasReference;
+    const checks = {
+        knownValueRemoved: !fullOut.includes(secret),
+        terminalControlBypassRemoved: !fullOut.includes(ansiObfuscated) && fullOut.includes("secretRef:anthropic-key"),
+        longPrivateKeyRemoved: !fullOut.includes(privateBody.slice(0, 200)) && fullOut.includes("secretRef:private-key"),
+        longDatabaseUrlRemoved: !fullOut.includes(databasePassword.slice(0, 200)) && fullOut.includes("secretRef:database-url"),
+        longProviderTokenRemoved: !fullOut.includes(providerBody.slice(0, 200)) && fullOut.includes("secretRef:github-token"),
+    };
+    const pass = Object.values(checks).every(Boolean);
 
     recordTest({
         id: "VERIFY-SEC-001",
-        name: "Stream Chunk-Boundary Redactor",
+        name: "Adversarial Stdout/Stderr Stream Redactor",
         target: "cli/vault/exec.mjs -> createStreamSanitizer()",
-        threat: "Secret split across independent stream stdout chunks bypassing single-chunk regex matching",
-        input: `Chunk 1: "${chunk1}" | Chunk 2: "${chunk2}"`,
-        method: "Feed split buffer into createStreamSanitizer with sliding boundary buffer",
-        expected: "Raw token must never appear in stream output; replaced by 'secretRef:anthropic-key'",
-        observed: `Total output: "${fullOut.trim()}". Raw secret present: ${leaked}. secretRef present: ${hasReference}.`,
+        threat: "Known or supported secret output bypasses redaction through chunk splits, terminal controls, or values longer than the boundary scan",
+        input: "Synthetic split value, ANSI-obfuscated value, long private-key block, long credentialed database URL, and oversized provider token",
+        method: "Feed adversarial chunks through the same sanitizer independently attached to child stdout and stderr",
+        expected: "No synthetic secret material is emitted; typed secretRef placeholders are emitted instead",
+        observed: Object.entries(checks).map(([name, value]) => `${name}: ${value}`).join(". ") + ".",
         pass,
-        boundary: "Only monitors stdout/stderr piped through 'hetzer exec'. Unmanaged terminal processes are outside this interceptor.",
+        boundary: "Only monitors UTF-8 stdout/stderr piped through 'hetzer exec'. Deliberate transformations, direct terminal/device writes, files, network output, and unmanaged processes remain outside this interceptor.",
     });
 }
 
@@ -163,15 +175,15 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
 
     recordTest({
         id: "VERIFY-SEC-003",
-        name: "5-Generation Process Ancestry Guard",
-        target: "cli/vault/creds.mjs -> detectAgentAncestor() & checkProcessAncestors()",
+        name: "Process Ancestry Name Heuristic",
+        target: "cli/vault/creds.mjs -> detectAgentAncestor()",
         threat: "Autonomous agent invoking 'hetzer creds reveal' through nested subprocess layers to steal plaintext",
         input: `Agent tree: [${mockAncestorChainWithAgent.join(" -> ")}] vs Clean tree: [${mockAncestorChainClean.join(" -> ")}]`,
-        method: "Inspect ancestor process names up to depth 5 across Windows CimInstance, macOS ps, and Linux /proc",
+        method: "Feed representative process-name chains into the ancestry name classifier",
         expected: "Agent ancestors (code, cursor, claude, agy) detected and flagged with isAgent: true; clean trees pass",
         observed: `Agent chain flagged: ${agentResult.isAgent} (${agentResult.processName || "none"}). Clean chain flagged: ${cleanResult.isAgent}.`,
         pass,
-        boundary: "Safeguard heuristic against automated agent calls. Not a cryptographic OS sandboxing boundary against a malicious binary.",
+        boundary: "This protocol tests name classification, not live Windows/macOS/Linux process collection or an OS security boundary.",
     });
 }
 
@@ -197,15 +209,15 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
 
     recordTest({
         id: "VERIFY-SEC-004",
-        name: "Git Pre-Commit Leak Prevention & False-Positive Immunity",
-        target: "cli/core/git-hook.mjs & cli/vault/sniffer.mjs",
+        name: "Git Scanner Match and Exemption Rules",
+        target: "cli/core/git-hook.mjs -> scanAddedLines() and cli/vault/sniffer.mjs -> scanText()",
         threat: "Accidental commit of raw PKCS#8 private keys vs Developer deadlock from false alarms on tool IDs & test fixtures",
         input: "Multiline private key PEM block, agent tool call ID ('call_...'), and synthetic test file ('*.test.mjs')",
-        method: "Staged diff multiline chunk scanner with agent ID prefix filter and test file path exemption",
+        method: "Run grouped multiline additions through the scanner and evaluate documented exemption rules",
         expected: "Block true private key leak; permit agent tool IDs and test fixture files without error exit 1",
         observed: `Real leak detected: ${caughtPrivateKey}. Agent ID false alarm triggered: ${falsePositive}. Test files exempted: ${testFileExempted}.`,
         pass,
-        boundary: "Evaluates staged diffs in git. Commits made with 'git commit --no-verify' bypass git hooks by design in Git.",
+        boundary: "This protocol does not invoke Git or an installed hook. Git collection is covered by unit tests; --no-verify bypasses hooks by design.",
     });
 }
 
@@ -218,10 +230,9 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
     
     const t0 = performance.now();
     const emitted = sanitizer.write(smallChunk);
+    const finalChunk = sanitizer.end();
     const t1 = performance.now();
     const latencyMs = Number((t1 - t0).toFixed(3));
-
-    const finalChunk = sanitizer.end();
     const fullEmitted = emitted + finalChunk;
     const pass = latencyMs < 5.0 && fullEmitted.includes("Compiling module auth.mjs");
 
@@ -246,18 +257,23 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
     let triggered = false;
     let exitCode = 0;
     let errorCode = "";
+    let incidentLogged = false;
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-verify-canary-"));
 
     try {
         if (isCanaryCredential("canary-token")) {
-            triggerCanaryAlert({ id: "canary-token", actor: "test-verifier", action: "vault.reveal" });
+            triggerCanaryAlert({ id: "canary-token", actor: "test-verifier", action: "vault.reveal", root: tempDir });
         }
     } catch (err) {
         triggered = true;
         errorCode = err.code || "";
         exitCode = err.exitCode || 0;
+        incidentLogged = fs.existsSync(path.join(tempDir, "data", "hetzer-incidents.log"));
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
     }
 
-    const pass = triggered && errorCode === "ERR_CANARY_TRIPWIRE_TRIGGERED" && exitCode === 43;
+    const pass = triggered && incidentLogged && errorCode === "ERR_CANARY_TRIPWIRE_TRIGGERED" && exitCode === 43;
 
     recordTest({
         id: "VERIFY-SEC-005",
@@ -265,9 +281,9 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
         target: "cli/vault/canary.mjs -> triggerCanaryAlert()",
         threat: "Automated agent prompt injection or scraping attempting to resolve decoy honey-tokens",
         input: "Resolving or revealing credential with ID 'canary-token'",
-        method: "Canary pattern detection, incident logging, audit recording, and throwing structured error",
+        method: "Canary pattern detection, isolated incident logging, and structured error assertion",
         expected: "Throws ERR_CANARY_TRIPWIRE_TRIGGERED with explicit exitCode 43; guarded operation aborted",
-        observed: `Tripwire triggered: ${triggered}. Error code: "${errorCode}". Exit code: ${exitCode}.`,
+        observed: `Tripwire triggered: ${triggered}. Incident logged: ${incidentLogged}. Error code: "${errorCode}". Exit code: ${exitCode}.`,
         pass,
         boundary: "Monitors guarded reference resolution and vault reveal. Arbitrary reads of OS disk outside Hetzer are not monitored.",
     });
@@ -275,8 +291,8 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
 
 // Output standardized results
 console.log("================================================================================");
-console.log("  HETZER STANDARDIZED EMPIRICAL VERIFICATION REPORT");
-console.log("  Protocol: NIST SP 800-115 / OWASP ASVS Equivalent Verification Standards");
+console.log("  HETZER REPOSITORY EMPIRICAL VERIFICATION REPORT");
+console.log("  Protocol: Project regression checks with explicit test boundaries");
 console.log(`  Executed: ${report.timestamp} | Node: ${report.nodeVersion} | OS: ${report.platform}`);
 console.log("================================================================================\n");
 

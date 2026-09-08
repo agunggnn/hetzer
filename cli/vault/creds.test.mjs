@@ -5,7 +5,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 
-import { assertInteractiveHumanSession, checkProcessAncestors, detectAgentAncestor, promptNativeOsConfirmation, listCredentials, promptSecret, revealCredential, setCredential } from "./creds.mjs";
+import { assertInteractiveHumanSession, authorizeCredentialReveal, checkProcessAncestors, detectAgentAncestor, promptNativeOsConfirmation, listCredentials, promptSecret, revealCredential, setCredential } from "./creds.mjs";
 import { Grimoire, isolateMasterKey, resolveMasterKey } from "./hetzer-vault.mjs";
 
 test("creds module can list, set, and reveal credentials in Grimoire Vault", () => {
@@ -100,6 +100,37 @@ test("promptNativeOsConfirmation returns the native dialog result without an env
     const deny = () => ({ status: 1 });
     assert.equal(promptNativeOsConfirmation("test-id", { platform: "linux", run: allow }), true);
     assert.equal(promptNativeOsConfirmation("test-id", { platform: "linux", run: deny }), false);
+});
+
+test("macOS native confirmation returns success only for the Reveal button", () => {
+    let appleScript = "";
+    const run = (_command, args) => {
+        appleScript = args.at(-1);
+        return { status: 0 };
+    };
+    assert.equal(promptNativeOsConfirmation("test-id", { platform: "darwin", run }), true);
+    assert.match(appleScript, /button returned of response is not "Reveal" then error number 1/);
+    assert.match(appleScript, /default button "Deny"/);
+});
+
+test("authorizeCredentialReveal always requires native confirmation after TTY checks", () => {
+    let confirmations = 0;
+    const options = {
+        input: { isTTY: true },
+        env: {},
+        ancestor: { isAgent: false },
+        confirm() {
+            confirmations += 1;
+            return true;
+        },
+    };
+    assert.doesNotThrow(() => authorizeCredentialReveal("test-id", options));
+    assert.equal(confirmations, 1);
+
+    assert.throws(() => authorizeCredentialReveal("test-id", {
+        ...options,
+        confirm: () => false,
+    }), /Native OS confirmation/);
 });
 
 test("resolveMasterKey and isolateMasterKey manage key isolation lifecycle", () => {

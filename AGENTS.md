@@ -1,7 +1,7 @@
 # Hetzer Contributor & Agent Guidance
 
-> **Current Version**: v0.4.0 (Stable & Empirically Verified)  
-> **Last Verification**: 2026-09-07 — All 110 tests pass (`npm test`), full check suite clean (`npm run check`), and 6 NIST/OWASP empirical protocols verified (`npm run verify`).
+> **Current Package Version**: v0.4.0
+> **Verification**: Run `npm run check`, `npm test`, and `npm run verify` against the current tree; do not rely on a cached test count.
 
 ---
 
@@ -10,7 +10,8 @@
 Any AI model or developer working on this codebase MUST respect the following verified architectural realities:
 
 1. **Stream Redactor & Output Buffer (`cli/vault/exec.mjs`)**:
-   - Uses a dynamic sliding buffer `Math.max(128, longestSecret * 2)` with a bounded 512-byte window scan.
+   - Uses a dynamic sliding buffer `Math.max(128, longestSecret * 2)` with a bounded 512-character window scan.
+   - Normalizes terminal control characters and incrementally suppresses supported long private-key, credentialed database URL, and provider-token output on both stdout and stderr.
    - **DO NOT** inflate this retention buffer (e.g. to 16 KB); large buffers cause terminal freeze and withhold real-time stdout.
 2. **Strict Environment Scoping (`cli/vault/secret-env.mjs`)**:
    - The `--strict` flag isolates child processes using `strictBaseEnvironment`. All unapproved parent env tokens and `HETZER_GRIMOIRE_KEY` are stripped; only explicitly allowed credentials via `--allow` are resolved.
@@ -18,10 +19,10 @@ Any AI model or developer working on this codebase MUST respect the following ve
    - Scans multiline staged additions for private keys, database URLs, and raw tokens.
    - Test files (`*.test.mjs`, `verify-evidence`) and agent lifecycle IDs (`call_...`, `tool_...`, `chunk_...`, `session_...`) are strictly exempted to prevent false-positive `exit 1` commit deadlocks.
 4. **Process Ancestry & Reveal Guard (`cli/vault/creds.mjs`)**:
-   - Inspects 5 process generations across Windows (`Win32_Process`), Linux (`/proc`), and macOS (`ps`).
+   - Inspects 5 process generations across Windows (`Win32_Process`) and Unix-like platforms (`ps`).
    - Non-interactive bypasses are forbidden. Native OS dialog confirmation is required for human reveals.
 5. **Canary Honey-Token Tripwire (`cli/vault/canary.mjs`)**:
-   - Tripping decoy tokens (`canary-token`, `canary-*`, `decoy-*`) logs an incident, records an SQLite audit entry, and aborts with `exitCode 43` (`ERR_CANARY_TRIPWIRE_TRIGGERED`).
+   - Tripping decoy tokens (`canary-token`, `canary-*`, `decoy-*`) logs an incident, attempts an SQLite audit entry when a vault exists, and aborts with `exitCode 43` (`ERR_CANARY_TRIPWIRE_TRIGGERED`).
    - Canaries only protect guarded resolution/reveal paths, NOT arbitrary OS disk access.
 6. **No Unverified Marketing / False Compliance Claims**:
    - **DO NOT** claim PCI-DSS 6.4.3 compliance (it governs payment page scripts, not pre-commit hooks).
@@ -46,8 +47,8 @@ Any AI model or developer working on this codebase MUST respect the following ve
 ## 🛠️ Verification & Contributor Checklist
 
 Before committing or concluding any turn:
-1. `npm run check` — Must pass (validates syntax of all 65 source files + forbidden token leak checks).
-2. `npm test` — Must pass 100% (110 tests: 109 passing, 1 skipped).
+1. `npm run check` — Must pass (validates source syntax, tests, and forbidden token leak checks).
+2. `npm test` — Must pass; use the current command output rather than a cached test count.
 3. `npm run verify` — Must pass all 6 empirical protocols (`docs/verification-evidence.json`).
 4. Pin container images by multi-platform digest and document their upstream source.
 5. Keep Linux, macOS, and Windows behavior equivalent; prefer Node APIs over shell-specific code.

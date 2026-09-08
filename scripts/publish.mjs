@@ -5,11 +5,31 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { listCredentials, revealCredential, setCredential, promptSecret } from "../cli/vault/creds.mjs";
+import { promptSecret, setCredential } from "../cli/vault/creds.mjs";
+import { resolveSecretEnvironment } from "../cli/vault/secret-env.mjs";
+import { redactExactValues, runNpmWithAuth } from "../cli/core/npm-auth.mjs";
 import { parseEnv } from "../cli/core/env.mjs";
 
 const root = path.resolve(process.env.HETZER_ROOT || process.cwd());
 const envFile = path.resolve(process.env.HETZER_ENV_FILE || path.join(root, ".env"));
+const npmRegistry = "https://registry.npmjs.org/";
+
+function resolveConfiguredToken(ids) {
+    const fileValues = parseEnv(fs.readFileSync(envFile, "utf8"));
+    const resolved = resolveSecretEnvironment({
+        root,
+        envFile,
+        baseEnv: process.env,
+        allowNames: ids,
+        strict: true,
+    });
+    for (const [name, reference] of Object.entries(fileValues)) {
+        if (!String(reference).startsWith("secretRef:")) continue;
+        const id = String(reference).slice("secretRef:".length);
+        if (ids.includes(id) && typeof resolved[name] === "string") return resolved[name];
+    }
+    return "";
+}
 
 async function main() {
     process.stdout.write("================================================================================\n");
@@ -21,17 +41,11 @@ async function main() {
     }
 
     // 1. Resolve or prompt for NPM Token
-    let npmToken = "";
+    let npmToken = process.env.NODE_AUTH_TOKEN || "";
     try {
-        const revealed = revealCredential({ root, envFile, id: "npm-token" });
-        npmToken = revealed.secret;
+        if (!npmToken) npmToken = resolveConfiguredToken(["npm-token", "npm-auth-token"]);
     } catch {
-        try {
-            const revealed = revealCredential({ root, envFile, id: "npm-auth-token" });
-            npmToken = revealed.secret;
-        } catch {
-            // Token not in vault yet
-        }
+        // Credential is not configured or cannot be resolved; prompt below.
     }
 
     if (!npmToken) {
@@ -52,19 +66,16 @@ async function main() {
 
     // 2. Validate NPM Authentication
     process.stdout.write("[i] Verifying NPM registry authentication (https://registry.npmjs.org/)...\n");
-    const whoami = spawnSync("npm", [
-        "whoami",
-        "--registry=https://registry.npmjs.org/",
-        `--//registry.npmjs.org/:_authToken=${npmToken}`,
-    ], {
+    const whoami = runNpmWithAuth({
+        args: ["whoami", "--registry", npmRegistry],
+        registry: npmRegistry,
+        token: npmToken,
         cwd: root,
-        encoding: "utf8",
-        windowsHide: true,
-        shell: process.platform === "win32",
+        baseEnv: process.env,
     });
 
     if (whoami.status !== 0) {
-        const err = (whoami.stderr || whoami.stdout || "").trim();
+        const err = redactExactValues((whoami.stderr || whoami.stdout || "").trim(), [npmToken]);
         throw new Error(`NPM authentication failed (Status ${whoami.status}): ${err}\nEnsure your npm token is valid with Read & Publish permissions.`);
     }
 
@@ -99,48 +110,27 @@ async function main() {
     process.stdout.write(`[v] Package ready: ${pkgJson.name} (v${pkgJson.version})\n\n`);
 
     // 5. Publish to NPM
-    let otp = process.env.NPM_OTP || "";
-    const otpArg = process.argv.find((arg) => arg.startsWith("--otp"));
-    if (otpArg) {
-        if (otpArg.includes("=")) {
-            otp = otpArg.split("=")[1];
-        } else {
-            const idx = process.argv.indexOf(otpArg);
-            if (process.argv[idx + 1] && !process.argv[idx + 1].startsWith("-")) {
-                otp = process.argv[idx + 1];
-            }
-        }
-    }
+    const otp = process.env.NPM_OTP || "";
 
     process.stdout.write(`[i] Publishing ${pkgJson.name}@${pkgJson.version} to npmjs.org (access: public)...\n`);
-    const publishArgs = [
-        "publish",
-        "--access", "public",
-        `--//registry.npmjs.org/:_authToken=${npmToken}`,
-    ];
-    if (otp) {
-        publishArgs.push(`--otp=${otp}`);
-    }
-
-    const publish = spawnSync("npm", publishArgs, {
+    const publish = runNpmWithAuth({
+        args: ["publish", "--access", "public", "--registry", npmRegistry],
+        registry: npmRegistry,
+        token: npmToken,
+        otp,
         cwd: root,
-        stdio: "inherit",
-        windowsHide: true,
-        shell: process.platform === "win32",
-        env: {
-            ...process.env,
-            NODE_AUTH_TOKEN: npmToken,
-        },
+        baseEnv: process.env,
     });
+    if (publish.stdout) process.stdout.write(redactExactValues(publish.stdout, [npmToken, otp]));
+    if (publish.stderr) process.stderr.write(redactExactValues(publish.stderr, [npmToken, otp]));
 
     if (publish.status !== 0) {
         process.stderr.write("\n[!] If you received an E403 2FA error from npm:\n");
         process.stderr.write("    1. Create a Granular Access Token at https://www.npmjs.com/settings/~/tokens\n");
         process.stderr.write("       -> Select 'Read and write' on packages\n");
         process.stderr.write("       -> Check 'Bypass two-factor authentication (2FA)' for automation\n");
-        process.stderr.write("       -> Save to vault: hetzer creds set npm-token <token>\n");
-        process.stderr.write("    2. Or provide your authenticator OTP directly:\n");
-        process.stderr.write("       npm run publish-pkg -- --otp=123456\n\n");
+        process.stderr.write("       -> Save to vault: hetzer creds set npm-token\n");
+        process.stderr.write("    2. If npm requires an OTP, supply it through the NPM_OTP environment variable.\n\n");
         throw new Error(`npm publish failed with exit code ${publish.status}`);
     }
 

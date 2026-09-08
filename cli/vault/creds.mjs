@@ -234,7 +234,7 @@ export function promptNativeOsConfirmation(id, { timeoutMs = 20000, platform = p
             });
             return res.status === 0;
         } else if (platform === "darwin") {
-            const osa = `display dialog "Hetzer Vault Guard: Reveal raw secret '${displayId}' to terminal context?" with title "Hetzer Credential Guard" buttons {"Deny", "Reveal"} default button "Deny" with icon caution`;
+            const osa = `set response to display dialog "Hetzer Vault Guard: Reveal raw secret '${displayId}' to terminal context?" with title "Hetzer Credential Guard" buttons {"Deny", "Reveal"} default button "Deny" with icon caution; if button returned of response is not "Reveal" then error number 1`;
             const res = run("osascript", ["-e", osa], { timeout: timeoutMs, stdio: ["ignore", "ignore", "ignore"] });
             return res.status === 0;
         } else {
@@ -280,6 +280,18 @@ export function assertInteractiveHumanSession({ input = process.stdin, env = pro
             `Autonomous agents running in YOLO/unrestricted mode cannot extract raw secrets into context.\n` +
             `To execute commands with injected secrets safely, use 'hetzer exec -- <command>'.`
         );
+    }
+}
+
+export function authorizeCredentialReveal(id, {
+    input = process.stdin,
+    env = process.env,
+    ancestor,
+    confirm = promptNativeOsConfirmation,
+} = {}) {
+    assertInteractiveHumanSession({ input, env, ancestor });
+    if (!confirm(id)) {
+        throw new Error(`Access Denied: Native OS confirmation for '${id}' was rejected, unavailable, or timed out.`);
     }
 }
 
@@ -470,18 +482,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             process.stdout.write("--------------------------------------------------------------------------------\n");
             process.stdout.write("Commands:\n");
             process.stdout.write("  - Reveal secret value: hetzer creds reveal <id>\n");
-            process.stdout.write("  - Save/update value  : hetzer creds set <id> [value] (prompts if omitted)\n");
+            process.stdout.write("  - Save/update value  : hetzer creds set <id> (masked prompt)\n");
             process.stdout.write("================================================================================\n");
         } else if (action === "reveal" || action === "get") {
             const id = args[1];
-            if (!id) throw new Error("Usage: hetzer creds reveal <id> [--confirm-ui]");
-            assertInteractiveHumanSession();
-            if (process.env.HETZER_REQUIRE_OOB_CONFIRM === "1" || args.includes("--confirm-ui")) {
-                const confirmed = promptNativeOsConfirmation(id);
-                if (!confirmed) {
-                    throw new Error(`Access Denied: Out-of-Band (OOB) OS confirmation for '${id}' was rejected or timed out.`);
-                }
-            }
+            if (!id) throw new Error("Usage: hetzer creds reveal <id>");
+            authorizeCredentialReveal(id);
             const cred = revealCredential({ root, envFile, id });
             process.stdout.write("================================================================================\n");
             process.stdout.write(`  CREDENTIAL DETAIL: ${cred.id}\n`);
@@ -496,11 +502,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             process.stdout.write("================================================================================\n");
         } else if (action === "set") {
             const id = args[1];
-            let secret = args[2];
-            if (!id) throw new Error("Usage: hetzer creds set <id> [value]");
-            if (!secret) {
-                secret = await promptSecret(`Enter secret value for '${id}': `);
-            }
+            if (!id) throw new Error("Usage: hetzer creds set <id>");
+            if (args[2]) throw new Error("Do not pass a secret as a command-line argument. Run 'hetzer creds set <id>' and use the masked prompt.");
+            const secret = await promptSecret(`Enter secret value for '${id}': `);
             if (!secret) throw new Error("Secret value is required.");
             const result = setCredential({ root, envFile, id, secret });
             process.stdout.write("================================================================================\n");
