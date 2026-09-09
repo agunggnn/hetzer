@@ -9,6 +9,16 @@ import { Grimoire, resolveVaultPath } from "./hetzer-vault.mjs";
 import { setCredential } from "./creds.mjs";
 
 export const CANARY_DEFAULT_ID = "canary-token";
+export const CANARY_TOKEN_PATTERN = /\bcanary_trap_[0-9a-f]{16,64}\b/i;
+
+export function isCanaryToken(text) {
+    if (typeof text !== "string") return false;
+    return CANARY_TOKEN_PATTERN.test(text);
+}
+
+export function generateCanaryToken() {
+    return `canary_trap_${crypto.randomBytes(16).toString("hex")}`;
+}
 
 export function isCanaryCredential(id) {
     const norm = String(id || "").toLowerCase();
@@ -76,7 +86,7 @@ export function triggerCanaryAlert({
 
 export function setupCanaryTrap({ root = process.cwd(), envFile, id = CANARY_DEFAULT_ID } = {}) {
     const targetEnv = envFile || path.join(root, ".env");
-    const decoyToken = `canary_trap_${crypto.randomBytes(16).toString("hex")}`;
+    const decoyToken = generateCanaryToken();
     
     setCredential({
         root,

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { parseEnv } from "../core/env.mjs";
-import { isCanaryCredential, triggerCanaryAlert } from "./canary.mjs";
+import { generateCanaryToken, isCanaryCredential, triggerCanaryAlert } from "./canary.mjs";
 import { Grimoire, resolveMasterKey, resolveVaultPath } from "./hetzer-vault.mjs";
 
 const STRICT_BASE_ENV_NAMES = new Set([
@@ -24,6 +24,7 @@ export function resolveSecretEnvironment({
     action = "process.start",
     allowNames,
     strict = false,
+    canary = false,
 }) {
     const values = fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, "utf8")) : {};
     const allow = allowNames === undefined ? null : new Set(allowNames.map((n) => n.toLowerCase()));
@@ -43,6 +44,9 @@ export function resolveSecretEnvironment({
         return allow.has(name.toLowerCase()) || allow.has(id);
     });
     const resolved = { ...(strict ? strictBaseEnvironment(baseEnv) : baseEnv), HETZER_ROOT: root };
+    if (canary) {
+        resolved.HETZER_CANARY_TOKEN = generateCanaryToken();
+    }
     if (!bindings.length) return resolved;
 
     const masterKey = resolveMasterKey({ root, envValues: values, baseEnv });

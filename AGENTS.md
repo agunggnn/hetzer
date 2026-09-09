@@ -25,9 +25,9 @@ Any AI model or developer working on this codebase MUST respect the following ve
 5. **Process Ancestry & Reveal Guard (`cli/vault/creds.mjs`)**:
    - Inspects 5 process generations across Windows (`Win32_Process`) and Unix-like platforms (`ps`).
    - Non-interactive bypasses are forbidden. Native OS dialog confirmation is required for human reveals.
-6. **Canary Honey-Token Tripwire (`cli/vault/canary.mjs`)**:
-   - Tripping decoy tokens (`canary-token`, `canary-*`, `decoy-*`) logs an incident, attempts an SQLite audit entry when a vault exists, and aborts with `exitCode 43` (`ERR_CANARY_TRIPWIRE_TRIGGERED`).
-   - Canaries only protect guarded resolution/reveal paths, NOT arbitrary OS disk access.
+6. **Canary Honey-Token Tripwire (`cli/vault/canary.mjs`, `cli/vault/exec.mjs`)**:
+   - Tripping decoy tokens (`canary-token`, `canary-*`, `decoy-*`, `canary_trap_*`) logs an incident, attempts an SQLite audit entry when a vault exists, and aborts with `exitCode 43` (`ERR_CANARY_TRIPWIRE_TRIGGERED`).
+   - `hetzer exec --canary` arms child processes with synthetic canary honeytokens (`HETZER_CANARY_TOKEN`). If child stdout/stderr emits any canary, the stream sanitizer immediately terminates the child process and halts execution with exit code 43 without leaking the token.
 7. **No Unverified Marketing / False Compliance Claims**:
    - **DO NOT** claim PCI-DSS 6.4.3 compliance (it governs payment page scripts, not pre-commit hooks).
    - **DO NOT** claim universal "100% unbreakable" guarantees. Hetzer is an empirical defense-in-depth security layer.
@@ -62,8 +62,11 @@ Before committing or concluding any turn:
 ## 📝 Pending Agent Review (For Codex)
 - **Feature 1**: Git `commit-msg` Secret Shield hook (`feat/commit-msg-hook`, PR #4).
   - Status: Empirically verified; all matrix CI checks passing.
-- **Feature 2**: MCP Virtual Credential Proxy and Canary Guard (`feat/mcp-credential-proxy`).
+- **Feature 2**: MCP Virtual Credential Proxy and Canary Guard (`feat/mcp-credential-proxy`, PR #5).
   - Implemented: `resolveSecretRefsInPayload`, `sanitizeMcpValue` output filtering, argument virtual injection, and MCP canary tripwire in `cli/mcp/`.
-  - Status: 147 tests passing, `check.mjs` clean, 6/6 NIST/OWASP empirical protocols passing.
+  - Status: Empirically verified; all matrix CI checks passing.
+- **Feature 3**: Subprocess Canary Tripwire & Decoy Injection (`feat/subprocess-canary-tripwire`).
+  - Implemented: `--canary` flag in `hetzer exec`, `HETZER_CANARY_TOKEN` active decoy injection into child environments, real-time stream canary detection in `createStreamSanitizer`, immediate child process termination (`SIGKILL` + process-tree kill on Windows), incident logging, and abort with `exitCode 43` (`ERR_CANARY_TRIPWIRE_TRIGGERED`).
+  - Status: 154 tests passing, `check.mjs` clean, 6/6 NIST/OWASP empirical protocols passing.
 - **Action for Codex**: Please review these implementations and unit tests before merging into `main`.
 
