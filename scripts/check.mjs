@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const sourceRoots = ["cli/core", "cli/modules", "cli/mcp", "cli/vault", "cli/skills"];
+const sourceRoots = ["cli/core", "cli/modules", "cli/mcp", "cli/vault", "cli/skills", "scripts"];
 
 function filesUnder(dir) {
     if (!fs.existsSync(dir)) return [];
@@ -25,14 +25,6 @@ for (const file of sources) {
     const result = spawnSync(process.execPath, ["--check", file], { stdio: "inherit", windowsHide: true });
     if (result.status !== 0) process.exit(result.status || 1);
 }
-
-const tests = sources.filter((file) => file.endsWith(".test.mjs"));
-const result = spawnSync(process.execPath, ["--test", ...tests], {
-    cwd: root,
-    stdio: "inherit",
-    windowsHide: true,
-});
-if (result.status !== 0) process.exit(result.status || 1);
 
 const forbidden = [
     ["agunggnn", "/Shadow"].join(""),
@@ -68,4 +60,4 @@ for (const file of publicFiles) {
     }
 }
 
-process.stdout.write(`Hetzer check passed: ${sources.length} source files, ${tests.length} test files.\n`);
+process.stdout.write(`Hetzer static check passed: ${sources.length} source files and public credential-pattern scan.\n`);

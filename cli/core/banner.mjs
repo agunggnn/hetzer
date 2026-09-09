@@ -13,8 +13,8 @@ export function getHetzerAsciiBanner({ colored = false } = {}) {
         `${cBold}${cCyan}  ██║  ██║███████╗   ██║   ███████╗███████╗██║  ██║${cReset}`,
         `${cBold}${cCyan}  ╚═╝  ╚═╝╚══════╝   ╚═╝   ╚══════╝╚══════╝╚═╝  ╚═╝${cReset}`,
         `${cDim} =======================================================${cReset}`,
-        `  ${cBold}${cGreen}H E T Z E R${cReset}  ${cDim}•${cReset}  ${cCyan}Zero-Plaintext Armor for AI Agents${cReset}`,
-        `  ${cDim}[Sub-2ms Vault] • [MCP Active] • [Universal Skills]${cReset}`,
+        `  ${cBold}${cGreen}H E T Z E R${cReset}  ${cDim}•${cReset}  ${cCyan}Credential Safety for AI Workflows${cReset}`,
+        `  ${cDim}[Encrypted Vault] • [MCP Tools] • [Scoped Execution]${cReset}`,
         `${cDim} =======================================================${cReset}`,
     ].join("\n");
 }

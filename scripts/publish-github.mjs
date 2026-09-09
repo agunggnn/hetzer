@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promptSecret, setCredential } from "../cli/vault/creds.mjs";
 import { parseEnv } from "../cli/core/env.mjs";
 import { redactExactValues, runNpmWithAuth } from "../cli/core/npm-auth.mjs";
-import { resolveSecretEnvironment } from "../cli/vault/secret-env.mjs";
+import { resolveSecretEnvironment, strictBaseEnvironment } from "../cli/vault/secret-env.mjs";
 
 const root = path.resolve(process.env.HETZER_ROOT || process.cwd());
 const envFile = path.resolve(process.env.HETZER_ENV_FILE || path.join(root, ".env"));
@@ -62,7 +62,7 @@ async function main() {
         if (fs.existsSync(envFile)) {
             setCredential({ root, envFile, id: "github-token", secret: githubToken });
             process.stdout.write("[v] GitHub Token encrypted & stored in Grimoire Vault (AES-256-GCM)!\n");
-            process.stdout.write("[v] .env reference: GITHUB_TOKEN=secretRef:github-token (Zero-Plaintext)\n\n");
+            process.stdout.write("[v] .env reference: GITHUB_TOKEN=secretRef:github-token\n\n");
         }
     } else {
         process.stdout.write("[v] Using authenticated GitHub Token from environment or Grimoire Vault.\n\n");
@@ -86,15 +86,39 @@ async function main() {
     const ghUser = whoami.stdout.trim();
     process.stdout.write(`[v] Authentication successful! Connected as GitHub user: @${ghUser}\n\n`);
 
-    // 3. Run Test Suite & Static Checks
-    process.stdout.write("[i] Running test suite and static checks (node scripts/check.mjs)...\n");
+    // 3. Run static checks and the concise test suite without inherited credentials.
+    const gateEnv = strictBaseEnvironment(process.env);
+    process.stdout.write("[i] Running static security checks...\n");
     const check = spawnSync(process.execPath, [path.join(root, "scripts", "check.mjs")], {
         cwd: root,
         stdio: "inherit",
+        env: gateEnv,
         windowsHide: true,
     });
     if (check.status !== 0) {
+        throw new Error("Static checks failed. Fix failures before publishing.");
+    }
+    process.stdout.write("[i] Running unit tests...\n");
+    const tests = spawnSync("npm", ["test"], {
+        cwd: root,
+        stdio: "inherit",
+        env: gateEnv,
+        windowsHide: true,
+        shell: process.platform === "win32",
+    });
+    if (tests.status !== 0) {
         throw new Error("Test suite failed. Fix test failures before publishing.");
+    }
+    process.stdout.write("[i] Running empirical verification...\n");
+    const verification = spawnSync("npm", ["run", "verify"], {
+        cwd: root,
+        stdio: "inherit",
+        env: gateEnv,
+        windowsHide: true,
+        shell: process.platform === "win32",
+    });
+    if (verification.status !== 0) {
+        throw new Error("Empirical verification failed. Fix failures before publishing.");
     }
     process.stdout.write("\n[v] All internal verification checks passed.\n\n");
 

@@ -98,7 +98,7 @@ export function createToolCatalog({ root = process.env.HETZER_ROOT || process.cw
         {
             name: "hetzer_sniffer_scan",
             title: "Scan Secrets in Text",
-            description: "Rapidly inspect text for sensitive credentials (npm, API keys, tokens) in under 2ms.",
+            description: "Inspect text for supported sensitive credential patterns and high-entropy candidates.",
             inputSchema: {
                 type: "object",
                 properties: {

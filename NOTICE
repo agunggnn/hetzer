@@ -17,5 +17,4 @@ Hetzer was inspired by pioneering security, secret management, and agentic tools
 - TruffleHog (Truffle Security) & Gitleaks (Zachary Rice) - High-speed regex & entropy-based secret detection.
 - Anthropic Model Context Protocol (MCP) - Standardized protocol for AI agent tool integration.
 - LLM-Guard (Protect AI) - Pioneer in real-time LLM input/output token scanning.
-- Hermes Agent (NousResearch), Google Antigravity (AGY), Cursor, and Cline - Autonomous AI agent ecosystems that highlighted the necessity of Zero-Plaintext protection.
-
+- Hermes Agent (NousResearch), Google Antigravity (AGY), Cursor, and Cline - Autonomous AI agent ecosystems that highlighted the need for credential-safety tooling.

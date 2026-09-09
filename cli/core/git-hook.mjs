@@ -149,7 +149,7 @@ export function installGitHook(root = process.cwd()) {
     const scriptPathNorm = gitHookScriptPath.replace(/\\/g, "/");
 
     const hookContent = `#!/bin/sh
-# Hetzer Zero-Plaintext Pre-Commit Hook
+# Hetzer Credential-Safety Pre-Commit Hook
 # Scans staged additions for leaked secrets, API keys, and tokens.
 
 if command -v node >/dev/null 2>&1; then
@@ -180,7 +180,10 @@ export function uninstallGitHook(root = process.cwd()) {
     const preCommitFile = path.join(gitDir, "hooks", "pre-commit");
     if (fs.existsSync(preCommitFile)) {
         const content = fs.readFileSync(preCommitFile, "utf8");
-        if (content.includes("Hetzer Zero-Plaintext Pre-Commit Hook")) {
+        if (
+            content.includes("Hetzer Credential-Safety Pre-Commit Hook")
+            || content.includes("Hetzer Zero-Plaintext Pre-Commit Hook")
+        ) {
             fs.unlinkSync(preCommitFile);
             return { uninstalled: true, path: preCommitFile };
         }

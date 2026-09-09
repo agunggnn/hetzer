@@ -1,6 +1,6 @@
 # Hetzer measurement and evaluation guide
 
-> Version: 0.4.0
+> Version: 0.4.1
 
 This repository does not contain evidence for vendor-wide speed comparisons, annual cost savings, or regulatory certification. Treat earlier figures for competitor latency, memory, vulnerability counts, and 92% TCO reduction as withdrawn unless they are reintroduced with reproducible data and dated sources.
 
@@ -24,7 +24,7 @@ Publish the benchmark harness, fixtures, raw results, and date with every numeri
 - Output sanitation uses a bounded rolling buffer so known injected values can be recognized across stream chunks. Streaming filters suppress supported long structured values and normalize terminal controls, while deliberately transformed or unsupported values can still evade pattern scanning and false positives remain possible.
 - The Git hook scans staged `.env` filenames and added text. Git hooks can be bypassed and are not a replacement for server-side scanning.
 
-Run `npm run check` to execute the repository's syntax checks, unit tests, and public-file credential-pattern scan. Passing those checks is implementation evidence, not an independent security audit.
+Run `npm run check` for syntax and the public-file credential-pattern scan, then run `npm test` for the unit suite. The default test reporter is intentionally concise; use `npm run test:verbose` when investigating failures. Passing these checks is implementation evidence, not an independent security audit.
 
 ## Compliance claims
 

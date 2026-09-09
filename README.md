@@ -1,7 +1,7 @@
 # Hetzer 🛡️
 
 <p align="center">
-  <img src="assets/hetzer-banner.jpg" alt="Hetzer Zero-Plaintext Armor" width="100%" />
+  <img src="assets/hetzer-banner.jpg" alt="Hetzer credential-safety tooling" width="100%" />
 </p>
 
 <p align="center">
@@ -54,7 +54,7 @@ npx hetzer creds set openai-api-key
   ```
 - **Via NPM Registry**:
   ```bash
-  npm install -g @agunggnn/hetzer
+  npm install -g hetzer
   ```
 
 ---
@@ -396,7 +396,7 @@ Hetzer stands on the shoulders of giants. We express our deepest gratitude and r
   - **[Cursor IDE](https://cursor.com)**
   - **[Cline](https://github.com/cline/cline)** (*Roo Code*)
   - **OpenCode & CommandCode**  
-  Their ground-breaking work on agentic developer workflows made the urgent necessity of client-side Zero-Plaintext Armor evident.
+  Their work on agentic developer workflows highlighted the need for practical client-side credential safeguards.
 
 ---
 

@@ -357,7 +357,7 @@ export function executeProcess(options, { outStream = process.stdout, errStream 
         if (isReflectionCommand(options.command, options.commandArgs)) {
             const fullCmd = [options.command, ...options.commandArgs].join(" ");
             const err = new Error(
-                `Security violation: Command '${fullCmd}' is blocked under Zero-Plaintext policy.\n` +
+                `Security violation: Command '${fullCmd}' is blocked by the credential-safety policy.\n` +
                 "Environment reflection commands (printenv, env, export, inline dumps) are forbidden in 'hetzer exec' to prevent secret leakage into agent context or terminal logs."
             );
             err.code = "ERR_REFLECTION_BLOCKED";

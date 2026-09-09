@@ -256,7 +256,7 @@ cd my-hetzer-instance
 2. Generates a secure master key (`HETZER_GRIMOIRE_KEY`) if not already present.
 3. Generates a 16-character hexadecimal password for 9Router admin access.
 4. Creates `.env` with strict `chmod 600` permissions.
-5. Populates `.env` using **Zero-Plaintext references**:
+5. Populates `.env` using credential references:
    ```dotenv
    NINE_ROUTER_INITIAL_PASSWORD=secretRef:nine-router-initial-password
    ```

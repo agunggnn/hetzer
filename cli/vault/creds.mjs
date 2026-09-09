@@ -265,7 +265,7 @@ export function assertInteractiveHumanSession({ input = process.stdin, env = pro
     for (const [envVar, desc] of agentIndicators) {
         if (env[envVar]) {
             throw new Error(
-                `Access Denied: 'hetzer creds reveal' blocked by Zero-Plaintext Agent Guard.\n` +
+                `Access Denied: 'hetzer creds reveal' blocked by the credential reveal guard.\n` +
                 `Reason: ${desc} ($${envVar} is set).\n` +
                 `Autonomous agents running in YOLO/unrestricted mode cannot extract raw secrets into context.\n` +
                 `To execute commands with injected secrets safely, use 'hetzer exec -- <command>'.`
@@ -275,7 +275,7 @@ export function assertInteractiveHumanSession({ input = process.stdin, env = pro
     const ancestry = ancestor || checkProcessAncestors();
     if (ancestry.isAgent) {
         throw new Error(
-            `Access Denied: 'hetzer creds reveal' blocked by Zero-Plaintext Agent Guard.\n` +
+            `Access Denied: 'hetzer creds reveal' blocked by the credential reveal guard.\n` +
             `Reason: Agent runtime '${ancestry.processName}' detected in process tree ancestry.\n` +
             `Autonomous agents running in YOLO/unrestricted mode cannot extract raw secrets into context.\n` +
             `To execute commands with injected secrets safely, use 'hetzer exec -- <command>'.`

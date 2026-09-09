@@ -222,19 +222,23 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
 }
 
 // -----------------------------------------------------------------------------
-// Test 5: Sub-Millisecond Stream Latency & Interactive Responsiveness
+// Test 5: Bounded Stream Latency & Interactive Responsiveness
 // -----------------------------------------------------------------------------
 {
-    const sanitizer = createStreamSanitizer([]);
     const smallChunk = Buffer.from("Compiling module auth.mjs...\n");
-    
-    const t0 = performance.now();
-    const emitted = sanitizer.write(smallChunk);
-    const finalChunk = sanitizer.end();
-    const t1 = performance.now();
-    const latencyMs = Number((t1 - t0).toFixed(3));
-    const fullEmitted = emitted + finalChunk;
-    const pass = latencyMs < 5.0 && fullEmitted.includes("Compiling module auth.mjs");
+    const samples = [];
+    let fullEmitted = "";
+    for (let index = 0; index < 25; index += 1) {
+        const sanitizer = createStreamSanitizer([]);
+        const t0 = performance.now();
+        const emitted = sanitizer.write(smallChunk);
+        const finalChunk = sanitizer.end();
+        samples.push(performance.now() - t0);
+        fullEmitted = emitted + finalChunk;
+    }
+    samples.sort((a, b) => a - b);
+    const medianLatencyMs = Number(samples[Math.floor(samples.length / 2)].toFixed(3));
+    const pass = medianLatencyMs < 5.0 && fullEmitted.includes("Compiling module auth.mjs");
 
     recordTest({
         id: "VERIFY-PERF-001",
@@ -242,9 +246,9 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
         target: "cli/vault/exec.mjs -> createStreamSanitizer()",
         threat: "16KB buffering lag causing terminal output freeze and stalling interactive agent executions",
         input: "Small 30-byte build log line",
-        method: "Measure write() processing latency with dynamic 128-byte retention buffer and bounded 512-byte window",
-        expected: "Write execution completes in sub-5ms without buffering stalls or CPU spikes",
-        observed: `Execution latency: ${latencyMs} ms. Output delivered: "${fullEmitted.trim()}".`,
+        method: "Measure the median of 25 write-and-flush samples using dynamic retention and the bounded lexical scanner",
+        expected: "Median processing latency stays below 5ms and the complete line is emitted",
+        observed: `Median processing latency: ${medianLatencyMs} ms. Output delivered: "${fullEmitted.trim()}".`,
         pass,
         boundary: "Streams with secrets exceeding 128 chars scale buffer to 2x secret length to ensure boundary integrity.",
     });

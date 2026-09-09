@@ -58,17 +58,22 @@ test("writePointerBlock is cleanly idempotent and replaces existing block withou
 test("installToCursor writes rules and AGENTS.md entry pointer", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-skill-cursor-"));
     try {
+        fs.writeFileSync(path.join(tempDir, ".cursorrules"), "# Hetzer credential handling\n\nLegacy generated rule.\n");
         const created = installToCursor(tempDir);
         assert.ok(created.length >= 2);
 
         const mdcFile = path.join(tempDir, ".cursor", "rules", "hetzer.mdc");
         assert.ok(fs.existsSync(mdcFile), ".cursor/rules/hetzer.mdc must exist");
         const mdcContent = fs.readFileSync(mdcFile, "utf8");
-        assert.ok(mdcContent.includes("Zero-Plaintext"));
+        assert.ok(mdcContent.includes("secretRef:<credential-id>"));
+        assert.ok(mdcContent.includes("defense in depth"));
         assert.ok(mdcContent.includes("secretRef:"));
 
         const agentsMd = path.join(tempDir, "AGENTS.md");
         assert.ok(fs.existsSync(agentsMd), "AGENTS.md must exist");
+        const legacyRules = fs.readFileSync(path.join(tempDir, ".cursorrules"), "utf8");
+        assert.ok(legacyRules.includes("# Hetzer credential safety"));
+        assert.ok(!legacyRules.includes("Strict Zero-Plaintext Policy"));
     } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
@@ -85,7 +90,8 @@ test("installToCline writes .clinerules in workspace", () => {
         const clineFile = path.join(tempDir, ".clinerules");
         assert.ok(fs.existsSync(clineFile), ".clinerules must exist");
         const content = fs.readFileSync(clineFile, "utf8");
-        assert.ok(content.includes("Zero-Plaintext"));
+        assert.ok(content.includes("secretRef:<credential-id>"));
+        assert.ok(content.includes("defense in depth"));
         assert.ok(content.includes("secretRef:"));
     } finally {
         if (originalInstallHome === undefined) delete process.env.HETZER_INSTALL_HOME;

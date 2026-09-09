@@ -1,7 +1,7 @@
 {
   "name": "@agunggnn/hetzer",
-  "version": "0.4.0",
-  "description": "Zero-Plaintext Armor & Secret Interceptor for AI Agents. Sub-2ms Vault, MCP Proxy & Universal Skill for Hermes, AGY, OpenCode, CommandCode, Cursor, and Claude.",
+  "version": "0.4.1",
+  "description": "Local credential safety for AI-assisted workflows with an encrypted vault, scoped injection, output redaction, MCP proxy, and agent guidance.",
   "bin": {
     "hetzer": "cli/bin/hetzer.js"
   },
@@ -18,6 +18,8 @@
     "scripts/verify-evidence.mjs",
     "scripts/publish.mjs",
     "scripts/publish-github.mjs",
+    "scripts/build-package.mjs",
+    "scripts/package-stage.mjs",
     "docs",
     "modules/cognee",
     ".env.example",
@@ -29,7 +31,7 @@
   ],
   "keywords": [
     "ai-security",
-    "zero-plaintext",
+    "credential-safety",
     "secret-sniffer",
     "credential-vault",
     "mcp",
@@ -63,8 +65,10 @@
   },
   "scripts": {
     "check": "node scripts/check.mjs",
-    "test": "node --test \"**/*.test.mjs\"",
+    "test": "node --test --test-reporter=dot \"**/*.test.mjs\"",
+    "test:verbose": "node --test \"**/*.test.mjs\"",
     "verify": "node scripts/verify-evidence.mjs",
+    "build:package": "node scripts/build-package.mjs",
     "lint": "node scripts/check.mjs",
     "publish:github": "node scripts/publish-github.mjs",
     "publish:npm": "node scripts/publish.mjs",

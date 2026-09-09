@@ -6,9 +6,10 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { promptSecret, setCredential } from "../cli/vault/creds.mjs";
-import { resolveSecretEnvironment } from "../cli/vault/secret-env.mjs";
+import { resolveSecretEnvironment, strictBaseEnvironment } from "../cli/vault/secret-env.mjs";
 import { redactExactValues, runNpmWithAuth } from "../cli/core/npm-auth.mjs";
 import { parseEnv } from "../cli/core/env.mjs";
+import { removeStagedPackage, stagePackage } from "./package-stage.mjs";
 
 const root = path.resolve(process.env.HETZER_ROOT || process.cwd());
 const envFile = path.resolve(process.env.HETZER_ENV_FILE || path.join(root, ".env"));
@@ -59,7 +60,7 @@ async function main() {
         // Securely store into Grimoire Vault (AES-256-GCM)
         setCredential({ root, envFile, id: "npm-token", secret: npmToken });
         process.stdout.write("[v] NPM Token encrypted & stored in Grimoire Vault (AES-256-GCM)!\n");
-        process.stdout.write("[v] .env reference: NODE_AUTH_TOKEN=secretRef:npm-token (Zero-Plaintext)\n\n");
+        process.stdout.write("[v] .env reference: NODE_AUTH_TOKEN=secretRef:npm-token\n\n");
     } else {
         process.stdout.write("[v] Using encrypted NPM Auth Token from Grimoire Vault.\n\n");
     }
@@ -82,63 +83,94 @@ async function main() {
     const npmUser = whoami.stdout.trim();
     process.stdout.write(`[v] Authentication successful! Connected as npm user: @${npmUser}\n\n`);
 
-    // 3. Run Test Suite
-    process.stdout.write("[i] Running test suite and static checks (node scripts/check.mjs)...\n");
+    // 3. Run static checks and the concise test suite without inherited credentials.
+    const gateEnv = strictBaseEnvironment(process.env);
+    process.stdout.write("[i] Running static security checks...\n");
     const check = spawnSync(process.execPath, [path.join(root, "scripts", "check.mjs")], {
         cwd: root,
         stdio: "inherit",
+        env: gateEnv,
         windowsHide: true,
     });
     if (check.status !== 0) {
-        throw new Error("Test suite failed. Fix test failures before publishing.");
+        throw new Error("Static checks failed. Fix failures before publishing.");
     }
-    process.stdout.write("\n[v] All internal verification checks passed.\n\n");
-
-    // 4. Dry-run Pack Inspection
-    process.stdout.write("[i] Running dry-run package bundling...\n");
-    const pack = spawnSync("npm", ["pack", "--dry-run"], {
+    process.stdout.write("[i] Running unit tests...\n");
+    const tests = spawnSync("npm", ["test"], {
         cwd: root,
-        encoding: "utf8",
+        stdio: "inherit",
+        env: gateEnv,
         windowsHide: true,
         shell: process.platform === "win32",
     });
-    if (pack.status !== 0) {
-        throw new Error(`npm pack --dry-run failed: ${pack.stderr}`);
+    if (tests.status !== 0) {
+        throw new Error("Test suite failed. Fix test failures before publishing.");
     }
+    process.stdout.write("[i] Running empirical verification...\n");
+    const verification = spawnSync("npm", ["run", "verify"], {
+        cwd: root,
+        stdio: "inherit",
+        env: gateEnv,
+        windowsHide: true,
+        shell: process.platform === "win32",
+    });
+    if (verification.status !== 0) {
+        throw new Error("Empirical verification failed. Fix failures before publishing.");
+    }
+    process.stdout.write("\n[v] All internal verification checks passed.\n\n");
 
     const pkgJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-    process.stdout.write(`[v] Package ready: ${pkgJson.name} (v${pkgJson.version})\n\n`);
+    const publicPackageName = "hetzer";
+    const stagingRoot = stagePackage({ root, packageName: publicPackageName, registry: npmRegistry });
 
-    // 5. Publish to NPM
-    const otp = process.env.NPM_OTP || "";
+    try {
+        // 4. Dry-run Pack Inspection
+        process.stdout.write("[i] Running dry-run package bundling...\n");
+        const pack = spawnSync("npm", ["pack", "--dry-run"], {
+            cwd: stagingRoot,
+            encoding: "utf8",
+            windowsHide: true,
+            shell: process.platform === "win32",
+        });
+        if (pack.status !== 0) {
+            throw new Error(`npm pack --dry-run failed: ${pack.stderr}`);
+        }
 
-    process.stdout.write(`[i] Publishing ${pkgJson.name}@${pkgJson.version} to npmjs.org (access: public)...\n`);
-    const publish = runNpmWithAuth({
-        args: ["publish", "--access", "public", "--registry", npmRegistry],
-        registry: npmRegistry,
-        token: npmToken,
-        otp,
-        cwd: root,
-        baseEnv: process.env,
-    });
-    if (publish.stdout) process.stdout.write(redactExactValues(publish.stdout, [npmToken, otp]));
-    if (publish.stderr) process.stderr.write(redactExactValues(publish.stderr, [npmToken, otp]));
+        process.stdout.write(`[v] Package ready: ${publicPackageName} (v${pkgJson.version})\n\n`);
 
-    if (publish.status !== 0) {
-        process.stderr.write("\n[!] If you received an E403 2FA error from npm:\n");
-        process.stderr.write("    1. Create a Granular Access Token at https://www.npmjs.com/settings/~/tokens\n");
-        process.stderr.write("       -> Select 'Read and write' on packages\n");
-        process.stderr.write("       -> Check 'Bypass two-factor authentication (2FA)' for automation\n");
-        process.stderr.write("       -> Save to vault: hetzer creds set npm-token\n");
-        process.stderr.write("    2. If npm requires an OTP, supply it through the NPM_OTP environment variable.\n\n");
-        throw new Error(`npm publish failed with exit code ${publish.status}`);
+        // 5. Publish to NPM
+        const otp = process.env.NPM_OTP || "";
+
+        process.stdout.write(`[i] Publishing ${publicPackageName}@${pkgJson.version} to npmjs.org (access: public)...\n`);
+        const publish = runNpmWithAuth({
+            args: ["publish", "--access", "public", "--registry", npmRegistry],
+            registry: npmRegistry,
+            token: npmToken,
+            otp,
+            cwd: stagingRoot,
+            baseEnv: process.env,
+        });
+        if (publish.stdout) process.stdout.write(redactExactValues(publish.stdout, [npmToken, otp]));
+        if (publish.stderr) process.stderr.write(redactExactValues(publish.stderr, [npmToken, otp]));
+
+        if (publish.status !== 0) {
+            process.stderr.write("\n[!] If you received an E403 2FA error from npm:\n");
+            process.stderr.write("    1. Create a Granular Access Token at https://www.npmjs.com/settings/~/tokens\n");
+            process.stderr.write("       -> Select 'Read and write' on packages\n");
+            process.stderr.write("       -> Check 'Bypass two-factor authentication (2FA)' for automation\n");
+            process.stderr.write("       -> Save to vault: hetzer creds set npm-token\n");
+            process.stderr.write("    2. If npm requires an OTP, supply it through the NPM_OTP environment variable.\n\n");
+            throw new Error(`npm publish failed with exit code ${publish.status}`);
+        }
+
+        process.stdout.write("\n================================================================================\n");
+        process.stdout.write("  [v] PUBLISH SUCCESSFUL!\n");
+        process.stdout.write(`  Package : ${publicPackageName}@${pkgJson.version}\n`);
+        process.stdout.write(`  NPM URL : https://www.npmjs.com/package/${publicPackageName}\n`);
+        process.stdout.write("================================================================================\n");
+    } finally {
+        removeStagedPackage(stagingRoot);
     }
-
-    process.stdout.write("\n================================================================================\n");
-    process.stdout.write(`  [v] PUBLISH SUCCESSFUL!\n`);
-    process.stdout.write(`  Package : ${pkgJson.name}@${pkgJson.version}\n`);
-    process.stdout.write(`  NPM URL : https://www.npmjs.com/package/${pkgJson.name}\n`);
-    process.stdout.write("================================================================================\n");
 }
 
 main().catch((err) => {

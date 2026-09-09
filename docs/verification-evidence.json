@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-09-08T02:30:21.379Z",
+  "timestamp": "2026-09-09T00:51:27.089Z",
   "nodeVersion": "v22.22.2",
   "platform": "win32",
   "results": [
@@ -57,9 +57,9 @@
       "target": "cli/vault/exec.mjs -> createStreamSanitizer()",
       "threat": "16KB buffering lag causing terminal output freeze and stalling interactive agent executions",
       "input": "Small 30-byte build log line",
-      "method": "Measure write() processing latency with dynamic 128-byte retention buffer and bounded 512-byte window",
-      "expected": "Write execution completes in sub-5ms without buffering stalls or CPU spikes",
-      "observed": "Execution latency: 0.048 ms. Output delivered: \"Compiling module auth.mjs...\".",
+      "method": "Measure the median of 25 write-and-flush samples using dynamic retention and the bounded lexical scanner",
+      "expected": "Median processing latency stays below 5ms and the complete line is emitted",
+      "observed": "Median processing latency: 0.022 ms. Output delivered: \"Compiling module auth.mjs...\".",
       "verdict": "PASS",
       "boundary": "Streams with secrets exceeding 128 chars scale buffer to 2x secret length to ensure boundary integrity."
     },

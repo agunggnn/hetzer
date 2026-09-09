@@ -45,7 +45,7 @@ test("installGitHook and uninstallGitHook manage pre-commit file cleanly in mock
         assert.ok(fs.existsSync(installRes.path));
 
         const content = fs.readFileSync(installRes.path, "utf8");
-        assert.ok(content.includes("Hetzer Zero-Plaintext Pre-Commit Hook"));
+        assert.ok(content.includes("Hetzer Credential-Safety Pre-Commit Hook"));
 
         const uninstallRes = uninstallGitHook(tempDir);
         assert.ok(uninstallRes.uninstalled);

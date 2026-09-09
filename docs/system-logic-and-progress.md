@@ -1,6 +1,6 @@
 # System logic and implementation status
 
-This document tracks implemented behavior and known boundaries. Test counts change over time; run `npm run check` for the current result.
+This document tracks implemented behavior and known boundaries. Test counts change over time; run `npm test` for the current result.
 
 ## Credential lifecycle
 

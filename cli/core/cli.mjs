@@ -401,7 +401,7 @@ Commands:
   canary [setup]            Deploy decoy canary honey-token tripwire to catch prompt injections
   exec [--allow <ids>] [--strict] -- <c> Run command with scoped secret injection & real-time stream sanitization
   sniffer [scan|redact] <t> Detect or redact credentials supported by the scanner rules
-  protect                   One-command Zero-Plaintext Armor for Vibe Coders (skills + git hook + .env)
+  protect                   Install credential-safety guidance, Git hook, and .env protection
   skill [install|status]    Deploy Universal AI Skills to Hermes, AGY, OpenCode, Cursor, Claude
   hook [install|uninstall|check] Manage Git Pre-Commit Guard to prevent accidental token leaks
   mcp configure|serve|ping  Configure, start bridge, or run MCP diagnostic ping

@@ -240,7 +240,7 @@ export function installToCursor(root = process.cwd()) {
         fs.writeFileSync(cursorRulesPath, AGENT_SYSTEM_RULE, "utf8");
     } else {
         const existingRules = fs.readFileSync(cursorRulesPath, "utf8");
-        if (/^# Hetzer(?: Vault)?:/m.test(existingRules)) {
+        if (/^# Hetzer(?: Vault)?:|^# Hetzer credential (?:handling|safety)$/m.test(existingRules)) {
             fs.writeFileSync(cursorRulesPath, AGENT_SYSTEM_RULE, "utf8");
         } else {
             writePointerBlock(cursorRulesPath);

@@ -1,6 +1,6 @@
 # Hetzer Contributor & Agent Guidance
 
-> **Current Package Version**: v0.4.0
+> **Current Package Version**: v0.4.1
 > **Verification**: Run `npm run check`, `npm test`, and `npm run verify` against the current tree; do not rely on a cached test count.
 
 ---
@@ -37,8 +37,8 @@ Any AI model or developer working on this codebase MUST respect the following ve
 ## 🛡️ Hetzer credential safety
 - NEVER print secret tokens, passwords, or API keys in plaintext in conversation, code, or logs.
 - Always use references: `secretRef:<credential-id>` (e.g. `secretRef:npm-token`, `secretRef:openai-api-key`).
-- Execute with scoped injection: `hetzer exec --allow <id> -- <cmd>` (never run `creds reveal` or `printenv`).
-- `hetzer exec` scopes referenced credentials and sanitizes its child output; it does not intercept unrelated tools or prompts.
+- Execute with scoped injection: `hetzer exec --allow <id> --strict -- <cmd>` (never run `creds reveal` or `printenv`).
+- `hetzer exec` scopes referenced credentials and sanitizes guarded child output; it does not intercept unrelated tools or prompts.
 - User management command: `hetzer creds set <id>`.
 <!-- hetzer:end -->
 
@@ -47,7 +47,7 @@ Any AI model or developer working on this codebase MUST respect the following ve
 ## 🛠️ Verification & Contributor Checklist
 
 Before committing or concluding any turn:
-1. `npm run check` — Must pass (validates source syntax, tests, and forbidden token leak checks).
+1. `npm run check` — Must pass (validates source syntax and forbidden token leak checks; it does not rerun tests).
 2. `npm test` — Must pass; use the current command output rather than a cached test count.
 3. `npm run verify` — Must pass all 6 empirical protocols (`docs/verification-evidence.json`).
 4. Pin container images by multi-platform digest and document their upstream source.
