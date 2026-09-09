@@ -316,7 +316,11 @@ console.log(`\nOVERALL VERDICT: ${allPassed ? "VERIFIED (ALL PROTOCOLS PASSED)" 
 console.log("================================================================================");
 
 const jsonOutPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "docs", "verification-evidence.json");
-fs.writeFileSync(jsonOutPath, JSON.stringify(report, null, 2), "utf8");
-console.log(`Verification evidence saved to: ${jsonOutPath}`);
+if (process.argv.includes("--no-write")) {
+    console.log("Verification evidence write skipped (--no-write).\n");
+} else {
+    fs.writeFileSync(jsonOutPath, JSON.stringify(report, null, 2), "utf8");
+    console.log(`Verification evidence saved to: ${jsonOutPath}`);
+}
 
 if (!allPassed) process.exit(1);

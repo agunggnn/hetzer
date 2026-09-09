@@ -36,6 +36,28 @@ export function listTrackedFiles(root, { run = spawnSync } = {}) {
     return new Set(result.stdout.split("\0").filter(Boolean).map((file) => file.replaceAll("\\", "/")));
 }
 
+export function assertTrackedTreeClean(root, { run = spawnSync } = {}) {
+    const resolvedRoot = path.resolve(root);
+    const result = run("git", [
+        "-c",
+        `safe.directory=${resolvedRoot.replaceAll("\\", "/")}`,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=no",
+    ], {
+        cwd: resolvedRoot,
+        encoding: "utf8",
+        windowsHide: true,
+    });
+    if (result.status !== 0) {
+        throw new Error(`git release-state check failed: ${result.stderr || result.stdout || "unknown error"}`);
+    }
+    const trackedChanges = result.stdout.split(/\r?\n/).filter((line) => line && !line.startsWith("??"));
+    if (trackedChanges.length > 0) {
+        throw new Error("Refusing to build or publish from a tree with tracked changes. Commit the release state first.");
+    }
+}
+
 export function stagePackage({
     root,
     packageName,

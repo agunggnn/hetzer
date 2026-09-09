@@ -9,7 +9,7 @@ import { promptSecret, setCredential } from "../cli/vault/creds.mjs";
 import { resolveSecretEnvironment, strictBaseEnvironment } from "../cli/vault/secret-env.mjs";
 import { redactExactValues, runNpmWithAuth } from "../cli/core/npm-auth.mjs";
 import { parseEnv } from "../cli/core/env.mjs";
-import { removeStagedPackage, stagePackage } from "./package-stage.mjs";
+import { assertTrackedTreeClean, removeStagedPackage, stagePackage } from "./package-stage.mjs";
 
 const root = path.resolve(process.env.HETZER_ROOT || process.cwd());
 const envFile = path.resolve(process.env.HETZER_ENV_FILE || path.join(root, ".env"));
@@ -40,6 +40,7 @@ async function main() {
     if (!fs.existsSync(envFile)) {
         throw new Error(".env file not found. Run 'hetzer init' first.");
     }
+    assertTrackedTreeClean(root);
 
     // 1. Resolve or prompt for NPM Token
     let npmToken = process.env.NODE_AUTH_TOKEN || "";
@@ -107,7 +108,7 @@ async function main() {
         throw new Error("Test suite failed. Fix test failures before publishing.");
     }
     process.stdout.write("[i] Running empirical verification...\n");
-    const verification = spawnSync("npm", ["run", "verify"], {
+    const verification = spawnSync("npm", ["run", "verify", "--", "--no-write"], {
         cwd: root,
         stdio: "inherit",
         env: gateEnv,
@@ -117,6 +118,7 @@ async function main() {
     if (verification.status !== 0) {
         throw new Error("Empirical verification failed. Fix failures before publishing.");
     }
+    assertTrackedTreeClean(root);
     process.stdout.write("\n[v] All internal verification checks passed.\n\n");
 
     const pkgJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));

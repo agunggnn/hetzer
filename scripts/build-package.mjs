@@ -5,7 +5,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { removeStagedPackage, stagePackage } from "./package-stage.mjs";
+import { assertTrackedTreeClean, removeStagedPackage, stagePackage } from "./package-stage.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const artifactRoot = path.join(root, "artifacts");
@@ -25,6 +25,7 @@ function pack(cwd) {
 }
 
 fs.mkdirSync(artifactRoot, { recursive: true });
+assertTrackedTreeClean(root);
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const scopedStage = stagePackage({
     root,

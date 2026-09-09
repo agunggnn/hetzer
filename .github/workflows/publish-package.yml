@@ -32,7 +32,7 @@ jobs:
         run: npm test
 
       - name: Run empirical verification
-        run: npm run verify
+        run: npm run verify -- --no-write
 
       - name: Publish package to GitHub Packages
         run: npm publish
