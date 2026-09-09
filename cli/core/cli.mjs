@@ -138,6 +138,7 @@ export function suggestCommand(input) {
 
 export const KNOWN_COMMANDS = new Set([
     "help", "--help", "-h",
+    "version", "--version", "-v",
     "doctor",
     "init",
     "protect", "armor", "protec",
@@ -535,6 +536,11 @@ export async function main(argv = process.argv.slice(2), options = {}) {
 
     if (["help", "--help", "-h"].includes(command)) {
         process.stdout.write(help());
+        return;
+    }
+    if (["version", "--version", "-v"].includes(command)) {
+        const manifest = JSON.parse(fs.readFileSync(path.join(cliRoot, "..", "package.json"), "utf8"));
+        process.stdout.write(`hetzer v${manifest.version}\n`);
         return;
     }
     if (command === "doctor") {

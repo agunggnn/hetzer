@@ -292,3 +292,24 @@ test("protect command includes CLI PATH notice when running via npx", async () =
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });
+
+test("version command reports package version correctly", async () => {
+    let output = "";
+    const originalStdout = process.stdout.write;
+    process.stdout.write = (chunk) => {
+        output += chunk;
+        return true;
+    };
+    try {
+        await main(["--version"]);
+        assert.match(output, /^hetzer v\d+\.\d+\.\d+/);
+        output = "";
+        await main(["-v"]);
+        assert.match(output, /^hetzer v\d+\.\d+\.\d+/);
+        output = "";
+        await main(["version"]);
+        assert.match(output, /^hetzer v\d+\.\d+\.\d+/);
+    } finally {
+        process.stdout.write = originalStdout;
+    }
+});
