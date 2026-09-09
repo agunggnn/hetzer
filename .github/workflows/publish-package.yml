@@ -4,6 +4,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+  workflow_call:
+
+concurrency:
+  group: publish-gpr-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   publish-gpr:
@@ -34,7 +39,27 @@ jobs:
       - name: Run empirical verification
         run: npm run verify -- --no-write
 
+      - name: Check whether this package version already exists
+        id: package
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ github.token }}
+        run: |
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+          echo "version=$package_version" >> "$GITHUB_OUTPUT"
+          if npm view "$package_name@$package_version" version --registry=https://npm.pkg.github.com/ >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish package to GitHub Packages
+        if: steps.package.outputs.exists != 'true'
         run: npm publish
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ github.token }}
+
+      - name: Report existing package
+        if: steps.package.outputs.exists == 'true'
+        run: echo "GitHub Package v${{ steps.package.outputs.version }} already exists; publish skipped."
