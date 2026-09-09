@@ -78,6 +78,7 @@
     "verify": "node scripts/verify-evidence.mjs",
     "build:package": "node scripts/build-package.mjs",
     "lint": "node scripts/check.mjs",
+    "render:banner": "node scripts/render-banner.mjs",
     "publish:github": "node scripts/publish-github.mjs",
     "publish:npm": "node scripts/publish.mjs",
     "publish-pkg": "node scripts/publish-github.mjs"
