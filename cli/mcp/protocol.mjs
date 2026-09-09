@@ -1,4 +1,6 @@
 import { sanitizeStreamOutput } from "../vault/exec.mjs";
+import { isCanaryCredential, triggerCanaryAlert } from "../vault/canary.mjs";
+import { SECRET_REF_PATTERN } from "../vault/hetzer-vault.mjs";
 
 const MODERN_VERSION = "2026-07-28";
 const LEGACY_VERSION = "2025-11-25";
@@ -16,7 +18,7 @@ function error(id, code, message) {
     return { jsonrpc: "2.0", id: id ?? null, error: { code, message } };
 }
 
-function sanitizeMcpValue(value) {
+export function sanitizeMcpValue(value) {
     if (typeof value === "string") return sanitizeStreamOutput(value);
     if (Array.isArray(value)) return value.map((item) => sanitizeMcpValue(item));
     if (value && typeof value === "object") {
@@ -25,6 +27,47 @@ function sanitizeMcpValue(value) {
                 sanitizeStreamOutput(key),
                 sanitizeMcpValue(item),
             ])
+        );
+    }
+    return value;
+}
+
+export function resolveSecretRefsInPayload(value, resolver) {
+    if (typeof value === "string") {
+        const exactMatch = SECRET_REF_PATTERN.exec(value.trim());
+        if (exactMatch) {
+            const id = exactMatch[1];
+            if (isCanaryCredential(id)) {
+                triggerCanaryAlert({ id, actor: "mcp-agent", action: "mcp.tools/call" });
+            }
+            if (typeof resolver === "function") {
+                const resolved = resolver(id);
+                if (resolved !== null && resolved !== undefined) return resolved;
+                throw new Error(`Credential 'secretRef:${id}' not found in Grimoire Vault.`);
+            }
+            return value;
+        }
+        if (value.includes("secretRef:")) {
+            return value.replace(/secretRef:([a-z0-9]+(?:[._-][a-z0-9]+)*)/g, (match, id) => {
+                if (isCanaryCredential(id)) {
+                    triggerCanaryAlert({ id, actor: "mcp-agent", action: "mcp.tools/call" });
+                }
+                if (typeof resolver === "function") {
+                    const resolved = resolver(id);
+                    if (resolved !== null && resolved !== undefined) return resolved;
+                    throw new Error(`Credential 'secretRef:${id}' not found in Grimoire Vault.`);
+                }
+                return match;
+            });
+        }
+        return value;
+    }
+    if (Array.isArray(value)) {
+        return value.map((item) => resolveSecretRefsInPayload(item, resolver));
+    }
+    if (value && typeof value === "object") {
+        return Object.fromEntries(
+            Object.entries(value).map(([k, v]) => [k, resolveSecretRefsInPayload(v, resolver)])
         );
     }
     return value;

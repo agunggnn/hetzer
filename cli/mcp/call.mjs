@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 
 import { parseEnv } from "../core/env.mjs";
 import { loadModuleRegistry } from "../modules/registry.mjs";
+import { Grimoire, resolveMasterKey, resolveVaultPath } from "../vault/hetzer-vault.mjs";
+import { resolveSecretRefsInPayload, sanitizeMcpValue } from "./protocol.mjs";
 
 function environmentValue(fileEnv, name, fallback = "") {
     return process.env[name] || fileEnv[name] || fallback;
@@ -241,13 +243,30 @@ export async function callMcpTool({
 
     const { endpointUrl, service } = resolveServiceEndpoint(root, targetService);
 
+    let resolvedArgs = typeof args === "string" ? JSON.parse(args || "{}") : (args || {});
+    const envFile = path.join(root, ".env");
+    const fileEnv = fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, "utf8")) : {};
+    const masterKey = resolveMasterKey({ root, envValues: fileEnv });
+    if (masterKey) {
+        const envVault = resolveVaultPath(root);
+        const dbPath = envVault || path.join(root, "data", "hetzer-vault.db");
+        if (fs.existsSync(dbPath)) {
+            const vault = new Grimoire({ dbPath, masterKey });
+            try {
+                resolvedArgs = resolveSecretRefsInPayload(resolvedArgs, (id) => vault.resolve(id));
+            } finally {
+                vault.close();
+            }
+        }
+    }
+
     const payload = {
         jsonrpc: "2.0",
         id: Date.now(),
         method: "tools/call",
         params: {
             name: toolName,
-            arguments: typeof args === "string" ? JSON.parse(args || "{}") : args,
+            arguments: resolvedArgs,
         },
     };
 
@@ -265,12 +284,12 @@ export async function callMcpTool({
         return {
             ok: false,
             isError: true,
-            error: data.error.message || JSON.stringify(data.error),
+            error: sanitizeMcpValue(data.error.message || JSON.stringify(data.error)),
             endpointUrl,
         };
     }
 
-    const result = data.result || {};
+    const result = sanitizeMcpValue(data.result || {});
     const contentText = (result.content || [])
         .map((item) => item.text || JSON.stringify(item))
         .join("\n") || JSON.stringify(result, null, 2);

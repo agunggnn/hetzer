@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 import { parseEnv } from "../core/env.mjs";
 import { loadModuleRegistry, publicModuleSummary } from "../modules/registry.mjs";
 import { Grimoire, resolveMasterKey, resolveVaultPath } from "../vault/hetzer-vault.mjs";
+import { isCanaryCredential, triggerCanaryAlert } from "../vault/canary.mjs";
 import { scanText, redactAndVault } from "../vault/sniffer.mjs";
+import { resolveSecretRefsInPayload } from "./protocol.mjs";
 import { synthesizeServiceTools } from "./synthesis.mjs";
 
 const EMPTY_SCHEMA = { type: "object", additionalProperties: false };
@@ -73,6 +75,9 @@ export function createToolCatalog({ root = process.env.HETZER_ROOT || process.cw
             annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
             execute: async ({ id }) => {
                 const targetId = String(id).replace(/^secretRef:/, "");
+                if (isCanaryCredential(targetId)) {
+                    triggerCanaryAlert({ id: targetId, actor: "mcp-agent", action: "mcp.hetzer_vault_has" });
+                }
                 const entry = getVault().find(targetId);
                 return { id: targetId, exists: Boolean(entry), ref: `secretRef:${targetId}` };
             },
@@ -273,7 +278,11 @@ export function createToolCatalog({ root = process.env.HETZER_ROOT || process.cw
             if (!acceptsArgs && Object.keys(normalizedArgs).length) {
                 throw new Error(`Tool '${name}' does not accept arguments.`);
             }
-            return tool.execute(normalizedArgs);
+            let finalArgs = normalizedArgs;
+            if (!["hetzer_vault_has", "hetzer_sniffer_scan", "hetzer_sniffer_redact"].includes(name)) {
+                finalArgs = resolveSecretRefsInPayload(normalizedArgs, (id) => getVault().resolve(id));
+            }
+            return tool.execute(finalArgs);
         },
         close() { vault?.close(); },
     };
