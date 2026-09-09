@@ -94,6 +94,6 @@ benchmarks/      # Performance benchmarks
 
 ## Release pipeline
 
-After a pull request is merged, `.github/workflows/release-main.yml` repeats the gates, builds both registry tarballs, creates an immutable annotated `v<package.version>` tag, and creates a GitHub Release containing those artifacts. Publishing that release triggers the scoped GitHub Packages workflow.
+After a pull request is merged, `.github/workflows/release-main.yml` repeats the gates, builds both registry tarballs, creates an immutable annotated `v<package.version>` tag, creates a GitHub Release containing those artifacts, and directly invokes the idempotent scoped GitHub Packages workflow.
 
 Publishing the unscoped npmjs package remains an explicit credentialed operation; the GitHub workflow does not assume access to an npm token.
