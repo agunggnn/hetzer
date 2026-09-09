@@ -2,8 +2,14 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -17,14 +23,21 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
       - run: npm ci
       - run: npm run check
-      - run: node --test "**/*.test.mjs"
-      - run: npm pack --dry-run
+      - run: npm test
+      - run: npm run verify -- --no-write
+      - name: Validate unused or idempotent release version
+        env:
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: node scripts/release-metadata.mjs
+      - run: npm run build:package
 
   compose-contract:
     runs-on: ubuntu-latest
