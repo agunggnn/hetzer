@@ -25,17 +25,24 @@ function pack(cwd) {
 }
 
 fs.mkdirSync(artifactRoot, { recursive: true });
-const scoped = pack(root);
-const staged = stagePackage({
+const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+const scopedStage = stagePackage({
+    root,
+    packageName: manifest.name,
+    registry: manifest.publishConfig.registry,
+});
+const publicStage = stagePackage({
     root,
     packageName: "hetzer",
     registry: "https://registry.npmjs.org/",
 });
 
 try {
-    const publicNpm = pack(staged);
+    const scoped = pack(scopedStage);
+    const publicNpm = pack(publicStage);
     process.stdout.write(`Built ${scoped.filename} (${scoped.integrity})\n`);
     process.stdout.write(`Built ${publicNpm.filename} (${publicNpm.integrity})\n`);
 } finally {
-    removeStagedPackage(staged);
+    removeStagedPackage(scopedStage);
+    removeStagedPackage(publicStage);
 }

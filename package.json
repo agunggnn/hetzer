@@ -1,6 +1,6 @@
 {
   "name": "@agunggnn/hetzer",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Local credential safety for AI-assisted workflows with an encrypted vault, scoped injection, output redaction, MCP proxy, and agent guidance.",
   "bin": {
     "hetzer": "cli/bin/hetzer.js"
@@ -20,7 +20,15 @@
     "scripts/publish-github.mjs",
     "scripts/build-package.mjs",
     "scripts/package-stage.mjs",
-    "docs",
+    "docs/architecture.md",
+    "docs/enterprise-readiness.md",
+    "docs/installation.md",
+    "docs/mcp-guide.md",
+    "docs/modules/cognee.md",
+    "docs/system-logic-and-progress.md",
+    "docs/value-benchmark.md",
+    "docs/verification-evidence.json",
+    "docs/vibe-coders.md",
     "modules/cognee",
     ".env.example",
     "docker-compose.yml",

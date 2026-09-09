@@ -24,6 +24,18 @@ export function listPackageFiles(root, { run = spawnSync } = {}) {
     return files;
 }
 
+export function listTrackedFiles(root, { run = spawnSync } = {}) {
+    const result = run("git", ["-c", `safe.directory=${path.resolve(root).replaceAll("\\", "/")}`, "ls-files", "-z"], {
+        cwd: root,
+        encoding: "utf8",
+        windowsHide: true,
+    });
+    if (result.status !== 0) {
+        throw new Error(`git tracked-file discovery failed: ${result.stderr || result.stdout || "unknown error"}`);
+    }
+    return new Set(result.stdout.split("\0").filter(Boolean).map((file) => file.replaceAll("\\", "/")));
+}
+
 export function stagePackage({
     root,
     packageName,
@@ -38,7 +50,14 @@ export function stagePackage({
 
     const resolvedRoot = path.resolve(root);
     const rootPrefix = `${resolvedRoot}${path.sep}`;
-    const packageFiles = files || listPackageFiles(resolvedRoot, { run });
+    const discoveredFiles = files || listPackageFiles(resolvedRoot, { run });
+    const trackedFiles = files ? null : listTrackedFiles(resolvedRoot, { run });
+    const packageFiles = trackedFiles
+        ? discoveredFiles.filter((file) => trackedFiles.has(file.replaceAll("\\", "/")))
+        : discoveredFiles;
+    if (!packageFiles.includes("package.json")) {
+        throw new Error("Tracked package files must include package.json.");
+    }
     const stagingRoot = fs.mkdtempSync(path.join(tempRoot, STAGING_PREFIX));
 
     try {
