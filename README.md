@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Local Credential Vault and Leak-Reduction Tools for AI Agents</strong><br>
-  <em>Regex and entropy scanner • AES-256-GCM Grimoire Vault • Git pre-commit guard • Agent integration skills.</em>
+  <em>Regex & entropy scanner • AES-256-GCM Grimoire Vault • Dual Git commit & message guards • Canary tripwires • Agent integration skills.</em>
 </p>
 
 <p align="center">
@@ -31,7 +31,7 @@ npx hetzer protect
 # 1. Install credential-safety guidance for supported AI agents
 npx hetzer skill install
 
-# 2. Install Git Pre-Commit Guard (blocks supported token patterns and .env files)
+# 2. Install Dual Git Guards (blocks staged tokens/.env via pre-commit, raw secrets in commit-msg)
 npx hetzer hook install
 
 # 3. Store credentials & API keys into encrypted Grimoire Vault (AES-256-GCM)
@@ -72,6 +72,8 @@ For structured navigation and deep architectural insights, explore the dedicated
 | 📊 **[Measurement & Evaluation Guide (`docs/value-benchmark.md`)](docs/value-benchmark.md)** | Reproducible local measurements, comparison rules, and limits on compliance/TCO claims. |
 | 🏦 **[Enterprise & Banking Readiness (`docs/enterprise-readiness.md`)](docs/enterprise-readiness.md)** | Regulatory compliance evaluation (PCI-DSS 4.0, SOC 2, ISO 27001, OJK, Bank Indonesia), threat models, and financial hardening guide. |
 | 🌐 **[Model Context Protocol Guide (`docs/mcp-guide.md`)](docs/mcp-guide.md)** | Connect Hetzer to Claude Desktop, Cursor, Cline, OpenCode, `[OFFLINE]`/`[HYBRID]`/`[LLM]` classification, and CLI testing. |
+| 🔄 **[HTTP Credential Broker (`docs/http-credential-broker.md`)](docs/http-credential-broker.md)** | Loopback proxy injecting upstream credentials via short-lived capabilities without exposing long-lived secrets to child environments. |
+| 🛡️ **[Security Boundary & Isolation Roadmap (`docs/hetzer-vs-strongdm-analysis.md`)](docs/hetzer-vs-strongdm-analysis.md)** | Engineering analysis of implemented controls, architectural boundaries, and isolation roadmap. |
 | 🧠 **[Cognee Persistent Memory Module (`docs/modules/cognee.md`)](docs/modules/cognee.md)** | Graph and vector persistent memory, local Ollama integration, and memory tools. |
 
 ---
@@ -83,9 +85,11 @@ For structured navigation and deep architectural insights, explore the dedicated
 With Hetzer, you get:
 1. **Secret scanner**: Scans explicitly supplied text for supported provider tokens, credentialed database URLs, bounded private-key blocks, and high-entropy candidates.
 2. **Grimoire Vault (AES-256-GCM)**: SQLite-backed encrypted credential storage. Configuration can use `secretRef:<id>` in place of plaintext values.
-3. **Agent integrations**: Installs guidance and MCP configuration for Hermes Agent, Google Antigravity, OpenCode, CommandCode, Cursor, Claude, Cline, Codex, and Gemini. These integrations do not intercept unrelated agent actions.
-4. **Git Pre-Commit Guard**: Inspects staged filenames and added text before a commit. Runtime depends on repository size and Git startup cost.
-5. **9Router AI Gateway & Cognee Memory (Optional Full-Stack)**: Multi-provider model routing with automatic fallback and tri-layer relational/vector/graph persistent memory in ~1.4 GiB RAM.
+3. **Agent integrations & MCP Virtual Proxy**: Installs guidance and MCP configuration for Hermes Agent, Google Antigravity, OpenCode, CommandCode, Cursor, Claude, Cline, Codex, and Gemini. Virtual proxy resolves `secretRef:<id>` in tool arguments and sanitizes outgoing responses.
+4. **Dual Git Guards (`pre-commit` & `commit-msg`)**: Inspects staged filenames, diff additions before commit, and validates commit messages against raw credentials.
+5. **Canary Honey-Tokens & Active Stream Tripwires**: Deploys decoy canary tokens (`HETZER_CANARY_TOKEN`, `canary-*`). Guarded resolution aborts with exit code 43. Guarded subprocesses (`hetzer exec --canary`) terminate child processes if canary tokens leak into stdout/stderr.
+6. **HTTP Credential Broker**: Loopback proxy (`127.0.0.1`) injecting upstream credentials via ephemeral capabilities without exposing raw secrets to child environments.
+7. **9Router AI Gateway & Cognee Memory (Optional Full-Stack)**: Multi-provider model routing with automatic fallback and tri-layer relational/vector/graph persistent memory in ~1.4 GiB RAM.
 
 All built with **0 external npm dependencies** (100% Node.js standard library: `node:crypto`, `node:sqlite`, `node:fs`, `node:perf_hooks`).
 
@@ -98,7 +102,9 @@ All built with **0 external npm dependencies** (100% Node.js standard library: `
 | Vault at rest | AES-256-GCM encryption with a unique random IV and authenticated metadata | A process that can read both the database and master-key file can decrypt entries |
 | `hetzer exec` | Resolves allowed references and sanitizes child stdout/stderr with bounded rolling and structured-stream filters | Child memory contains resolved values; transformed output, direct device/file/network writes, and unrelated processes remain outside this path |
 | Scanner | Supported patterns, database URLs, private-key blocks up to 16 KiB, and high-entropy candidates | Pattern matching can produce false positives and false negatives |
-| Git hook | Staged `.env` filenames and supported candidates in added text | Hooks can be skipped and do not scan repository history |
+| Git hooks | Staged `.env` filenames, diff additions (`pre-commit`), and commit message text (`commit-msg`) | Hooks can be bypassed via `--no-verify` and do not scan past repository history |
+| Canary tripwires | Guarded resolution, reveal, and subprocess stream outputs (`hetzer exec --canary`) | Detects and aborts guarded paths/leaks; does not detect arbitrary out-of-band disk reads by the same OS user |
+| MCP proxy | Resolves `secretRef:<id>` in tool payloads, enforces canary checks, and sanitizes tool outputs | Covers integrated FastMCP requests; does not intercept external or unmanaged tool calls |
 | Agent skills | Instructions and MCP metadata-only vault tools | Instructions do not enforce access control against the local OS user |
 
 ---
@@ -163,7 +169,7 @@ flowchart TB
 │                     HETZER SEVEN-LAYER DEFENSE MATRIX                       │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  Layer 1: Explicit Secret Scanner                                            │
-│  ► Scans input passed to the CLI/MCP scanner and staged Git additions.       │
+│  ► Scans input passed to CLI/MCP scanner, staged Git diffs & commit messages. │
 │  ► Redaction reports whether each detected value was successfully vaulted.  │
 │  ► Agent prompts outside integrated paths are not intercepted.               │
 ├─────────────────────────────────────────────────────────────────────────────┤
@@ -186,10 +192,11 @@ flowchart TB
 │  ► Launches native OS modal dialogs (Windows Forms / AppleScript / Zenity). │
 │  ► Every plaintext reveal requires a native modal confirmation.              │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  Layer 6: Dynamic Canary Honey-Tokens (Intrusion Tripwires)                 │
+│  Layer 6: Dynamic Canary Honey-Tokens & Active Stream Tripwires             │
 │  ► Deploys enticing decoy canary tokens ('HETZER_CANARY_TOKEN') into .env.  │
-│  ► Guarded resolution/reveal attempts abort with exit code 43 and log an     │
-│    incident. Arbitrary file reads are outside this tripwire.                 │
+│  ► Guarded resolution/reveal attempts abort with exit code 43 and log alert.│
+│  ► 'hetzer exec --canary' monitors child streams; any detected canary leak   │
+│    instantly terminates child process tree (taskkill / SIGKILL) & aborts.   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  Layer 7: Master Key Workspace Isolation (~/.hetzer/grimoire.key)           │
 │  ► 'hetzer creds isolate-key' relocates master key out of project directory │
@@ -254,24 +261,37 @@ Check the installation status of all agents on your machine:
 hetzer skill status
 ```
 
+### 🔌 MCP Virtual Credential Proxy
+Hetzer includes a built-in FastMCP protocol server (`cli/mcp/protocol.mjs`) compatible with modern (`2026-07-28`) and legacy (`2025-11-25`) MCP specifications:
+- **Zero-Plaintext Tool Payloads**: AI agents pass abstract references (e.g. `secretRef:openai-api-key`) in tool call arguments. The proxy resolves secrets just-in-time in memory before upstream execution.
+- **Canary Tripwire Guard**: Tool calls containing decoy canary references immediately trigger security alerts and abort with exit code 43.
+- **Response Sanitization**: All tool outputs are recursively sanitized through Hetzer's stream redactor before returning to the LLM agent, blocking credential leakage in tool responses.
+
 ---
 
-## 🛡️ Git Pre-Commit Guard Hook
+## 🛡️ Dual Git Guard Hooks (Pre-Commit & Commit-Msg)
 
 Prevent accidental credential leaks before they ever reach GitHub:
 
 ```bash
-# Install the hook to .git/hooks/pre-commit
+# Install both hooks to .git/hooks/ (pre-commit and commit-msg)
 hetzer hook install
 
-# Check staged changes manually
+# Check staged diff manually
 hetzer hook check
 
-# Uninstall the hook if no longer needed
+# Validate a commit message manually
+hetzer hook check-msg .git/COMMIT_EDITMSG
+
+# Uninstall both hooks if no longer needed
 hetzer hook uninstall
 ```
 
-When the installed hook runs, it blocks supported credential patterns and `.env` files in staged changes. The reported latency includes Git startup and varies by repository:
+When installed, Hetzer provides dual-phase protection:
+1. **Pre-Commit Guard**: Inspects staged files and diff additions for supported credential patterns and `.env` files. Test fixtures (`*.test.*`, `test/`, `fixtures/`) and agent call IDs are safely exempted.
+2. **Commit-Msg Guard**: Verifies commit message text (`COMMIT_EDITMSG`), blocking commits that accidentally embed tokens, passwords, or API keys in the commit summary or description.
+
+Example of a blocked commit:
 ```text
 ================================================================================
   🛑 HETZER ARMOR: GIT COMMIT BLOCKED (TOKEN LEAK DETECTED!)
@@ -286,6 +306,24 @@ When the installed hook runs, it blocks supported credential patterns and `.env`
   2. Replace in your code with: secretRef:openai-api-key
 ================================================================================
 ```
+
+---
+
+## 🪤 Canary Honey-Tokens & Active Stream Tripwires
+
+Detect unauthorized credential harvesting and prompt injection attempts targeting AI agents:
+
+```bash
+# Deploy decoy canary honey-token into .env
+hetzer canary setup
+
+# Execute child process with active stream canary monitoring
+hetzer exec --canary -- npm test
+```
+
+### Tripwire Mechanisms:
+- **Decoy Honey-Tokens**: `hetzer canary setup` binds `HETZER_CANARY_TOKEN=secretRef:canary-token` in `.env`. Attempting to resolve, inspect, or reveal canary credentials (`canary-token`, `canary-*`, `decoy-*`) triggers `ERR_CANARY_TRIPWIRE_TRIGGERED` (`exitCode 43`) and records an incident to `data/hetzer-incidents.log`.
+- **Subprocess Stream Kill**: When running commands with `hetzer exec --canary`, dynamic decoy tokens (`canary_trap_<hex>`) are injected into the child environment. Hetzer continuously buffers and scans stdout and stderr streams; if the decoy token leaks into output, Hetzer **instantly terminates the entire child process tree** (`taskkill /PID /T /F` on Windows, `SIGKILL`/`SIGTERM` on POSIX), halts output forwarding, and aborts with exit code 43.
 
 ---
 
@@ -306,12 +344,12 @@ All Hetzer commands are executed via the `hetzer` CLI:
 | `hetzer creds reveal <id>` | Decrypts and prints plaintext after TTY, process-tree, and required native-modal checks |
 | `hetzer creds set <id>` | Encrypts and saves a credential via AES-256-GCM using a masked prompt |
 | `hetzer creds isolate-key` | Moves master key outside workspace to `~/.hetzer/grimoire.key` (mode 0600) |
-| `hetzer canary [setup]` | Deploys decoy canary honey-tokens to catch prompt injection & extraction |
-| `hetzer exec [--allow <ids>] [--strict] -- <c>` | Runs a command with scoped secret injection and buffered stream sanitization |
+| `hetzer canary [setup]` | Deploys decoy canary honey-tokens to catch prompt injection & scraping |
+| `hetzer exec [--allow <ids>] [--strict] [--canary] -- <c>` | Runs command with scoped secret injection, stream sanitization, and active canary tripwire |
 | `hetzer broker --policy <file> -- <c>` | Runs a compatible HTTP client with a short-lived loopback capability instead of the long-lived credential |
 | `hetzer sniffer [scan\|redact]` | Scans or redacts supported credential candidates from input text |
 | `hetzer skill [install\|status]`| Deploys Universal AI Agent Skills to Hermes, AGY, OpenCode, Cursor, Claude |
-| `hetzer hook [install\|check]` | Installs or tests the Git pre-commit credential leak guard |
+| `hetzer hook [install\|uninstall\|check\|check-msg]` | Installs or tests Dual Git Guards (`pre-commit` staged diff & `commit-msg` text) |
 | `hetzer modules` | Displays available and active native extension modules |
 | `hetzer install <module>` | Enables and configures an extension module (e.g. `cognee`, `9router`) |
 | `hetzer remove <module>` | Disables an extension module without deleting persistent data |
@@ -337,10 +375,12 @@ hetzer creds reveal nine-router-initial-password
 ```
 
 ### 2. Can AI Agents (Claude, Cursor, Cline, GPT) see these credentials?
-Hetzer keeps plaintext out of MCP vault-list and vault-existence responses, and `hetzer exec` injects approved values directly into a child process. This does not guarantee that an unrestricted agent can never access a credential:
+Hetzer keeps plaintext out of MCP vault-list and vault-existence responses, resolves references just-in-time via its MCP virtual proxy, and `hetzer exec` injects approved values directly into child processes. This reduces leakage while maintaining operational reality:
 - The MCP tools exposed to AI (`hetzer_vault_has` and `hetzer_vault_list`) **only return metadata** and abstract reference strings (`secretRef:<id>`).
-- **No `reveal` tool is exposed by Hetzer's MCP server**. This limits that interface; it does not restrict other tools or same-user file/process access.
-- Credentials injected into a child exist in that process environment and memory. `hetzer exec` blocks common reflection commands and sanitizes supported output, but these are application safeguards rather than OS isolation.
+- **No `reveal` tool is exposed by Hetzer's MCP server**.
+- **MCP Virtual Credential Proxy**: When an agent invokes an MCP tool, it passes references like `secretRef:<id>`. Hetzer resolves this just-in-time for upstream execution, checks for honeytokens, and recursively sanitizes outgoing tool responses before context delivery.
+- **Canary Tripwires**: Any attempt by an autonomous agent or injected prompt to access canary credentials (`canary-token`, `canary-*`, `decoy-*`) triggers a critical security incident and aborts with `exitCode 43`.
+- Credentials injected into a child exist in that process environment and memory. `hetzer exec` blocks common reflection commands, sanitizes supported output, and terminates processes if canary tokens leak (`--canary`). These are application safeguards rather than full OS sandboxing.
 - Agent instructions do not intercept arbitrary prompts, files, debuggers, alternate processes, or tools. Use OS account separation and a centrally managed secret system for hostile-code boundaries.
 
 ### 3. What credential scenarios does Hetzer support?
@@ -353,7 +393,7 @@ Grimoire Vault can store arbitrary values up to its configured size limit. Autom
 
 ### 4. Who does Hetzer protect you from?
 - **Third-party AI vendors**: References reduce exposure when users and agents follow the installed guidance and use the integrated scanner paths.
-- **Accidental Git exposure**: The hook catches supported candidates and staged `.env` filenames unless hooks are bypassed.
+- **Accidental Git exposure**: Dual Git guards catch supported candidates and staged `.env` filenames (`pre-commit`), and block secrets in commit messages (`commit-msg`) unless hooks are bypassed.
 - **Other OS accounts**: POSIX mode `0600` restricts ordinary cross-account access. Administrators, the same account, backups, and platform-specific ACL behavior remain in scope.
 
 ### 5. How do I achieve maximum security on production servers?
