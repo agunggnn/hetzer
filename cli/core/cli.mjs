@@ -72,6 +72,97 @@ export function resolveProjectRoot(options = {}) {
     return defaultHetzerHome();
 }
 
+export function isGlobalCliInstalled() {
+    if (process.env.HETZER_TEST_GLOBAL_CLI !== undefined) {
+        return process.env.HETZER_TEST_GLOBAL_CLI === "true";
+    }
+    if (process.argv[1] && process.argv[1].includes("_npx")) {
+        return false;
+    }
+    const cmd = process.platform === "win32" ? "where.exe" : "which";
+    try {
+        const result = spawnSync(cmd, ["hetzer"], {
+            encoding: "utf8",
+            windowsHide: true,
+            stdio: "pipe",
+        });
+        if (result.status !== 0 || !result.stdout) return false;
+        const matches = result.stdout.split(/\r?\n/).filter(Boolean);
+        return matches.some((p) => !p.includes("_npx"));
+    } catch {
+        return false;
+    }
+}
+
+export function levenshteinDistance(a, b) {
+    if (a === b) return 0;
+    if (!a.length) return b.length;
+    if (!b.length) return a.length;
+    const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+        let prev = i;
+        for (let j = 1; j <= b.length; j++) {
+            const val = a[i - 1] === b[j - 1] ? row[j - 1] : Math.min(row[j - 1], prev, row[j]) + 1;
+            row[j - 1] = prev;
+            prev = val;
+        }
+        row[b.length] = prev;
+    }
+    return row[b.length];
+}
+
+export function suggestCommand(input) {
+    const primaryCommands = [
+        "help", "doctor", "init", "protect", "skill", "hook",
+        "sniffer", "install", "remove", "creds", "canary",
+        "modules", "up", "update", "down", "status", "logs",
+        "module", "validate", "mcp", "publish", "exec", "tui",
+    ];
+    const lower = String(input || "").toLowerCase();
+    for (const cmd of primaryCommands) {
+        if (cmd.startsWith(lower) || (lower.length >= 3 && lower.startsWith(cmd))) {
+            return cmd;
+        }
+    }
+    let bestMatch = null;
+    let minDistance = 3;
+    for (const cmd of primaryCommands) {
+        const dist = levenshteinDistance(lower, cmd);
+        if (dist < minDistance) {
+            minDistance = dist;
+            bestMatch = cmd;
+        }
+    }
+    return bestMatch;
+}
+
+export const KNOWN_COMMANDS = new Set([
+    "help", "--help", "-h",
+    "version", "--version", "-v",
+    "doctor",
+    "init",
+    "protect", "armor", "protec",
+    "skill", "skills",
+    "hook", "hooks",
+    "sniffer", "sniff",
+    "install",
+    "remove",
+    "creds", "credentials",
+    "canary",
+    "modules",
+    "up",
+    "update",
+    "down",
+    "status",
+    "logs",
+    "module",
+    "validate",
+    "mcp",
+    "publish",
+    "exec",
+    "tui",
+]);
+
 function replaceEnvValue(text, name, value) {
     const line = `${name}=${value}`;
     const pattern = new RegExp(`^${name}=.*$`, "m");
@@ -217,20 +308,29 @@ function printInitWizard(result) {
     process.stdout.write(`[v] Configuration File: .env (permissions secured chmod 600)\n`);
     process.stdout.write(`[v] Grimoire Vault    : data/hetzer-vault.db (AES-256-GCM Encrypted)\n`);
     process.stdout.write(`[v] MCP Server        : .mcp.json configured\n`);
+    const globalCli = isGlobalCliInstalled();
     if (isGlobal) {
-        process.stdout.write(`[v] Global Access     : You can run 'hetzer' from any directory!\n`);
+        if (globalCli) {
+            process.stdout.write(`[v] Global Access     : 'hetzer' is in your PATH. You can run it from any directory!\n`);
+        } else {
+            process.stdout.write(`[!] Global Access     : 'hetzer' is NOT in your system PATH (running via npx or local script).\n`);
+            process.stdout.write(`                        To run direct commands (e.g. 'hetzer up'), install globally:\n`);
+            process.stdout.write(`                          npm install -g hetzer\n`);
+            process.stdout.write(`                        Or prefix commands with npx: 'npx hetzer <command>'\n`);
+        }
     }
+    const prefix = globalCli ? "hetzer" : "npx hetzer";
     process.stdout.write("--------------------------------------------------------------------------------\n");
     process.stdout.write("  9ROUTER INITIAL LOGIN & CREDENTIAL INFORMATION:\n");
     process.stdout.write("--------------------------------------------------------------------------------\n");
     process.stdout.write("  Web UI URL       : http://127.0.0.1:20140\n");
     process.stdout.write("  Login Form       : 9Router requires the password stored in Grimoire Vault\n");
     process.stdout.write(`  Password Ref     : ${result.initialPasswordRef}\n`);
-    process.stdout.write("  Human retrieval  : hetzer creds reveal nine-router-initial-password\n\n");
+    process.stdout.write(`  Human retrieval  : ${prefix} creds reveal nine-router-initial-password\n\n`);
     process.stdout.write("  IMPORTANT INITIALIZATION NOTE:\n");
     process.stdout.write("  9Router only reads the Initial Password when its database is first created.\n");
     process.stdout.write("  If 9Router was previously initialized, run:\n");
-    process.stdout.write("    hetzer down -v && hetzer up\n");
+    process.stdout.write(`    ${prefix} down -v && ${prefix} up\n`);
     process.stdout.write("  to reset existing volumes so the new password takes effect.\n\n");
     process.stdout.write("  SECURITY CONTRACT (ZERO-PLAINTEXT):\n");
     process.stdout.write("  This password is encrypted in Grimoire Vault (data/hetzer-vault.db).\n");
@@ -238,17 +338,17 @@ function printInitWizard(result) {
     process.stdout.write("    NINE_ROUTER_INITIAL_PASSWORD=secretRef:nine-router-initial-password\n");
     process.stdout.write("  protecting your secrets from accidental git exposure.\n\n");
     process.stdout.write("  CREDENTIAL MANAGEMENT:\n");
-    process.stdout.write("  - Reveal password anytime   : hetzer creds reveal nine-router-initial-password\n");
-    process.stdout.write("  - Update password in vault  : hetzer creds set nine-router-initial-password\n");
-    process.stdout.write("  - Inspect all credentials   : hetzer creds list\n");
+    process.stdout.write(`  - Reveal password anytime   : ${prefix} creds reveal nine-router-initial-password\n`);
+    process.stdout.write(`  - Update password in vault  : ${prefix} creds set nine-router-initial-password\n`);
+    process.stdout.write(`  - Inspect all credentials   : ${prefix} creds list\n`);
     process.stdout.write("--------------------------------------------------------------------------------\n");
     process.stdout.write("  NEXT STEPS:\n");
     process.stdout.write("--------------------------------------------------------------------------------\n");
-    process.stdout.write("  1. Start services      : hetzer up\n");
-    process.stdout.write("  2. Retrieve password   : hetzer creds reveal nine-router-initial-password\n");
-    process.stdout.write("  3. Open Web UI         : http://127.0.0.1:20140\n");
-    process.stdout.write("  4. Open live dashboard : hetzer tui\n");
-    process.stdout.write("  5. View extra modules  : hetzer modules\n");
+    process.stdout.write(`  1. Start services      : ${prefix} up\n`);
+    process.stdout.write(`  2. Retrieve password   : ${prefix} creds reveal nine-router-initial-password\n`);
+    process.stdout.write(`  3. Open Web UI         : http://127.0.0.1:20140\n`);
+    process.stdout.write(`  4. Open live dashboard : ${prefix} tui\n`);
+    process.stdout.write(`  5. View extra modules  : ${prefix} modules\n`);
     process.stdout.write("================================================================================\n");
 }
 
@@ -428,8 +528,19 @@ export async function main(argv = process.argv.slice(2), options = {}) {
     const args = parsedArgs.slice(1);
     const root = resolveProjectRoot({ root: rootOption });
 
+    if (!KNOWN_COMMANDS.has(command)) {
+        const suggested = suggestCommand(command);
+        const suggestionMsg = suggested ? ` Did you mean 'hetzer ${suggested}'?` : "";
+        throw new Error(`Unknown command '${command}'.${suggestionMsg} Run 'hetzer help'.`);
+    }
+
     if (["help", "--help", "-h"].includes(command)) {
         process.stdout.write(help());
+        return;
+    }
+    if (["version", "--version", "-v"].includes(command)) {
+        const manifest = JSON.parse(fs.readFileSync(path.join(cliRoot, "..", "package.json"), "utf8"));
+        process.stdout.write(`hetzer v${manifest.version}\n`);
         return;
     }
     if (command === "doctor") {
@@ -449,7 +560,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         return;
     }
 
-    if (["protect", "armor"].includes(command)) {
+    if (["protect", "armor", "protec"].includes(command)) {
         const workspaceRoot = rootOption ? path.resolve(rootOption) : process.cwd();
 
         // 1. Install universal skills to all detected and supported AI agents
@@ -496,6 +607,15 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         process.stdout.write("  [v] Resource Overhead  : 0 Docker containers, 0 background RAM, 0 npm dependencies\n");
         process.stdout.write("--------------------------------------------------------------------------------\n");
         process.stdout.write("  These controls reduce accidental credential disclosure; review the documented boundaries.\n");
+        if (!isGlobalCliInstalled()) {
+            process.stdout.write("--------------------------------------------------------------------------------\n");
+            process.stdout.write("  ℹ️  CLI PATH NOTICE:\n");
+            process.stdout.write("      'hetzer' is not in your system PATH (running via npx or local script).\n");
+            process.stdout.write("      * Passive Guards (Active) : Prompt protection & Git hook work immediately.\n");
+            process.stdout.write("      * Scoped Execution        : For agents to run 'hetzer exec', install globally:\n");
+            process.stdout.write("                                  npm install -g hetzer\n");
+            process.stdout.write("                                  (or prefix commands with npx: npx hetzer <cmd>)\n");
+        }
         process.stdout.write("================================================================================\n");
         return;
     }
@@ -1026,5 +1146,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         run(process.execPath, [path.join(cliRoot, "modules", "tui.mjs"), "--root", root], { cwd: root });
         return;
     }
-    throw new Error(`Unknown command '${command}'. Run 'hetzer help'.`);
+    const suggested = suggestCommand(command);
+    const suggestionMsg = suggested ? ` Did you mean 'hetzer ${suggested}'?` : "";
+    throw new Error(`Unknown command '${command}'.${suggestionMsg} Run 'hetzer help'.`);
 }

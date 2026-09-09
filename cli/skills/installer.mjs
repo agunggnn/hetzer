@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -23,6 +24,28 @@ const hetzerBin = path.join(cliRoot, "bin", "hetzer.js");
 
 export function getInstallHome() {
     return path.resolve(process.env.HETZER_INSTALL_HOME || os.homedir());
+}
+
+export function isGlobalCliInstalled() {
+    if (process.env.HETZER_TEST_GLOBAL_CLI !== undefined) {
+        return process.env.HETZER_TEST_GLOBAL_CLI === "true";
+    }
+    if (process.argv[1] && process.argv[1].includes("_npx")) {
+        return false;
+    }
+    const cmd = process.platform === "win32" ? "where.exe" : "which";
+    try {
+        const result = spawnSync(cmd, ["hetzer"], {
+            encoding: "utf8",
+            windowsHide: true,
+            stdio: "pipe",
+        });
+        if (result.status !== 0 || !result.stdout) return false;
+        const matches = result.stdout.split(/\r?\n/).filter(Boolean);
+        return matches.some((p) => !p.includes("_npx"));
+    } catch {
+        return false;
+    }
 }
 
 export const SUPPORTED_AGENTS = [
@@ -423,6 +446,14 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         process.stdout.write("--------------------------------------------------------------------------------\n");
         process.stdout.write("  [v] Complete! Credential-safety guidance and supported MCP settings were installed for\n");
         process.stdout.write("      Hermes, AGY, OpenCode, CommandCode, Cursor, Claude, Cline, Codex, and Gemini.\n");
+        if (!isGlobalCliInstalled()) {
+            process.stdout.write("--------------------------------------------------------------------------------\n");
+            process.stdout.write("  ℹ️  CLI PATH NOTICE:\n");
+            process.stdout.write("      'hetzer' is not in your system PATH (running via npx or local script).\n");
+            process.stdout.write("      * Passive guidance (preventing plaintext secret generation) works immediately.\n");
+            process.stdout.write("      * For AI agents to run 'hetzer exec' for scoped secret injection:\n");
+            process.stdout.write("        npm install -g hetzer\n");
+        }
         process.stdout.write("================================================================================\n");
         process.exit(0);
     }

@@ -8,11 +8,27 @@ cd hetzer
 npm ci
 ```
 
+## Development workflow
+
+Create a branch for every change. Do not develop or commit directly on `main`.
+
+```bash
+git switch -c <type>/<short-description>
+```
+
+Before opening a pull request, update the package version and every mirrored version field when the merge should produce a release. The main-branch release workflow refuses to move an existing version tag.
+
 ## Running Tests
 
 ```bash
 # Run all tests
 npm test
+
+# Run all six empirical security and performance protocols
+npm run verify -- --no-write
+
+# Confirm both registry packages can be assembled
+npm run build:package
 
 # Run specific test file
 node --test cli/core/env.test.mjs
@@ -49,7 +65,7 @@ benchmarks/      # Performance benchmarks
 
 ## Code Conventions
 
-- Node 20+ ESM (`"type": "module"` in package.json)
+- Node >=22.5.0 ESM; the vault requires the built-in `node:sqlite` module
 - `node:test` for unit tests (`*.test.mjs`)
 - `node --test "**/*.test.mjs"` runs all tests
 - Zero external dependencies in runtime `cli/` — Node standard library only
@@ -70,11 +86,14 @@ benchmarks/      # Performance benchmarks
 - `.env` files created by `init` get `chmod 600` (Unix)
 - Any `.env` write in `toggle.mjs` also applies `chmod 600`
 
-## CI Pipeline
+## CI pipeline
 
-- `test` job: Ubuntu/macOS/Windows, Node 22, `npm ci`, `npm run lint`, `npm test`, `npm pack --dry-run`
+- Feature-branch pushes and pull requests into `main` run static checks, tests, all six empirical protocols, and package builds on Ubuntu, macOS, and Windows.
 - `compose-contract` job: Smoke test `hetzer init` + `hetzer doctor` on Ubuntu
+- Direct pushes to `main` are not the development path. Protect `main` in GitHub and require the CI jobs before merging.
 
-## Release
+## Release pipeline
 
-Manual: `npm version patch|minor|major && git push --follow-tags`
+After a pull request is merged, `.github/workflows/release-main.yml` repeats the gates, builds both registry tarballs, creates an immutable annotated `v<package.version>` tag, and creates a GitHub Release containing those artifacts. Publishing that release triggers the scoped GitHub Packages workflow.
+
+Publishing the unscoped npmjs package remains an explicit credentialed operation; the GitHub workflow does not assume access to an npm token.
