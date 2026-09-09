@@ -6,12 +6,12 @@ This document defines the canonical geometric architecture, design system, and d
 
 ## 📌 Source of Truth Architecture
 
-* **Canonical Vector Source**: [`assets/hetzer-banner.svg`](file:///E:/GitHub/shadow-core/assets/hetzer-banner.svg)
-* **Derived Raster Artifact**: [`assets/hetzer-banner.jpg`](file:///E:/GitHub/shadow-core/assets/hetzer-banner.jpg)
-* **Automation Script**: [`scripts/render-banner.mjs`](file:///E:/GitHub/shadow-core/scripts/render-banner.mjs) (`npm run render:banner`)
+* **Canonical Vector Source**: [`assets/hetzer-banner.svg`](../assets/hetzer-banner.svg)
+* **Derived Raster Artifact**: [`assets/hetzer-banner.jpg`](../assets/hetzer-banner.jpg)
+* **Automation Script**: [`scripts/render-banner.mjs`](../scripts/render-banner.mjs) (`npm run render:banner`)
 
 > [!IMPORTANT]
-> **Zero Raster Patching Rule**: Never modify [`assets/hetzer-banner.jpg`](file:///E:/GitHub/shadow-core/assets/hetzer-banner.jpg) directly with image editors, brush tools, or solid fill boxes. Doing so causes visible JPEG compression boundary artifacts and font anti-aliasing mismatches. All visual changes **must** be made in the SVG vector geometry and re-rendered through the automated script.
+> **Zero Raster Patching Rule**: Never modify [`assets/hetzer-banner.jpg`](../assets/hetzer-banner.jpg) directly with image editors, brush tools, or solid fill boxes. Doing so causes visible JPEG compression boundary artifacts and font anti-aliasing mismatches. All visual changes **must** be made in the SVG vector geometry and re-rendered through the automated script.
 
 ---
 
@@ -57,7 +57,7 @@ The banner uses a fixed 900 × 380 pixel viewport styled as a floating dark macO
 
 ## 🔤 Letter Grid & Wordmark Geometry (`H E T Z E R`)
 
-The wordmark is modeled on classic retro 16-bit ANSI shadow terminal block fonts (as output by [`cli/core/banner.mjs`](file:///E:/GitHub/shadow-core/cli/core/banner.mjs)).
+The wordmark is modeled on classic retro 16-bit ANSI shadow terminal block fonts (as output by [`cli/core/banner.mjs`](../cli/core/banner.mjs)).
 
 ### Vertical Row Grid
 All letters span vertically from **`y = 109`** to **`y = 207`** (total height = 98px), divided into 5 standard ANSI rows:
@@ -185,7 +185,7 @@ If running manually on Windows:
   --screenshot="assets\temp.png" `
   --window-size=900,380 `
   --force-device-scale-factor=1 `
-  "file:///E:/GitHub/shadow-core/assets/hetzer-banner.svg"
+  "file:///absolute/path/to/hetzer/assets/hetzer-banner.svg"
 
 # 2. Convert to JPEG with Python Pillow (quality 98)
 python -c "from PIL import Image; Image.open('assets/temp.png').convert('RGB').save('assets/hetzer-banner.jpg', 'JPEG', quality=98)"
@@ -200,7 +200,7 @@ Remove-Item assets\temp.png
 
 Before committing banner updates:
 - [ ] Run `npm run check` (validates all source files and checks for sensitive strings).
-- [ ] Inspect [`assets/hetzer-banner.jpg`](file:///E:/GitHub/shadow-core/assets/hetzer-banner.jpg) visually at 100% scale.
+- [ ] Inspect [`assets/hetzer-banner.jpg`](../assets/hetzer-banner.jpg) visually at 100% scale.
 - [ ] Verify the letter **`Z`** has crisp diagonal steps rather than rectangular notches.
 - [ ] Verify pill text reflects current empirical capabilities (`Bounded Sniffer`, not `Sub-2ms`).
 - [ ] Confirm file size of `assets/hetzer-banner.jpg` is approximately 70–80 KB.
