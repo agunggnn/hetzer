@@ -1,6 +1,6 @@
 # Hetzer Contributor & Agent Guidance
 
-> **Current Package Version**: v0.4.3
+> **Current Package Version**: v0.4.4
 > **Verification**: Run `npm run check`, `npm test`, and `npm run verify` against the current tree; do not rely on a cached test count.
 
 ---
