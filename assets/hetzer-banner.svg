@@ -34,13 +34,13 @@
   <text x="450" y="43" fill="#64748b" font-family="'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace" font-size="12" font-weight="500" text-anchor="middle" letter-spacing="0.5">hetzer ~ credential-safety-layer</text>
 
   <!-- ASCII Art Wordmark -->
-  <g fill="url(#cyber-grad)" filter="url(#glow)" font-family="'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace" font-size="16" font-weight="700" letter-spacing="-0.5px">
-    <text x="450" y="112" text-anchor="middle">██╗  ██╗███████╗████████╗███████╗███████╗██████╗ </text>
-    <text x="450" y="131" text-anchor="middle">██║  ██║██╔════╝╚══██╔══╝╚══███╔╝██╔════╝██╔══██╗</text>
-    <text x="450" y="150" text-anchor="middle">███████║█████╗     ██║     ███╔╝ █████╗  ██████╔╝</text>
-    <text x="450" y="169" text-anchor="middle">██╔══██║██╔══╝     ██║    ███╔╝  ██╔══╝  ██╔══██╗</text>
-    <text x="450" y="188" text-anchor="middle">██║  ██║███████╗   ██║   ███████╗███████╗██║  ██║</text>
-    <text x="450" y="207" text-anchor="middle">╚═╝  ╚═╝╚══════╝   ╚═╝   ╚══════╝╚══════╝╚═╝  ╚═╝</text>
+  <g xml:space="preserve" fill="url(#cyber-grad)" filter="url(#glow)" font-family="Consolas, 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace" font-size="15" font-weight="700" style="white-space: pre;">
+    <text x="238" y="112" text-anchor="start">██╗  ██╗███████╗████████╗███████╗███████╗██████╗ </text>
+    <text x="238" y="131" text-anchor="start">██║  ██║██╔════╝╚══██╔══╝╚══███╔╝██╔════╝██╔══██╗</text>
+    <text x="238" y="150" text-anchor="start">███████║█████╗     ██║     ███╔╝ █████╗  ██████╔╝</text>
+    <text x="238" y="169" text-anchor="start">██╔══██║██╔══╝     ██║    ███╔╝  ██╔══╝  ██╔══██╗</text>
+    <text x="238" y="188" text-anchor="start">██║  ██║███████╗   ██║   ███████╗███████╗██║  ██║</text>
+    <text x="238" y="207" text-anchor="start">╚═╝  ╚═╝╚══════╝   ╚═╝   ╚══════╝╚══════╝╚═╝  ╚═╝</text>
   </g>
 
   <!-- Divider -->
