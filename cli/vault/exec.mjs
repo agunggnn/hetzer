@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import "../core/suppress-warnings.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";

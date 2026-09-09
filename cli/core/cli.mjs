@@ -1,3 +1,4 @@
+import "./suppress-warnings.mjs";
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -89,7 +90,10 @@ function randomHex(bytes = 32) {
 }
 
 function run(file, args, options = {}) {
-    const result = spawnSync(file, args, {
+    const adjustedArgs = file === process.execPath && !args.includes("--no-warnings=ExperimentalWarning")
+        ? ["--no-warnings=ExperimentalWarning", ...args]
+        : args;
+    const result = spawnSync(file, adjustedArgs, {
         cwd: options.cwd,
         env: options.env || process.env,
         stdio: options.capture ? "pipe" : "inherit",
