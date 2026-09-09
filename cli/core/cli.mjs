@@ -525,7 +525,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         if (sub === "scan") {
             const res = scanText(input);
             process.stdout.write("================================================================================\n");
-            process.stdout.write("  HETZER - SECRET SNIFFER (SUB-2MS DETECTOR)\n");
+            process.stdout.write("  HETZER - SECRET SNIFFER\n");
             process.stdout.write("================================================================================\n");
             process.stdout.write(`  Detection Status : ${res.hasSecrets ? "[!] SECRETS DETECTED" : "[v] CLEAN (No secrets detected)"}\n`);
             process.stdout.write(`  Execution Time   : ${res.latencyMs} ms\n`);

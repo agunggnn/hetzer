@@ -49,7 +49,7 @@
   <!-- Subtitle -->
   <text x="450" y="265" text-anchor="middle" font-family="'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace" font-size="13.5">
     <tspan fill="#00f5a0" font-weight="600">Credential Safety Layer</tspan>
-    <tspan fill="#e2e8f0"> &amp; Secret Interceptor for Autonomous AI Agents</tspan>
+    <tspan fill="#e2e8f0"> &amp; Leak-Reduction Tools for Autonomous AI Agents</tspan>
   </text>
 
   <!-- Feature Pills -->
