@@ -26,7 +26,7 @@ export async function pingMcpServer({ url, timeoutMs = 5000, fetchFn = globalThi
         params: {
             protocolVersion: "2025-11-25",
             capabilities: {},
-            clientInfo: { name: "hetzer-cli", version: "0.4.7" },
+            clientInfo: { name: "hetzer-cli", version: "0.4.8" },
         },
     };
 

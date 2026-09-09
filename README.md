@@ -308,6 +308,7 @@ All Hetzer commands are executed via the `hetzer` CLI:
 | `hetzer creds isolate-key` | Moves master key outside workspace to `~/.hetzer/grimoire.key` (mode 0600) |
 | `hetzer canary [setup]` | Deploys decoy canary honey-tokens to catch prompt injection & extraction |
 | `hetzer exec [--allow <ids>] [--strict] -- <c>` | Runs a command with scoped secret injection and buffered stream sanitization |
+| `hetzer broker --policy <file> -- <c>` | Runs a compatible HTTP client with a short-lived loopback capability instead of the long-lived credential |
 | `hetzer sniffer [scan\|redact]` | Scans or redacts supported credential candidates from input text |
 | `hetzer skill [install\|status]`| Deploys Universal AI Agent Skills to Hermes, AGY, OpenCode, Cursor, Claude |
 | `hetzer hook [install\|check]` | Installs or tests the Git pre-commit credential leak guard |

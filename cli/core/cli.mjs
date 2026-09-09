@@ -116,7 +116,7 @@ export function suggestCommand(input) {
         "help", "doctor", "init", "protect", "skill", "hook",
         "sniffer", "install", "remove", "creds", "canary",
         "modules", "up", "update", "down", "status", "logs",
-        "module", "validate", "mcp", "publish", "exec", "tui",
+        "module", "validate", "mcp", "publish", "exec", "broker", "tui",
     ];
     const lower = String(input || "").toLowerCase();
     for (const cmd of primaryCommands) {
@@ -160,6 +160,7 @@ export const KNOWN_COMMANDS = new Set([
     "mcp",
     "publish",
     "exec",
+    "broker",
     "tui",
 ]);
 
@@ -504,6 +505,7 @@ Commands:
   creds [list|reveal|set]   Manage encrypted secrets in Grimoire Vault (AES-256-GCM)
   canary [setup]            Deploy decoy canary honey-token tripwire to catch prompt injections
   exec [--allow <ids>] [--strict] -- <c> Run command with scoped secret injection & real-time stream sanitization
+  broker --policy <file> -- <command>   Run an HTTP client using a short-lived capability instead of the real credential
   sniffer [scan|redact] <t> Detect or redact credentials supported by the scanner rules
   protect                   Install credential-safety guidance, Git hook, and .env protection
   skill [install|status]    Deploy Universal AI Skills to Hermes, AGY, OpenCode, Cursor, Claude
@@ -1140,6 +1142,26 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             ...args.slice(marker + 1),
         ];
         run(process.execPath, passArgs, { cwd: root });
+        return;
+    }
+    if (command === "broker") {
+        const marker = args.indexOf("--");
+        if (marker === -1 || !args[marker + 1]) {
+            throw new Error("Usage: hetzer broker --policy <file> -- <command> [args]");
+        }
+        const brokerOptions = args.slice(0, marker);
+        const policyIndex = brokerOptions.indexOf("--policy");
+        if (policyIndex === -1 || !brokerOptions[policyIndex + 1]) {
+            throw new Error("Usage: hetzer broker --policy <file> -- <command> [args]");
+        }
+        run(process.execPath, [
+            path.join(cliRoot, "vault", "http-broker.mjs"),
+            "--root", root,
+            "--env-file", envFile,
+            ...brokerOptions,
+            "--",
+            ...args.slice(marker + 1),
+        ], { cwd: root });
         return;
     }
     if (command === "tui") {

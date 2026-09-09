@@ -14,6 +14,7 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 
 import { createStreamSanitizer, sanitizeStreamOutput } from "../cli/vault/exec.mjs";
+import { startHttpCredentialBroker, validateBrokerPolicy } from "../cli/vault/http-broker.mjs";
 import { resolveSecretEnvironment } from "../cli/vault/secret-env.mjs";
 import { detectAgentAncestor } from "../cli/vault/creds.mjs";
 import { scanText, redactAndVault } from "../cli/vault/sniffer.mjs";
@@ -89,7 +90,7 @@ function recordTest({ id, name, target, threat, input, method, expected, observe
 }
 
 // -----------------------------------------------------------------------------
-// Test 2: Strict Environment Variable Scoping & Master Key Defense
+// Test 2: Strict Environment Scoping & HTTP Broker Credential Boundary
 // -----------------------------------------------------------------------------
 {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-verify-env-"));
@@ -125,6 +126,7 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
 
     let pass = false;
     let observedMsg = "";
+    let broker;
     try {
         const resolved = resolveSecretEnvironment({
             root: tempDir,
@@ -139,25 +141,80 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
         const leakedUnapproved = Boolean(resolved.UNAPPROVED_TOKEN);
         const leakedMasterKey = Boolean(resolved.HETZER_GRIMOIRE_KEY);
 
-        pass = hasAllowed && !leakedAws && !leakedUnapproved && !leakedMasterKey;
-        observedMsg = `ALLOWED_TOKEN resolved: ${hasAllowed}. Leaked AWS: ${leakedAws}. Leaked unapproved: ${leakedUnapproved}. Leaked master key: ${leakedMasterKey}.`;
+        const brokerSecret = "synthetic-broker-value-24680";
+        let upstreamAuthorization = "";
+        broker = await startHttpCredentialBroker({
+            policy: validateBrokerPolicy({
+                version: 1,
+                target: "https://api.example.test",
+                credential: "secretRef:allowed-api-key",
+                baseUrlEnv: "VERIFY_BROKER_URL",
+                tokenEnv: "VERIFY_BROKER_TOKEN",
+                basePath: "/v1/guarded",
+                clientAuth: { header: "authorization", scheme: "Bearer" },
+                upstreamAuth: { header: "authorization", scheme: "Bearer" },
+                allowedMethods: ["POST"],
+                allowedPathPrefixes: ["/v1/guarded"],
+                forwardHeaders: ["content-type"],
+                ttlSeconds: 30,
+                maxRequests: 1,
+            }),
+            secret: brokerSecret,
+            fetchFn: async (_url, options) => {
+                upstreamAuthorization = options.headers.authorization;
+                return new Response(brokerSecret, {
+                    headers: { "content-type": "text/plain" },
+                });
+            },
+        });
+
+        const brokerResponse = await fetch(`${broker.url}/v1/guarded/check`, {
+            method: "POST",
+            headers: {
+                authorization: `Bearer ${broker.capability}`,
+                "content-type": "application/json",
+            },
+            body: "{}",
+        });
+        const brokerBody = await brokerResponse.text();
+        const brokerChildHasRealSecret = broker.capability === brokerSecret;
+        const brokerUpstreamGotSecret = upstreamAuthorization === `Bearer ${brokerSecret}`;
+        const brokerResponseRedacted = !brokerBody.includes(brokerSecret) && brokerBody.includes("secretRef:allowed-api-key");
+
+        pass = hasAllowed
+            && !leakedAws
+            && !leakedUnapproved
+            && !leakedMasterKey
+            && !brokerChildHasRealSecret
+            && brokerUpstreamGotSecret
+            && brokerResponseRedacted;
+        observedMsg = [
+            `ALLOWED_TOKEN resolved: ${hasAllowed}`,
+            `Leaked AWS: ${leakedAws}`,
+            `Leaked unapproved: ${leakedUnapproved}`,
+            `Leaked master key: ${leakedMasterKey}`,
+            `Broker child received real secret: ${brokerChildHasRealSecret}`,
+            `Broker injected secret upstream: ${brokerUpstreamGotSecret}`,
+            `Broker response secret redacted: ${brokerResponseRedacted}`,
+        ].join(". ") + ".";
     } catch (e) {
         observedMsg = `Failed with error: ${e.message}`;
     } finally {
+        await broker?.close();
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
 
     recordTest({
         id: "VERIFY-SEC-002",
-        name: "Strict Scoping Child Environment Whitelist",
-        target: "cli/vault/secret-env.mjs -> resolveSecretEnvironment()",
-        threat: "Child process inherits parent environment credentials or master encryption key via process.env",
-        input: "Parent env containing AWS_SECRET_ACCESS_KEY, UNAPPROVED_TOKEN, HETZER_GRIMOIRE_KEY with '--strict --allow allowed-api-key'",
-        method: "Resolve environment with strictBaseEnvironment whitelist and scoped reference matching",
-        expected: "Only explicitly allowed credential resolved; all unwhitelisted parent variables and master key dropped",
+        name: "Strict Scoping and HTTP Broker Credential Boundary",
+        target: "cli/vault/secret-env.mjs and cli/vault/http-broker.mjs",
+        threat: "Child process inherits credentials or receives a long-lived HTTP credential that can be exfiltrated directly",
+        input: "Dirty parent environment plus a policy-limited loopback broker request using a synthetic capability",
+        method: "Verify strictBaseEnvironment isolation, then exchange a short-lived capability for upstream-only credential injection",
+        expected: "Unapproved parent secrets and master key are absent; the child-side capability differs from the real secret; response reflection is redacted",
         observed: observedMsg,
         pass,
-        boundary: "OS-level essential variables (PATH, SYSTEMROOT, TEMP) are retained to allow process execution.",
+        boundary: "OS-essential variables remain available. The broker constrains only traffic sent through its loopback URL; it is not a network sandbox and does not stop same-user disk/process access or alternate outbound connections.",
     });
 }
 
