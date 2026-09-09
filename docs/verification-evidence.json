@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-09-09T15:14:09.638Z",
+  "timestamp": "2026-09-09T15:50:21.026Z",
   "nodeVersion": "v22.22.2",
   "platform": "win32",
   "results": [
@@ -17,15 +17,15 @@
     },
     {
       "id": "VERIFY-SEC-002",
-      "name": "Strict Scoping Child Environment Whitelist",
-      "target": "cli/vault/secret-env.mjs -> resolveSecretEnvironment()",
-      "threat": "Child process inherits parent environment credentials or master encryption key via process.env",
-      "input": "Parent env containing AWS_SECRET_ACCESS_KEY, UNAPPROVED_TOKEN, HETZER_GRIMOIRE_KEY with '--strict --allow allowed-api-key'",
-      "method": "Resolve environment with strictBaseEnvironment whitelist and scoped reference matching",
-      "expected": "Only explicitly allowed credential resolved; all unwhitelisted parent variables and master key dropped",
-      "observed": "ALLOWED_TOKEN resolved: true. Leaked AWS: false. Leaked unapproved: false. Leaked master key: false.",
+      "name": "Strict Scoping and HTTP Broker Credential Boundary",
+      "target": "cli/vault/secret-env.mjs and cli/vault/http-broker.mjs",
+      "threat": "Child process inherits credentials or receives a long-lived HTTP credential that can be exfiltrated directly",
+      "input": "Dirty parent environment plus a policy-limited loopback broker request using a synthetic capability",
+      "method": "Verify strictBaseEnvironment isolation, then exchange a short-lived capability for upstream-only credential injection",
+      "expected": "Unapproved parent secrets and master key are absent; the child-side capability differs from the real secret; response reflection is redacted",
+      "observed": "ALLOWED_TOKEN resolved: true. Leaked AWS: false. Leaked unapproved: false. Leaked master key: false. Broker child received real secret: false. Broker injected secret upstream: true. Broker response secret redacted: true.",
       "verdict": "PASS",
-      "boundary": "OS-level essential variables (PATH, SYSTEMROOT, TEMP) are retained to allow process execution."
+      "boundary": "OS-essential variables remain available. The broker constrains only traffic sent through its loopback URL; it is not a network sandbox and does not stop same-user disk/process access or alternate outbound connections."
     },
     {
       "id": "VERIFY-SEC-003",
@@ -59,7 +59,7 @@
       "input": "Small 30-byte build log line",
       "method": "Measure the median of 25 write-and-flush samples using dynamic retention and the bounded lexical scanner",
       "expected": "Median processing latency stays below 5ms and the complete line is emitted",
-      "observed": "Median processing latency: 0.021 ms. Output delivered: \"Compiling module auth.mjs...\".",
+      "observed": "Median processing latency: 0.022 ms. Output delivered: \"Compiling module auth.mjs...\".",
       "verdict": "PASS",
       "boundary": "Streams with secrets exceeding 128 chars scale buffer to 2x secret length to ensure boundary integrity."
     },

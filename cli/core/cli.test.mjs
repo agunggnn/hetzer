@@ -204,6 +204,7 @@ test("suggestCommand suggests closest command for typos", () => {
     assert.equal(suggestCommand("initz"), "init");
     assert.equal(suggestCommand("doc"), "doctor");
     assert.equal(suggestCommand("credi"), "creds");
+    assert.equal(suggestCommand("brokr"), "broker");
     assert.equal(suggestCommand("completely_unrelated_xyz"), null);
 });
 

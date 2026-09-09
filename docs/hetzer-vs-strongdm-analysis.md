@@ -17,7 +17,8 @@ Hetzer is a local credential-safety layer for developer and AI-assisted workflow
 - credential-pattern scanning for supported formats;
 - staged Git-addition scanning;
 - guarded reveal checks and native user confirmation; and
-- canary detection on guarded resolution and reveal paths.
+- canary detection on guarded resolution and reveal paths; and
+- a bounded HTTP credential broker that keeps the selected long-lived credential out of compatible child environments.
 
 These controls are tested by `npm test` and the six protocols in `npm run verify`. Passing tests are implementation evidence, not an independent security audit or compliance certification.
 
@@ -53,11 +54,11 @@ Any public comparison must:
 
 The following items are design candidates, not implemented claims.
 
-### Service-specific credential proxy
+### HTTP credential broker (implemented, bounded)
 
-For selected HTTP APIs, a loopback broker could give the child a short-lived capability and inject the real credential only into an allowlisted upstream request. This could reduce plaintext exposure inside compatible child applications. It would require protocol-specific handling, TLS validation, request-policy tests, lifecycle cleanup, and clear failure behavior.
+For selected HTTP APIs, `hetzer broker` gives a compatible child a short-lived capability and injects the real credential only into requests allowed by a reviewed policy. Broker v1 enforces an HTTPS origin, method and path prefixes, bounded bodies, selected headers, blocked redirects, lifecycle cleanup, and exact response redaction.
 
-It would not automatically support arbitrary tools or protocols, and it would not prevent other network paths unless the operating system or sandbox enforced egress restrictions.
+It does not automatically support arbitrary tools or protocols, streaming or binary responses, and it does not prevent other network paths unless the operating system or sandbox enforces egress restrictions. A same-user process may still alter the policy or access the vault, key, or broker process.
 
 ### Network policy integration
 

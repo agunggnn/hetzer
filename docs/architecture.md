@@ -10,6 +10,7 @@ flowchart LR
     CLI --> Vault[(SQLite vault)]
     CLI --> Scanner[Regex and entropy scanner]
     CLI --> Exec[Guarded child process]
+    CLI --> Broker[Loopback HTTP credential broker]
     CLI --> Modules[Module resolver]
     Exec --> Redactor[Bounded output sanitizer]
     Modules --> Compose[Optional Docker services]
@@ -45,6 +46,12 @@ Specific matches take priority over overlapping generic entropy matches. These h
 Common environment-reflection command strings are rejected before spawn. This is a misuse safeguard, not a sandbox: equivalent code, native binaries, debuggers, encodings, and external side effects remain possible inside an authorized child.
 
 Guarded child and Docker Compose stdout/stderr pass through independent UTF-8 rolling sanitizers. Each retains `max(128, longest injected secret × 2)` characters and scans a bounded 512-character lexical window. Before emission, a streaming filter removes terminal control/format characters and suppresses supported private-key blocks, credentialed database URLs, and provider-token candidates without waiting for a fixed 16 KiB window. Known injected values are detected even when writes split them across chunks. Deliberately transformed values, unsupported formats, non-UTF-8 output, and output written directly to a terminal device, file, or network remain outside this filter.
+
+## HTTP credential broker
+
+`hetzer broker` starts a short-lived listener on `127.0.0.1` and launches a compatible HTTP client with a random capability instead of the selected vault credential. A versioned policy fixes the HTTPS upstream origin, client and upstream authentication headers, allowed methods and path prefixes, environment variable names, request limits, and lifetime. The broker replaces the capability with the resolved credential only on an allowed upstream request.
+
+Broker v1 blocks redirects, binary responses, over-limit bodies, non-loopback clients, and unsupported methods or paths. It sanitizes the exact credential from supported upstream responses and child output. It is not transparent process or network containment: the child may open unrelated connections, and same-user access to the policy, key, vault, or broker process remains outside this boundary. See [HTTP credential broker](http-credential-broker.md).
 
 ## Credential reveal and canaries
 

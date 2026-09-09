@@ -10,7 +10,8 @@ Hetzer can be evaluated as a developer-workstation defense layer for:
 - encrypting local vault values at rest;
 - resolving approved references for a child process;
 - scanning supported credential patterns in explicit text and staged Git additions;
-- exposing MCP tools that list credential metadata without a plaintext reveal operation.
+- exposing MCP tools that list credential metadata without a plaintext reveal operation; and
+- keeping a selected HTTP credential out of compatible child environments through a short-lived loopback broker with fixed request policy.
 
 It is not a centralized secrets manager, identity provider, hardware-backed key store, endpoint-detection system, data-loss-prevention gateway, prompt firewall, or payment-page script manager.
 
@@ -21,6 +22,7 @@ It is not a centralized secrets manager, identity provider, hardware-backed key 
 | Vault copied without key | AES-256-GCM encrypted values and authenticated metadata | A same-user or privileged process that obtains the key and database can decrypt entries |
 | Child receives too many credentials | `--allow` filters vault references; `--strict` uses a minimal inherited environment | Resolved values exist in child memory and may be used by hostile child code |
 | Child prints a credential | Bounded rolling sanitizer recognizes known injected values and supported candidates across chunks | Encodings, transformations, unsupported formats, and outputs outside `hetzer exec` may evade detection |
+| Compatible HTTP child should not receive a long-lived credential | Loopback broker gives the child a short-lived capability and injects the credential into policy-approved HTTPS requests | The child can bypass the broker through other network paths; same-user policy, vault, key, and process access remain outside the boundary |
 | Accidental Git commit | Hook checks staged `.env` names and added content | Hooks are local and bypassable; add server-side scanning for enforcement |
 | Programmatic CLI reveal | TTY, environment-marker, and up-to-five-ancestor checks | Heuristics are not authentication or OS isolation |
 | Canary reference resolution | Guarded resolution/reveal aborts and returns CLI exit code 43; incident is logged | Arbitrary file access and accesses outside guarded code paths are not detected |
