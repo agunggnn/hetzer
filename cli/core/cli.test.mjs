@@ -7,10 +7,12 @@ import test from "node:test";
 import {
     defaultHetzerHome,
     initializeProject,
+    isGlobalCliInstalled,
     isHetzerWorkspace,
     main,
     printModuleHelp,
     resolveProjectRoot,
+    suggestCommand,
 } from "./cli.mjs";
 import { parseEnv } from "./env.mjs";
 import { Grimoire } from "../vault/hetzer-vault.mjs";
@@ -193,6 +195,100 @@ test("creds set rejects positional values that would remain in shell history", a
             /Do not pass a secret as a command-line argument/
         );
     } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test("suggestCommand suggests closest command for typos", () => {
+    assert.equal(suggestCommand("protectt"), "protect");
+    assert.equal(suggestCommand("initz"), "init");
+    assert.equal(suggestCommand("doc"), "doctor");
+    assert.equal(suggestCommand("credi"), "creds");
+    assert.equal(suggestCommand("completely_unrelated_xyz"), null);
+});
+
+test("main rejects unknown commands early with suggestion before checking env", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-unknown-cmd-"));
+    try {
+        await assert.rejects(
+            () => main(["protectt"], { root: tempDir }),
+            /Unknown command 'protectt'\. Did you mean 'hetzer protect'\? Run 'hetzer help'\./
+        );
+        await assert.rejects(
+            () => main(["foobar_command"], { root: tempDir }),
+            /Unknown command 'foobar_command'\. Run 'hetzer help'\./
+        );
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test("protec alias triggers protect command successfully", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-protec-alias-"));
+    const originalInstallHome = process.env.HETZER_INSTALL_HOME;
+    let output = "";
+    const originalStdout = process.stdout.write;
+    process.stdout.write = (chunk) => {
+        output += chunk;
+        return true;
+    };
+    try {
+        process.env.HETZER_INSTALL_HOME = path.join(tempDir, "home");
+        await main(["protec"], { root: tempDir });
+        assert.match(output, /HETZER CREDENTIAL GUARDS CONFIGURED/);
+    } finally {
+        if (originalInstallHome === undefined) delete process.env.HETZER_INSTALL_HOME;
+        else process.env.HETZER_INSTALL_HOME = originalInstallHome;
+        process.stdout.write = originalStdout;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test("init wizard adapts prefix and hints when CLI is not in PATH", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-init-path-"));
+    const originalTestGlobal = process.env.HETZER_TEST_GLOBAL_CLI;
+    let output = "";
+    const originalStdout = process.stdout.write;
+    process.stdout.write = (chunk) => {
+        output += chunk;
+        return true;
+    };
+    try {
+        process.env.HETZER_TEST_GLOBAL_CLI = "false";
+        await main(["init", tempDir], { root: tempDir });
+        assert.match(output, /HETZER - INITIALIZATION SUCCESSFUL/);
+        assert.match(output, /npx hetzer up/);
+        assert.match(output, /npx hetzer creds reveal/);
+    } finally {
+        if (originalTestGlobal === undefined) delete process.env.HETZER_TEST_GLOBAL_CLI;
+        else process.env.HETZER_TEST_GLOBAL_CLI = originalTestGlobal;
+        process.stdout.write = originalStdout;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test("protect command includes CLI PATH notice when running via npx", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-protect-path-"));
+    const originalTestGlobal = process.env.HETZER_TEST_GLOBAL_CLI;
+    const originalInstallHome = process.env.HETZER_INSTALL_HOME;
+    let output = "";
+    const originalStdout = process.stdout.write;
+    process.stdout.write = (chunk) => {
+        output += chunk;
+        return true;
+    };
+    try {
+        process.env.HETZER_TEST_GLOBAL_CLI = "false";
+        process.env.HETZER_INSTALL_HOME = path.join(tempDir, "home");
+        await main(["protect"], { root: tempDir });
+        assert.match(output, /CLI PATH NOTICE/);
+        assert.match(output, /npm install -g hetzer/);
+    } finally {
+        if (originalTestGlobal === undefined) delete process.env.HETZER_TEST_GLOBAL_CLI;
+        else process.env.HETZER_TEST_GLOBAL_CLI = originalTestGlobal;
+        if (originalInstallHome === undefined) delete process.env.HETZER_INSTALL_HOME;
+        else process.env.HETZER_INSTALL_HOME = originalInstallHome;
+        process.stdout.write = originalStdout;
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });
