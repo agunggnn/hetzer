@@ -639,6 +639,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         run(process.execPath, [
             path.join(cliRoot, "core", "git-hook.mjs"),
             action,
+            ...args.slice(1),
         ], { cwd: hookRoot });
         return;
     }
