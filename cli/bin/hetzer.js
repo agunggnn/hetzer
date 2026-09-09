@@ -10,9 +10,19 @@ process.emitWarning = function (warning, ...args) {
   return originalEmitWarning.call(process, warning, ...args);
 };
 
-import('../core/cli.mjs')
-  .then(({ main }) => main())
-  .catch((error) => {
+async function start() {
+  const { supportsNodeSqlite, unsupportedNodeMessage } = await import('../core/node-version.mjs');
+  if (!supportsNodeSqlite(process.versions.node)) {
+    process.stderr.write(`${unsupportedNodeMessage(process.version)}\n`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const { main } = await import('../core/cli.mjs');
+  await main();
+}
+
+start().catch((error) => {
     process.stderr.write(`Hetzer failed: ${error.message}\n`);
     process.exitCode = error.exitCode || 1;
-  });
+});
