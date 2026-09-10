@@ -5,22 +5,22 @@ import { buildReleaseMetadata } from "./release-metadata.mjs";
 const commit = "a".repeat(40);
 
 test("buildReleaseMetadata prepares a new immutable version tag", () => {
-    assert.deepEqual(buildReleaseMetadata({ version: "0.4.12", commit }), {
-        version: "0.4.12",
-        tag: "v0.4.12",
+    assert.deepEqual(buildReleaseMetadata({ version: "0.4.13", commit }), {
+        version: "0.4.13",
+        tag: "v0.4.13",
         tagExists: false,
     });
 });
 
 test("buildReleaseMetadata permits an idempotent rerun for the same commit", () => {
-    assert.equal(buildReleaseMetadata({ version: "0.4.12", commit, taggedCommit: commit }).tagExists, true);
+    assert.equal(buildReleaseMetadata({ version: "0.4.13", commit, taggedCommit: commit }).tagExists, true);
 });
 
 test("buildReleaseMetadata refuses malformed versions and tag movement", () => {
     assert.throws(() => buildReleaseMetadata({ version: "next", commit }), /not a supported release version/);
-    assert.throws(() => buildReleaseMetadata({ version: "0.4.12", commit: "short" }), /full Git commit SHA/);
+    assert.throws(() => buildReleaseMetadata({ version: "0.4.13", commit: "short" }), /full Git commit SHA/);
     assert.throws(
-        () => buildReleaseMetadata({ version: "0.4.12", commit, taggedCommit: "b".repeat(40) }),
-        /Refusing to move v0\.4\.12/,
+        () => buildReleaseMetadata({ version: "0.4.13", commit, taggedCommit: "b".repeat(40) }),
+        /Refusing to move v0\.4\.13/,
     );
 });
