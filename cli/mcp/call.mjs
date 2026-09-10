@@ -169,7 +169,7 @@ async function ensureMcpSession({ endpointUrl, fetchFn }) {
             params: {
                 protocolVersion: "2024-11-05",
                 capabilities: {},
-                clientInfo: { name: "hetzer-cli", version: "0.4.9" },
+                clientInfo: { name: "hetzer-cli", version: "0.4.10" },
             },
         };
         const { data, sessionId } = await sendMcpRequest({
