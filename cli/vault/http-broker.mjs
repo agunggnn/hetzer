@@ -18,7 +18,8 @@ const HEADER_NAME = /^[a-z0-9!#$%&'*+.^_`|~-]+$/;
 const VALIDATED_POLICY = Symbol("hetzer.httpBroker.validatedPolicy");
 const METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 const FORBIDDEN_HEADERS = new Set([
-    "connection", "content-length", "cookie", "host", "proxy-authorization",
+    "connection", "content-length", "cookie", "host", "keep-alive",
+    "proxy-authenticate", "proxy-authorization", "proxy-connection",
     "te", "trailer", "transfer-encoding", "upgrade",
 ]);
 const RESERVED_ENV = new Set([
@@ -60,21 +61,75 @@ function validateHeader(value, label) {
     return header;
 }
 
+function decodePathToFixedPoint(input, maxPasses = 3) {
+    let current = input;
+    for (let i = 0; i < maxPasses; i++) {
+        if (!current.includes("%")) return current;
+        if (/%2[fF]|%5[cC]|%00|%3[fF]|%23/i.test(current)) {
+            throw new Error("Path contains encoded delimiters or separators.");
+        }
+        let next;
+        try {
+            next = decodeURIComponent(current);
+        } catch {
+            throw new Error("Malformed URI percent-encoding.");
+        }
+        if (next === current) return current;
+        current = next;
+    }
+    if (current.includes("%")) {
+        if (/%2[fF]|%5[cC]|%00|%3[fF]|%23/i.test(current)) {
+            throw new Error("Path contains encoded delimiters or separators.");
+        }
+        let next;
+        try {
+            next = decodeURIComponent(current);
+        } catch {
+            throw new Error("Malformed URI percent-encoding.");
+        }
+        if (next !== current) {
+            throw new Error("Excessive nested percent-encoding.");
+        }
+    }
+    return current;
+}
+
+function canonicalizePath(rawPath, { isPrefix = false } = {}) {
+    const value = String(rawPath || "").trim();
+    if (!value.startsWith("/") || value.startsWith("//") || value.includes("\\") || value.includes("?") || value.includes("#") || value.includes("\0")) {
+        throw new Error("Invalid path format.");
+    }
+    if (/%2[fF]|%5[cC]|%00|%3[fF]|%23/i.test(value)) {
+        throw new Error("Path contains encoded delimiters or separators.");
+    }
+    const canonical = decodePathToFixedPoint(value);
+    if (canonical.includes("\\") || canonical.includes("\0") || canonical.includes("?") || canonical.includes("#")) {
+        throw new Error("Path contains unsafe decoded characters.");
+    }
+    const segments = canonical.split("/");
+    for (const segment of segments) {
+        if (segment === "." || segment === "..") {
+            throw new Error("Path traversal segments are not allowed.");
+        }
+    }
+    if (isPrefix) {
+        return canonical.length > 1 ? canonical.replace(/\/$/, "") : canonical;
+    }
+    return canonical;
+}
+
 function normalizePrefix(value) {
     const prefix = String(value || "").trim();
     if (!prefix.startsWith("/") || prefix.startsWith("//") || prefix.includes("\\") || prefix.includes("?")) {
         throw new Error(`Invalid allowed path prefix: ${prefix}`);
     }
-    let decoded;
+    let canonical;
     try {
-        decoded = decodeURIComponent(prefix);
+        canonical = canonicalizePath(prefix, { isPrefix: true });
     } catch {
-        throw new Error(`Invalid encoded path prefix: ${prefix}`);
-    }
-    if (decoded.split("/").some((segment) => segment === "." || segment === ".." || segment.includes("\0"))) {
         throw new Error(`Unsafe allowed path prefix: ${prefix}`);
     }
-    return prefix.length > 1 ? prefix.replace(/\/$/, "") : prefix;
+    return canonical;
 }
 
 export function validateBrokerPolicy(input) {
@@ -192,23 +247,25 @@ function upstreamUrl(policy, rawUrl) {
     if (typeof rawUrl !== "string" || !rawUrl.startsWith("/") || rawUrl.startsWith("//") || rawUrl.includes("\\")) {
         throw Object.assign(new Error("Invalid broker request target."), { statusCode: 400 });
     }
-    let inbound;
-    let decoded;
+    const [rawPathPart, ...searchParts] = rawUrl.split("?");
+    const rawSearch = searchParts.length > 0 ? `?${searchParts.join("?")}` : "";
+    let canonical;
     try {
-        inbound = new URL(rawUrl, "http://127.0.0.1");
-        decoded = decodeURIComponent(inbound.pathname);
+        canonical = canonicalizePath(rawPathPart);
+    } catch {
+        throw Object.assign(new Error("Unsafe broker request path."), { statusCode: 400 });
+    }
+    if (!pathAllowed(canonical, policy.allowedPathPrefixes)) {
+        throw Object.assign(new Error("Request path is not allowed by the broker policy."), { statusCode: 403 });
+    }
+    let target;
+    try {
+        target = new URL(policy.targetOrigin);
+        target.pathname = canonical;
+        target.search = rawSearch;
     } catch {
         throw Object.assign(new Error("Invalid broker request path."), { statusCode: 400 });
     }
-    if (decoded.includes("\\") || decoded.includes("\0") || decoded.split("/").some((part) => part === "." || part === "..")) {
-        throw Object.assign(new Error("Unsafe broker request path."), { statusCode: 400 });
-    }
-    if (!pathAllowed(inbound.pathname, policy.allowedPathPrefixes)) {
-        throw Object.assign(new Error("Request path is not allowed by the broker policy."), { statusCode: 403 });
-    }
-    const target = new URL(policy.targetOrigin);
-    target.pathname = inbound.pathname;
-    target.search = inbound.search;
     return target;
 }
 
@@ -255,8 +312,60 @@ function authValue(scheme, value) {
     return scheme ? `${scheme} ${value}` : value;
 }
 
+function extractConnectionTokens(headerValue) {
+    const tokens = new Set();
+    if (!headerValue) return tokens;
+    const items = Array.isArray(headerValue) ? headerValue : [headerValue];
+    for (const item of items) {
+        for (const part of String(item).split(",")) {
+            const token = part.trim().toLowerCase();
+            if (token) tokens.add(token);
+        }
+    }
+    return tokens;
+}
+
+function getSecretRepresentations(secret) {
+    if (!secret || typeof secret !== "string") return [];
+    const representations = new Set();
+    representations.add(secret);
+
+    try {
+        const jsonEscaped = JSON.stringify(secret).slice(1, -1);
+        if (jsonEscaped) representations.add(jsonEscaped);
+    } catch { /* ignore */ }
+
+    try {
+        const urlEncoded = encodeURIComponent(secret);
+        if (urlEncoded) {
+            representations.add(urlEncoded);
+            representations.add(urlEncoded.toLowerCase());
+        }
+    } catch { /* ignore */ }
+
+    try {
+        const unicodeEscaped = secret.replace(/["\\/<>&\x00-\x1f]/g, (char) => {
+            return "\\u" + char.charCodeAt(0).toString(16).padStart(4, "0");
+        });
+        if (unicodeEscaped) {
+            representations.add(unicodeEscaped);
+            representations.add(unicodeEscaped.toUpperCase());
+        }
+    } catch { /* ignore */ }
+
+    return [...representations].filter(Boolean).sort((a, b) => b.length - a.length);
+}
+
 function redactBrokerValue(value, secret, credentialId) {
-    return String(value || "").replaceAll(secret, `secretRef:${credentialId}`);
+    if (!value) return "";
+    let str = String(value);
+    const secretReps = getSecretRepresentations(secret);
+    for (const rep of secretReps) {
+        if (rep) {
+            str = str.replaceAll(rep, `secretRef:${credentialId}`);
+        }
+    }
+    return str;
 }
 
 export async function startHttpCredentialBroker({
@@ -277,6 +386,8 @@ export async function startHttpCredentialBroker({
     let forwardedRequests = 0;
 
     const server = http.createServer(async (request, response) => {
+        let slotReserved = false;
+        let requestDispatched = false;
         try {
             if (!isLoopback(request.socket.remoteAddress)) return sendJson(response, 403, "Loopback clients only.");
             if (Date.now() >= deadline) return sendJson(response, 410, "Broker capability expired.");
@@ -286,18 +397,25 @@ export async function startHttpCredentialBroker({
             const method = String(request.method || "GET").toUpperCase();
             if (!policy.allowedMethods.includes(method)) return sendJson(response, 403, "HTTP method is not allowed by the broker policy.");
             if (forwardedRequests >= policy.maxRequests) return sendJson(response, 429, "Broker request limit reached.");
+            forwardedRequests += 1;
+            slotReserved = true;
+
             const target = upstreamUrl(policy, request.url);
             const body = await readNodeStream(request, policy.maxRequestBytes);
-            forwardedRequests += 1;
 
+            const connectionTokens = extractConnectionTokens(request.headers.connection);
             const headers = {};
             for (const name of policy.forwardHeaders) {
+                if (FORBIDDEN_HEADERS.has(name) || connectionTokens.has(name)) {
+                    continue;
+                }
                 const value = request.headers[name];
                 if (typeof value === "string") headers[name] = value;
                 else if (Array.isArray(value)) headers[name] = value.join(", ");
             }
             headers[policy.upstreamHeader] = authValue(policy.upstreamScheme, secret);
 
+            requestDispatched = true;
             const upstream = await fetchFn(target, {
                 method,
                 headers,
@@ -317,7 +435,7 @@ export async function startHttpCredentialBroker({
             if (!textResponse(contentType, upstreamBody.length)) {
                 return sendJson(response, 502, "Broker v1 only accepts text or JSON upstream responses.");
             }
-            const sanitizedBody = Buffer.from(upstreamBody.toString("utf8").replaceAll(secret, `secretRef:${policy.credentialId}`));
+            const sanitizedBody = Buffer.from(redactBrokerValue(upstreamBody.toString("utf8"), secret, policy.credentialId));
             const responseHeaders = {};
             for (const name of RESPONSE_HEADERS) {
                 const value = upstream.headers.get(name);
@@ -328,6 +446,10 @@ export async function startHttpCredentialBroker({
             response.writeHead(upstream.status, responseHeaders);
             response.end(sanitizedBody);
         } catch (error) {
+            if (slotReserved && !requestDispatched) {
+                forwardedRequests = Math.max(0, forwardedRequests - 1);
+                slotReserved = false;
+            }
             const safeMessage = redactBrokerValue(error.message || "Broker request failed.", secret, policy.credentialId);
             if (!response.headersSent) sendJson(response, error.statusCode || 502, safeMessage);
             else response.destroy();
