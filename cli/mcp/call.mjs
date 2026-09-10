@@ -169,7 +169,7 @@ async function ensureMcpSession({ endpointUrl, fetchFn }) {
             params: {
                 protocolVersion: "2024-11-05",
                 capabilities: {},
-                clientInfo: { name: "hetzer-cli", version: "0.4.14" },
+                clientInfo: { name: "hetzer-cli", version: "0.4.15" },
             },
         };
         const { data, sessionId } = await sendMcpRequest({
@@ -244,6 +244,7 @@ export async function callMcpTool({
     const { endpointUrl, service } = resolveServiceEndpoint(root, targetService);
 
     let resolvedArgs = typeof args === "string" ? JSON.parse(args || "{}") : (args || {});
+    const resolvedSecrets = [];
     const envFile = path.join(root, ".env");
     const fileEnv = fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, "utf8")) : {};
     const masterKey = resolveMasterKey({ root, envValues: fileEnv });
@@ -253,7 +254,27 @@ export async function callMcpTool({
         if (fs.existsSync(dbPath)) {
             const vault = new Grimoire({ dbPath, masterKey });
             try {
-                resolvedArgs = resolveSecretRefsInPayload(resolvedArgs, (id) => vault.resolve(id));
+                const permittedTargets = new Set([
+                    service.id,
+                    service.moduleId,
+                    service.mcpServer?.name,
+                    service.composeService,
+                    "global",
+                    "shared",
+                ].filter(Boolean));
+
+                resolvedArgs = resolveSecretRefsInPayload(resolvedArgs, (id) => {
+                    const entry = vault.find(id);
+                    if (!entry) throw new Error(`Credential 'secretRef:${id}' not found in Grimoire Vault.`);
+                    if (!permittedTargets.has(entry.projectId)) {
+                        throw new Error(`Credential 'secretRef:${id}' (target '${entry.projectId}') is not permitted for service '${service.mcpServer?.name || service.id}'.`);
+                    }
+                    const secret = vault.resolve(id, { targetId: entry.projectId, action: "mcp.tools/call" });
+                    if (secret === null) {
+                        throw new Error(`Credential 'secretRef:${id}' is not permitted for MCP tool execution.`);
+                    }
+                    return secret;
+                }, resolvedSecrets);
             } finally {
                 vault.close();
             }
@@ -272,24 +293,36 @@ export async function callMcpTool({
 
     let data;
     try {
-        const result = await sendMcpRequest({ endpointUrl, payload, fetchFn, timeoutMs });
-        data = result.data;
-    } catch {
-        const sessionId = await ensureMcpSession({ endpointUrl, fetchFn });
-        const result = await sendMcpRequest({ endpointUrl, payload, fetchFn, timeoutMs, sessionId });
-        data = result.data;
+        try {
+            const result = await sendMcpRequest({ endpointUrl, payload, fetchFn, timeoutMs });
+            data = result.data;
+        } catch {
+            const sessionId = await ensureMcpSession({ endpointUrl, fetchFn });
+            const result = await sendMcpRequest({ endpointUrl, payload, fetchFn, timeoutMs, sessionId });
+            data = result.data;
+        }
+    } catch (err) {
+        const safeError = sanitizeMcpValue(err.message || "Failed to communicate with MCP service.", resolvedSecrets);
+        return {
+            ok: false,
+            isError: true,
+            error: safeError,
+            endpointUrl,
+            serviceName: service.mcpServer.name,
+        };
     }
 
     if (data.error) {
         return {
             ok: false,
             isError: true,
-            error: sanitizeMcpValue(data.error.message || JSON.stringify(data.error)),
+            error: sanitizeMcpValue(data.error.message || JSON.stringify(data.error), resolvedSecrets),
             endpointUrl,
+            serviceName: service.mcpServer.name,
         };
     }
 
-    const result = sanitizeMcpValue(data.result || {});
+    const result = sanitizeMcpValue(data.result || {}, resolvedSecrets);
     const contentText = (result.content || [])
         .map((item) => item.text || JSON.stringify(item))
         .join("\n") || JSON.stringify(result, null, 2);
