@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import { parseEnv } from "../core/env.mjs";
 import { CANARY_TOKEN_PATTERN, isCanaryCredential, isCanaryToken, triggerCanaryAlert } from "./canary.mjs";
+import { applyExecPolicy, loadExecPolicy } from "./exec-policy.mjs";
 import { resolveSecretEnvironment } from "./secret-env.mjs";
 import { scanText } from "./sniffer.mjs";
 
@@ -511,7 +512,7 @@ export function pipeSanitizedChild(child, secretsToRedact = [], {
 export function parseArguments(argv) {
     const marker = argv.indexOf("--");
     if (marker === -1 || !argv[marker + 1]) {
-        throw new Error("Usage: exec --root <path> --env-file <path> [--allow NAME,NAME] [--strict] [--canary] [--timeout <duration>] -- <command> [args]");
+        throw new Error("Usage: exec --root <path> --env-file <path> [--policy <path>] [--allow NAME,NAME] [--strict] [--canary] [--timeout <duration>] -- <command> [args]");
     }
     const options = argv.slice(0, marker);
     const value = (name) => {
@@ -519,9 +520,11 @@ export function parseArguments(argv) {
         return index >= 0 ? options[index + 1] : "";
     };
     const rawTimeout = value("--timeout");
+    const rawPolicy = value("--policy");
     return {
         root: path.resolve(value("--root") || process.cwd()),
         envFile: path.resolve(value("--env-file")),
+        policyFile: rawPolicy ? path.resolve(rawPolicy) : undefined,
         allowNames: value("--allow") ? value("--allow").split(",").map((name) => name.trim()).filter(Boolean) : undefined,
         strict: options.includes("--strict"),
         canary: options.includes("--canary"),
@@ -534,8 +537,20 @@ export function parseArguments(argv) {
 
 export function executeProcess(options, { outStream = process.stdout, errStream = process.stderr } = {}) {
     return new Promise((resolve, reject) => {
-        if (isReflectionCommand(options.command, options.commandArgs)) {
-            const fullCmd = [options.command, ...options.commandArgs].join(" ");
+        let effectiveOptions = { ...options };
+        try {
+            if (effectiveOptions.policyFile) {
+                const loadedPolicy = loadExecPolicy(effectiveOptions.policyFile, effectiveOptions.root);
+                effectiveOptions = applyExecPolicy(loadedPolicy, effectiveOptions);
+            } else if (effectiveOptions.policy) {
+                effectiveOptions = applyExecPolicy(effectiveOptions.policy, effectiveOptions);
+            }
+        } catch (err) {
+            return reject(err);
+        }
+
+        if (isReflectionCommand(effectiveOptions.command, effectiveOptions.commandArgs)) {
+            const fullCmd = [effectiveOptions.command, ...effectiveOptions.commandArgs].join(" ");
             const err = new Error(
                 `Security violation: Command '${fullCmd}' is blocked by the credential-safety policy.\n` +
                 "Environment reflection commands (printenv, env, export, inline dumps) are forbidden in 'hetzer exec' to prevent secret leakage into agent context or terminal logs."
@@ -544,24 +559,24 @@ export function executeProcess(options, { outStream = process.stdout, errStream 
             return reject(err);
         }
 
-        const env = resolveSecretEnvironment({ ...options, action: "process.start" });
+        const env = resolveSecretEnvironment({ ...effectiveOptions, action: "process.start" });
 
-        const secretsToRedact = collectResolvedSecrets(options.envFile, env);
+        const secretsToRedact = collectResolvedSecrets(effectiveOptions.envFile, env);
 
-        const targetCmd = (process.platform === "win32" && options.command.includes(" ") && !options.command.startsWith('"'))
-            ? `"${options.command}"`
-            : options.command;
+        const targetCmd = (process.platform === "win32" && effectiveOptions.command.includes(" ") && !effectiveOptions.command.startsWith('"'))
+            ? `"${effectiveOptions.command}"`
+            : effectiveOptions.command;
 
-        const child = spawn(targetCmd, options.commandArgs, {
+        const child = spawn(targetCmd, effectiveOptions.commandArgs, {
             stdio: ["inherit", "pipe", "pipe"],
             env,
             windowsHide: true,
             shell: process.platform === "win32",
         });
 
-        const timeoutMs = options.timeoutMs ?? (options.timeout ? parseDuration(options.timeout) : undefined);
+        const timeoutMs = effectiveOptions.timeoutMs ?? (effectiveOptions.timeout ? parseDuration(effectiveOptions.timeout) : undefined);
 
-        pipeSanitizedChild(child, secretsToRedact, { outStream, errStream, root: options.root, timeoutMs }).then(resolve, reject);
+        pipeSanitizedChild(child, secretsToRedact, { outStream, errStream, root: effectiveOptions.root, timeoutMs }).then(resolve, reject);
     });
 }
 

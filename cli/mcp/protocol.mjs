@@ -84,7 +84,7 @@ export async function handleMcpRequest(request, catalog) {
             resultType: "complete",
             supportedVersions: [MODERN_VERSION, LEGACY_VERSION],
             capabilities: { tools: {} },
-            _meta: { "io.modelcontextprotocol/serverInfo": { name: "hetzer-fastmcp", version: "0.4.12" } },
+            _meta: { "io.modelcontextprotocol/serverInfo": { name: "hetzer-fastmcp", version: "0.4.13" } },
             instructions: "Read-only tools expose enabled Hetzer modules and approved local service telemetry.",
             ttlMs: 300000,
             cacheScope: "private",
@@ -95,7 +95,7 @@ export async function handleMcpRequest(request, catalog) {
         return result(request.id, {
             protocolVersion: requested === LEGACY_VERSION ? requested : LEGACY_VERSION,
             capabilities: { tools: { listChanged: false } },
-            serverInfo: { name: "hetzer-fastmcp", version: "0.4.12" },
+            serverInfo: { name: "hetzer-fastmcp", version: "0.4.13" },
             instructions: "Read-only tools expose enabled Hetzer modules and approved local service telemetry.",
         });
     }

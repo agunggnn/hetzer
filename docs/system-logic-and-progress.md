@@ -28,6 +28,7 @@ sequenceDiagram
 | Grimoire vault | `cli/vault/hetzer-vault.mjs` | AES-256-GCM credential values in SQLite with target/action/expiry checks |
 | Secret scanner | `cli/vault/sniffer.mjs` | Provider regexes, database URLs, bounded PEM keys, and Shannon-entropy candidates |
 | Process runner | `cli/vault/exec.mjs` | Scope resolution, strict base environment, reflection guard, stream sanitizer, subprocess canary stream tripwire, execution timeout guard |
+| Execution policy | `cli/vault/exec-policy.mjs` | Declarative capability policies: command whitelisting, credential boundaries, strict isolation, and timeout limits |
 | Compose runner | `cli/vault/compose-runner.mjs` | Scoped Compose environment and sanitized Docker/containers output pipes |
 | Credential CLI | `cli/vault/creds.mjs` | Set/list/reveal, TTY and agent heuristics, required native UI confirmation |
 | Canary | `cli/vault/canary.mjs` | Decoy token injection, aborts guarded reveal/resolution/stream leak with exit code 43, terminates child process tree |
@@ -41,6 +42,7 @@ sequenceDiagram
 
 - AES-GCM round trips and access restrictions;
 - strict execution excludes unapproved inherited values and the master key;
+- execution policy enforcement restricts commands and credentials to declared JSON manifests;
 - known short values and values divided across output chunks are redacted;
 - multiline PKCS#8 keys and credentialed database URLs are detected;
 - subprocess execution timeout guard terminates runaway/hanging processes within configured budgets and redacts emitted output;
