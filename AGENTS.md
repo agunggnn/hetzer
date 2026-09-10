@@ -1,6 +1,6 @@
 # Hetzer Contributor & Agent Guidance
 
-> **Version**: v0.4.11 | **Verify**: `npm run check && npm test && npm run verify`
+> **Version**: v0.4.12 | **Verify**: `npm run check && npm test && npm run verify`
 
 ---
 
@@ -21,14 +21,13 @@
 3. **Git Hooks (`cli/core/git-hook.mjs`)**: Pre-commit exempts fixtures (`*.test.mjs`, `test/`) and agent IDs (`call_*`, `tool_*`). Commit-msg blocks tokens in commit text.
 4. **MCP Proxy (`cli/mcp/`)**: Agents pass `secretRef:<id>`; runtime resolves vault credentials just-in-time and sanitizes outputs.
 5. **Canary Tripwire (`cli/vault/canary.mjs`, `cli/vault/exec.mjs`)**: Honeytokens (`canary-token`, `canary-*`, `decoy-*`, `canary_trap_*`) abort with `exitCode 43` (`ERR_CANARY_TRIPWIRE_TRIGGERED`). `hetzer exec --canary` injects `HETZER_CANARY_TOKEN`; stream leaks immediately terminate child processes.
-6. **No False Claims**: Defense-in-depth security layer. Do not claim PCI-DSS 6.4.3 or "100% unbreakable". All claims verified via `npm run verify`.
+6. **Timeout Guard (`cli/vault/exec.mjs`)**: `--timeout <duration>` (e.g. `30s`, `5m`, `10000ms`) terminates hanging subprocesses with SIGTERM followed by tree-kill (`taskkill /T /F` on Windows, `SIGKILL` on Unix) and exits with code 124 (`ERR_SUBPROCESS_TIMEOUT`).
+7. **No False Claims**: Defense-in-depth security layer. Do not claim PCI-DSS 6.4.3 or "100% unbreakable". All claims verified via `npm run verify`.
 
 ---
 
 ## 📝 Pending Agent Review (For Codex)
 Review branches sequentially in stack order:
-1. **[PR #4](https://github.com/agunggnn/hetzer/pull/4)** (`feat/commit-msg-hook` -> `main`): Git `commit-msg` Secret Shield hook. (145 tests)
-2. **[PR #5](https://github.com/agunggnn/hetzer/pull/5)** (`feat/mcp-credential-proxy` -> `feat/commit-msg-hook`): MCP Virtual Credential Proxy. (147 tests)
-3. **[PR #6](https://github.com/agunggnn/hetzer/pull/6)** (`feat/subprocess-canary-tripwire` -> `feat/mcp-credential-proxy`): Subprocess Canary Decoy & Tripwire Kill. (154 tests)
+1. **[PR #7](https://github.com/agunggnn/hetzer/pull/7)** (`feat/subprocess-timeout-guard` -> `main`): Subprocess Execution Timeout & Budget Guard. (159 tests)
 
 

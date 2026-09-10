@@ -377,29 +377,74 @@ export function createStreamSanitizer(secretsToRedact = [], { onCanaryDetected }
     };
 }
 
+export function terminateProcessTree(child, { force = true } = {}) {
+    if (!child || !child.pid) return;
+    if (process.platform === "win32") {
+        try {
+            spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+        } catch {}
+    }
+    try {
+        child.kill(force ? "SIGKILL" : "SIGTERM");
+    } catch {}
+    if (force) {
+        try {
+            child.kill("SIGTERM");
+        } catch {}
+    }
+}
+
+export function parseDuration(durationStr) {
+    if (typeof durationStr === "number" && Number.isFinite(durationStr) && durationStr > 0) {
+        return Math.floor(durationStr);
+    }
+    if (typeof durationStr !== "string" || !durationStr.trim()) {
+        throw new Error(`Invalid timeout duration: expected duration string (e.g. '30s', '5m', '10000ms'), received ${JSON.stringify(durationStr)}`);
+    }
+    const str = durationStr.trim();
+    const match = str.match(/^([+-]?\d+(?:\.\d+)?)\s*(ms|s|m|h)?$/i);
+    if (!match) {
+        throw new Error(`Invalid timeout duration format: '${durationStr}'. Supported units: ms, s, m, h (e.g. '30s', '5m', '10000ms').`);
+    }
+    const val = parseFloat(match[1]);
+    const unit = (match[2] || "ms").toLowerCase();
+    let ms;
+    switch (unit) {
+        case "ms": ms = val; break;
+        case "s": ms = val * 1000; break;
+        case "m": ms = val * 60 * 1000; break;
+        case "h": ms = val * 3600 * 1000; break;
+        default: ms = val; break;
+    }
+    if (!Number.isFinite(ms) || ms <= 0) {
+        throw new Error(`Invalid timeout duration value: '${durationStr}'. Duration must be greater than 0.`);
+    }
+    return Math.floor(ms);
+}
+
 export function pipeSanitizedChild(child, secretsToRedact = [], {
     outStream = process.stdout,
     errStream = process.stderr,
     root = process.cwd(),
+    timeoutMs,
 } = {}) {
     return new Promise((resolve, reject) => {
         let canaryTripped = false;
+        let timedOut = false;
+        let timeoutTimer = null;
+        let killGraceTimer = null;
+
+        const cleanupTimers = () => {
+            if (timeoutTimer) clearTimeout(timeoutTimer);
+            if (killGraceTimer) clearTimeout(killGraceTimer);
+        };
 
         const handleCanaryTrip = ({ id, secret }) => {
             if (canaryTripped) return;
             canaryTripped = true;
+            cleanupTimers();
 
-            if (process.platform === "win32" && child.pid) {
-                try {
-                    spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
-                } catch {}
-            }
-            try {
-                child.kill("SIGKILL");
-            } catch {}
-            try {
-                child.kill("SIGTERM");
-            } catch {}
+            terminateProcessTree(child, { force: true });
 
             try {
                 triggerCanaryAlert({
@@ -412,6 +457,20 @@ export function pipeSanitizedChild(child, secretsToRedact = [], {
                 return reject(err);
             }
         };
+
+        if (typeof timeoutMs === "number" && timeoutMs > 0) {
+            timeoutTimer = setTimeout(() => {
+                timedOut = true;
+                errStream.write(`\n[!] Hetzer Timeout Guard: Subprocess exceeded execution budget (${timeoutMs}ms). Initiating termination.\n`);
+                terminateProcessTree(child, { force: false });
+
+                killGraceTimer = setTimeout(() => {
+                    terminateProcessTree(child, { force: true });
+                }, 500);
+                killGraceTimer.unref?.();
+            }, timeoutMs);
+            timeoutTimer.unref?.();
+        }
 
         const stdoutSanitizer = createStreamSanitizer(secretsToRedact, { onCanaryDetected: handleCanaryTrip });
         const stderrSanitizer = createStreamSanitizer(secretsToRedact, { onCanaryDetected: handleCanaryTrip });
@@ -427,16 +486,24 @@ export function pipeSanitizedChild(child, secretsToRedact = [], {
             if (sanitized && !canaryTripped) errStream.write(sanitized);
         });
         child.once("error", (err) => {
+            cleanupTimers();
             if (canaryTripped) return;
             reject(err);
         });
-        child.once("close", (code) => {
+        child.once("close", (code, signal) => {
+            cleanupTimers();
             if (canaryTripped) return;
             const finalStdout = stdoutSanitizer.end();
             const finalStderr = stderrSanitizer.end();
             if (finalStdout && !canaryTripped) outStream.write(finalStdout);
             if (finalStderr && !canaryTripped) errStream.write(finalStderr);
-            resolve({ status: code ?? 1 });
+            if (timedOut) {
+                const err = new Error(`Subprocess timed out after ${timeoutMs}ms.`);
+                err.code = "ERR_SUBPROCESS_TIMEOUT";
+                err.exitCode = 124;
+                return reject(err);
+            }
+            resolve({ status: code ?? (signal ? 1 : 0) });
         });
     });
 }
@@ -444,19 +511,22 @@ export function pipeSanitizedChild(child, secretsToRedact = [], {
 export function parseArguments(argv) {
     const marker = argv.indexOf("--");
     if (marker === -1 || !argv[marker + 1]) {
-        throw new Error("Usage: exec --root <path> --env-file <path> [--allow NAME,NAME] [--strict] [--canary] -- <command> [args]");
+        throw new Error("Usage: exec --root <path> --env-file <path> [--allow NAME,NAME] [--strict] [--canary] [--timeout <duration>] -- <command> [args]");
     }
     const options = argv.slice(0, marker);
     const value = (name) => {
         const index = options.indexOf(name);
         return index >= 0 ? options[index + 1] : "";
     };
+    const rawTimeout = value("--timeout");
     return {
         root: path.resolve(value("--root") || process.cwd()),
         envFile: path.resolve(value("--env-file")),
         allowNames: value("--allow") ? value("--allow").split(",").map((name) => name.trim()).filter(Boolean) : undefined,
         strict: options.includes("--strict"),
         canary: options.includes("--canary"),
+        timeout: rawTimeout || undefined,
+        timeoutMs: rawTimeout ? parseDuration(rawTimeout) : undefined,
         command: argv[marker + 1],
         commandArgs: argv.slice(marker + 2),
     };
@@ -489,7 +559,9 @@ export function executeProcess(options, { outStream = process.stdout, errStream 
             shell: process.platform === "win32",
         });
 
-        pipeSanitizedChild(child, secretsToRedact, { outStream, errStream, root: options.root }).then(resolve, reject);
+        const timeoutMs = options.timeoutMs ?? (options.timeout ? parseDuration(options.timeout) : undefined);
+
+        pipeSanitizedChild(child, secretsToRedact, { outStream, errStream, root: options.root, timeoutMs }).then(resolve, reject);
     });
 }
 

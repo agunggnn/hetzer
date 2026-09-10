@@ -27,7 +27,7 @@ sequenceDiagram
 |---|---|---|
 | Grimoire vault | `cli/vault/hetzer-vault.mjs` | AES-256-GCM credential values in SQLite with target/action/expiry checks |
 | Secret scanner | `cli/vault/sniffer.mjs` | Provider regexes, database URLs, bounded PEM keys, and Shannon-entropy candidates |
-| Process runner | `cli/vault/exec.mjs` | Scope resolution, strict base environment, reflection guard, stream sanitizer, subprocess canary stream tripwire |
+| Process runner | `cli/vault/exec.mjs` | Scope resolution, strict base environment, reflection guard, stream sanitizer, subprocess canary stream tripwire, execution timeout guard |
 | Compose runner | `cli/vault/compose-runner.mjs` | Scoped Compose environment and sanitized Docker/containers output pipes |
 | Credential CLI | `cli/vault/creds.mjs` | Set/list/reveal, TTY and agent heuristics, required native UI confirmation |
 | Canary | `cli/vault/canary.mjs` | Decoy token injection, aborts guarded reveal/resolution/stream leak with exit code 43, terminates child process tree |
@@ -43,6 +43,7 @@ sequenceDiagram
 - strict execution excludes unapproved inherited values and the master key;
 - known short values and values divided across output chunks are redacted;
 - multiline PKCS#8 keys and credentialed database URLs are detected;
+- subprocess execution timeout guard terminates runaway/hanging processes within configured budgets and redacts emitted output;
 - generic high-entropy candidates are detected without duplicating overlapping provider matches;
 - auto-vaulting a second provider token does not overwrite an existing provider credential;
 - canary errors carry exit code 43;
