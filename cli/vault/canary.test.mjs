@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { isCanaryCredential, setupCanaryTrap, triggerCanaryAlert } from "./canary.mjs";
+import { generateCanaryToken, isCanaryCredential, isCanaryToken, setupCanaryTrap, triggerCanaryAlert } from "./canary.mjs";
 import { revealCredential } from "./creds.mjs";
 import { resolveSecretEnvironment } from "./secret-env.mjs";
 
@@ -86,3 +86,34 @@ test("resolveSecretEnvironment trips tripwire when canary binding is resolved", 
 
     fs.rmSync(root, { recursive: true, force: true });
 });
+
+test("isCanaryToken and generateCanaryToken properly identify synthetic decoy honeytokens", () => {
+    const token = generateCanaryToken();
+    assert.match(token, /^canary_trap_[0-9a-f]{32}$/);
+    assert.equal(isCanaryToken(token), true);
+    assert.equal(isCanaryToken(`Bearer ${token}`), true);
+    assert.equal(isCanaryToken("canary_trap_abcdef0123456789abcdef0123456789"), true);
+    assert.equal(isCanaryToken("regular-secret-value"), false);
+    assert.equal(isCanaryToken(""), false);
+    assert.equal(isCanaryToken(null), false);
+});
+
+test("resolveSecretEnvironment automatically injects HETZER_CANARY_TOKEN when canary is enabled", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-canary-env-"));
+    const envFile = path.join(root, ".env");
+    fs.writeFileSync(envFile, "FOO=bar\n");
+
+    const resolved = resolveSecretEnvironment({
+        root,
+        envFile,
+        baseEnv: { PATH: process.env.PATH },
+        canary: true,
+    });
+
+    assert.ok(resolved.HETZER_CANARY_TOKEN);
+    assert.match(resolved.HETZER_CANARY_TOKEN, /^canary_trap_[0-9a-f]{32}$/);
+    assert.equal(isCanaryToken(resolved.HETZER_CANARY_TOKEN), true);
+
+    fs.rmSync(root, { recursive: true, force: true });
+});
+

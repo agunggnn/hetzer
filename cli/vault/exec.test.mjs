@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createStreamSanitizer, executeProcess, isReflectionCommand, sanitizeStreamOutput } from "./exec.mjs";
+import { createStreamSanitizer, executeProcess, isReflectionCommand, parseArguments, sanitizeStreamOutput } from "./exec.mjs";
 import { setCredential } from "./creds.mjs";
 
 test("isReflectionCommand accurately detects and blocks environment reflection attempts", () => {
@@ -215,3 +215,143 @@ test("executeProcess enforces strict scoping when requested", async () => {
 
     fs.rmSync(tempDir, { recursive: true, force: true });
 });
+
+test("parseArguments parses --canary flag properly", () => {
+    const parsed = parseArguments([
+        "--root", process.cwd(),
+        "--env-file", ".env",
+        "--strict",
+        "--canary",
+        "--",
+        "node", "-v",
+    ]);
+    assert.equal(parsed.strict, true);
+    assert.equal(parsed.canary, true);
+    assert.equal(parsed.command, "node");
+    assert.deepEqual(parsed.commandArgs, ["-v"]);
+});
+
+test("createStreamSanitizer detects canary honeytoken in chunks and trips onCanaryDetected", () => {
+    let trippedId = null;
+    const canaryValue = "canary_trap_0123456789abcdef0123456789abcdef";
+    const sanitizer = createStreamSanitizer(
+        [{ id: "canary-token", secret: canaryValue, isCanary: true }],
+        { onCanaryDetected: ({ id }) => { trippedId = id; } }
+    );
+
+    const chunk1 = sanitizer.write(Buffer.from("Normal output before "));
+    const chunk2 = sanitizer.write(Buffer.from(`leak: ${canaryValue}\n`));
+    const chunk3 = sanitizer.end();
+
+    assert.equal(trippedId, "canary-token");
+    assert.doesNotMatch(chunk1 + chunk2 + chunk3, new RegExp(canaryValue));
+});
+
+test("executeProcess kills subprocess immediately and exits with code 43 if canary token is leaked on stdout", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-exec-canary-stdout-"));
+    const dataDir = path.join(tempDir, "data");
+    fs.mkdirSync(dataDir, { recursive: true });
+    const envFile = path.join(tempDir, ".env");
+    fs.writeFileSync(envFile, "FOO=bar\n");
+
+    const script = [
+        `process.stdout.write("Subprocess started\\n");`,
+        `process.stdout.write("Stealing: " + process.env.HETZER_CANARY_TOKEN + "\\n");`,
+        `process.stdout.write("This line should never execute\\n");`,
+    ].join("\n");
+    const scriptFile = path.join(tempDir, "leak-script.js");
+    fs.writeFileSync(scriptFile, script);
+
+    let capturedOutput = "";
+    const mockOut = { write(chunk) { capturedOutput += chunk; return true; } };
+
+    await assert.rejects(
+        () => executeProcess({
+            root: tempDir,
+            envFile,
+            canary: true,
+            command: process.execPath,
+            commandArgs: [scriptFile],
+        }, { outStream: mockOut }),
+        (err) => {
+            assert.equal(err.code, "ERR_CANARY_TRIPWIRE_TRIGGERED");
+            assert.equal(err.exitCode, 43);
+            return true;
+        }
+    );
+
+    // Subprocess output must NEVER contain the raw canary honeytoken
+    assert.doesNotMatch(capturedOutput, /canary_trap_/);
+    assert.doesNotMatch(capturedOutput, /This line should never execute/);
+
+    // Incident log must record the tripwire
+    const incidentLog = path.join(tempDir, "data", "hetzer-incidents.log");
+    assert.ok(fs.existsSync(incidentLog));
+    const logContent = fs.readFileSync(incidentLog, "utf8");
+    assert.match(logContent, /Canary 'canary-token' triggered by subprocess\.leak during stream\.output/);
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+test("executeProcess kills subprocess immediately and exits with code 43 if canary token is leaked on stderr", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-exec-canary-stderr-"));
+    const dataDir = path.join(tempDir, "data");
+    fs.mkdirSync(dataDir, { recursive: true });
+    const envFile = path.join(tempDir, ".env");
+    fs.writeFileSync(envFile, "FOO=bar\n");
+
+    const script = [
+        `process.stderr.write("Stderr crash leak: " + process.env.HETZER_CANARY_TOKEN + "\\n");`,
+    ].join("\n");
+    const scriptFile = path.join(tempDir, "stderr-leak.js");
+    fs.writeFileSync(scriptFile, script);
+
+    let capturedError = "";
+    const mockErr = { write(chunk) { capturedError += chunk; return true; } };
+
+    await assert.rejects(
+        () => executeProcess({
+            root: tempDir,
+            envFile,
+            canary: true,
+            command: process.execPath,
+            commandArgs: [scriptFile],
+        }, { errStream: mockErr }),
+        (err) => {
+            assert.equal(err.code, "ERR_CANARY_TRIPWIRE_TRIGGERED");
+            assert.equal(err.exitCode, 43);
+            return true;
+        }
+    );
+
+    assert.doesNotMatch(capturedError, /canary_trap_/);
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+test("executeProcess with canary enabled completes normally when canary token is not leaked", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-exec-canary-clean-"));
+    const envFile = path.join(tempDir, ".env");
+    fs.writeFileSync(envFile, "FOO=bar\n");
+
+    const script = `process.stdout.write("Hello from legitimate script\\n");`;
+    const scriptFile = path.join(tempDir, "clean-script.js");
+    fs.writeFileSync(scriptFile, script);
+
+    let capturedOutput = "";
+    const mockOut = { write(chunk) { capturedOutput += chunk; return true; } };
+
+    const result = await executeProcess({
+        root: tempDir,
+        envFile,
+        canary: true,
+        command: process.execPath,
+        commandArgs: [scriptFile],
+    }, { outStream: mockOut });
+
+    assert.equal(result.status, 0);
+    assert.match(capturedOutput, /Hello from legitimate script/);
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+});
+

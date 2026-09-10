@@ -27,12 +27,13 @@ sequenceDiagram
 |---|---|---|
 | Grimoire vault | `cli/vault/hetzer-vault.mjs` | AES-256-GCM credential values in SQLite with target/action/expiry checks |
 | Secret scanner | `cli/vault/sniffer.mjs` | Provider regexes, database URLs, bounded PEM keys, and Shannon-entropy candidates |
-| Process runner | `cli/vault/exec.mjs` | Scope resolution, strict base environment, reflection guard, shared stdout/stderr sanitizer |
+| Process runner | `cli/vault/exec.mjs` | Scope resolution, strict base environment, reflection guard, stream sanitizer, subprocess canary stream tripwire |
 | Compose runner | `cli/vault/compose-runner.mjs` | Scoped Compose environment and sanitized Docker/containers output pipes |
 | Credential CLI | `cli/vault/creds.mjs` | Set/list/reveal, TTY and agent heuristics, required native UI confirmation |
-| Canary | `cli/vault/canary.mjs` | Aborts guarded canary reveal/resolution and maps to CLI exit code 43 |
-| Git hook | `cli/core/git-hook.mjs` | Scans staged `.env` names and added text grouped by file |
-| MCP | `cli/mcp/` | Metadata-only credential tools, scanner tools, module tools, response sanitation |
+| Canary | `cli/vault/canary.mjs` | Decoy token injection, aborts guarded reveal/resolution/stream leak with exit code 43, terminates child process tree |
+| Git hooks | `cli/core/git-hook.mjs` | Dual Git hooks (`pre-commit` & `commit-msg`), scans staged `.env` names, diff additions, and commit message text |
+| HTTP broker | `cli/vault/http-broker.mjs` | Loopback proxy injecting upstream credentials via ephemeral capabilities without exposing secrets to child environments |
+| MCP | `cli/mcp/` | FastMCP server, metadata-only tools, virtual credential proxy (`secretRef:<id>` payload resolution), canary guard, response sanitation |
 | Agent installer | `cli/skills/` | Workspace guidance and selected user-level client configuration |
 | Module system | `cli/modules/` | Disabled-by-default optional module recipes and Compose profile resolution |
 
@@ -45,6 +46,10 @@ sequenceDiagram
 - generic high-entropy candidates are detected without duplicating overlapping provider matches;
 - auto-vaulting a second provider token does not overwrite an existing provider credential;
 - canary errors carry exit code 43;
+- commit-msg hook blocks raw credentials in commit message text and exempts comment lines;
+- MCP virtual credential proxy resolves `secretRef:<id>` in tool payloads and sanitizes outputs;
+- subprocess canary stream tripwire terminates child processes on stream leak;
+- HTTP broker capabilities authenticate scoped requests and reject unpermitted paths;
 - installer tests redirect user-level paths to a temporary home.
 
 ## Known boundaries

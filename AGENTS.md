@@ -1,39 +1,6 @@
 # Hetzer Contributor & Agent Guidance
 
-> **Current Package Version**: v0.4.10
-> **Verification**: Run `npm run check`, `npm test`, and `npm run verify` against the current tree; do not rely on a cached test count.
-
----
-
-## 📌 Latest System State & Critical Architecture Context
-
-Any AI model or developer working on this codebase MUST respect the following verified architectural realities:
-
-1. **Stream Redactor & Output Buffer (`cli/vault/exec.mjs`)**:
-   - Uses a dynamic sliding buffer `Math.max(128, longestSecret * 2)` with a bounded 512-character window scan.
-   - Normalizes terminal control characters and incrementally suppresses supported long private-key, credentialed database URL, and provider-token output on both stdout and stderr.
-   - **DO NOT** inflate this retention buffer (e.g. to 16 KB); large buffers cause terminal freeze and withhold real-time stdout.
-2. **Strict Environment Scoping (`cli/vault/secret-env.mjs`)**:
-   - The `--strict` flag isolates child processes using `strictBaseEnvironment`. All unapproved parent env tokens and `HETZER_GRIMOIRE_KEY` are stripped; only explicitly allowed credentials via `--allow` are resolved.
-3. **Git Hooks (`cli/core/git-hook.mjs`)**:
-   - **Pre-commit**: Scans multiline staged additions for private keys, database URLs, and raw tokens. Test files (`*.test.mjs`, `verify-evidence`) and agent lifecycle IDs (`call_...`, `tool_...`, `chunk_...`, `session_...`) are strictly exempted to prevent false-positive `exit 1` commit deadlocks.
-   - **Commit-msg**: Scans commit message text (`check-msg`) to prevent accidental token exfiltration in git commit history while ignoring standard comment lines.
-4. **MCP Virtual Credential Proxy (`cli/mcp/protocol.mjs`, `cli/mcp/catalog.mjs`, `cli/mcp/call.mjs`)**:
-   - **Argument Injection**: Agents pass `secretRef:<id>` in MCP tool arguments (exact or inline like `Bearer secretRef:<id>`). Hetzer resolves the real credential just-in-time from the Grimoire vault before tool dispatch.
-   - **Canary Trap**: Decoy canary honeytokens (`canary-token`, `canary-*`, `decoy-*`) in MCP arguments trigger immediate tripwire abort (`exit 43`).
-   - **Output Redaction**: Outbound MCP responses, raw results, and error messages are sanitized through `sanitizeMcpValue`, redacting reflected credentials.
-5. **Process Ancestry & Reveal Guard (`cli/vault/creds.mjs`)**:
-   - Inspects 5 process generations across Windows (`Win32_Process`) and Unix-like platforms (`ps`).
-   - Non-interactive bypasses are forbidden. Native OS dialog confirmation is required for human reveals.
-6. **Canary Honey-Token Tripwire (`cli/vault/canary.mjs`)**:
-   - Tripping decoy tokens (`canary-token`, `canary-*`, `decoy-*`) logs an incident, attempts an SQLite audit entry when a vault exists, and aborts with `exitCode 43` (`ERR_CANARY_TRIPWIRE_TRIGGERED`).
-   - Canaries only protect guarded resolution/reveal paths, NOT arbitrary OS disk access.
-7. **No Unverified Marketing / False Compliance Claims**:
-   - **DO NOT** claim PCI-DSS 6.4.3 compliance (it governs payment page scripts, not pre-commit hooks).
-   - **DO NOT** claim universal "100% unbreakable" guarantees. Hetzer is an empirical defense-in-depth security layer.
-   - All claims must be backed by reproducible empirical tests via `npm run verify`.
-8. **Branding & Terminal Identity**:
-   - Banner is terminal-native ANSI Shadow block art (`HETZER`) in `assets/hetzer-banner.jpg` and `cli/core/banner.mjs`. Do not revert to AI-illustrated pictorial drawings.
+> **Version**: v0.4.11 | **Verify**: `npm run check && npm test && npm run verify`
 
 ---
 
@@ -48,22 +15,20 @@ Any AI model or developer working on this codebase MUST respect the following ve
 
 ---
 
-## 🛠️ Verification & Contributor Checklist
-
-Before committing or concluding any turn:
-1. `npm run check` — Must pass (validates source syntax and forbidden token leak checks; it does not rerun tests).
-2. `npm test` — Must pass; use the current command output rather than a cached test count.
-3. `npm run verify` — Must pass all 6 empirical protocols (`docs/verification-evidence.json`).
-4. Pin container images by multi-platform digest and document their upstream source.
-5. Keep Linux, macOS, and Windows behavior equivalent; prefer Node APIs over shell-specific code.
+## 📌 Architecture & Safety Boundaries
+1. **Stream Redactor (`cli/vault/exec.mjs`)**: Sliding buffer `Math.max(128, longestSecret * 2)` with 512B window scan. Suppresses private keys, database URLs, and provider tokens. Do NOT inflate to 16KB.
+2. **Strict Scoping (`cli/vault/secret-env.mjs`)**: `--strict` strips unapproved parent env vars and master key. Only `--allow` credentials resolve.
+3. **Git Hooks (`cli/core/git-hook.mjs`)**: Pre-commit exempts fixtures (`*.test.mjs`, `test/`) and agent IDs (`call_*`, `tool_*`). Commit-msg blocks tokens in commit text.
+4. **MCP Proxy (`cli/mcp/`)**: Agents pass `secretRef:<id>`; runtime resolves vault credentials just-in-time and sanitizes outputs.
+5. **Canary Tripwire (`cli/vault/canary.mjs`, `cli/vault/exec.mjs`)**: Honeytokens (`canary-token`, `canary-*`, `decoy-*`, `canary_trap_*`) abort with `exitCode 43` (`ERR_CANARY_TRIPWIRE_TRIGGERED`). `hetzer exec --canary` injects `HETZER_CANARY_TOKEN`; stream leaks immediately terminate child processes.
+6. **No False Claims**: Defense-in-depth security layer. Do not claim PCI-DSS 6.4.3 or "100% unbreakable". All claims verified via `npm run verify`.
 
 ---
 
 ## 📝 Pending Agent Review (For Codex)
-- **Feature 1**: Git `commit-msg` Secret Shield hook (`feat/commit-msg-hook`, PR #4).
-  - Status: Empirically verified; all matrix CI checks passing.
-- **Feature 2**: MCP Virtual Credential Proxy and Canary Guard (`feat/mcp-credential-proxy`).
-  - Implemented: `resolveSecretRefsInPayload`, `sanitizeMcpValue` output filtering, argument virtual injection, and MCP canary tripwire in `cli/mcp/`.
-  - Status: 147 tests passing, `check.mjs` clean, 6/6 NIST/OWASP empirical protocols passing.
-- **Action for Codex**: Please review these implementations and unit tests before merging into `main`.
+Review branches sequentially in stack order:
+1. **[PR #4](https://github.com/agunggnn/hetzer/pull/4)** (`feat/commit-msg-hook` -> `main`): Git `commit-msg` Secret Shield hook. (145 tests)
+2. **[PR #5](https://github.com/agunggnn/hetzer/pull/5)** (`feat/mcp-credential-proxy` -> `feat/commit-msg-hook`): MCP Virtual Credential Proxy. (147 tests)
+3. **[PR #6](https://github.com/agunggnn/hetzer/pull/6)** (`feat/subprocess-canary-tripwire` -> `feat/mcp-credential-proxy`): Subprocess Canary Decoy & Tripwire Kill. (154 tests)
+
 
