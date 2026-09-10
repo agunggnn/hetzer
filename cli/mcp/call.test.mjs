@@ -144,7 +144,7 @@ test("callMcpTool resolves secretRef in arguments and sanitizes sensitive respon
         dbPath: path.join(dataDir, "hetzer-vault.db"),
         masterKey,
     });
-    vault.create({ id: "my-service-key", secret: rawSecret, projectId: "test-service" });
+    vault.create({ id: "my-service-key", secret: rawSecret, projectId: "cognee" });
     vault.close();
 
     try {
@@ -174,6 +174,153 @@ test("callMcpTool resolves secretRef in arguments and sanitizes sensitive respon
         assert.equal(sentArguments.apiKey, rawSecret);
         assert.ok(!result.content.includes(leakedReturnedSecret));
         assert.ok(result.content.includes("secretRef:github-token"));
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("callMcpTool redacts custom non-pattern credentials and multi-representation echoes", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-mcp-multi-rep-"));
+    const dataDir = path.join(root, "data");
+    fs.mkdirSync(dataDir, { recursive: true });
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    fs.writeFileSync(path.join(root, ".env"), `COGNEE_MCP_PORT=8001\nHETZER_GRIMOIRE_KEY=${masterKey}\n`);
+
+    const customSecret = 'custom_db_pwd_"quoted"\\path';
+    const GrimoireModule = await import("../vault/hetzer-vault.mjs");
+    const vault = new GrimoireModule.Grimoire({
+        dbPath: path.join(dataDir, "hetzer-vault.db"),
+        masterKey,
+    });
+    vault.create({ id: "database-secret", secret: customSecret, projectId: "cognee" });
+    vault.close();
+
+    try {
+        const jsonEsc = JSON.stringify(customSecret).slice(1, -1);
+        const urlEsc = encodeURIComponent(customSecret);
+        const uniEsc = customSecret.replace(/["\\/<>&\x00-\x1f]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+
+        const mockFetch = async () => ({
+            ok: true,
+            json: async () => ({
+                result: {
+                    content: [
+                        { type: "text", text: `Echo literal: ${customSecret}` },
+                        { type: "text", text: `Echo json: ${jsonEsc}` },
+                        { type: "text", text: `Echo url: ${urlEsc}` },
+                        { type: "text", text: `Echo unicode: ${uniEsc}` },
+                    ],
+                },
+            }),
+        });
+
+        const result = await callMcpTool({
+            root,
+            targetService: "cognee",
+            toolName: "search",
+            args: { cred: "secretRef:database-secret" },
+            fetchFn: mockFetch,
+        });
+
+        assert.equal(result.ok, true);
+        assert.doesNotMatch(result.content, /custom_db_pwd_/);
+        assert.doesNotMatch(result.content, /"quoted"/);
+        assert.doesNotMatch(result.content, /%22quoted%22/);
+        assert.doesNotMatch(result.content, /\\u0022quoted\\u0022/);
+        assert.match(result.content, /secretRef:database-secret/);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("callMcpTool rejects cross-service credential access and enforces allowedActions", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-mcp-cross-service-"));
+    const dataDir = path.join(root, "data");
+    fs.mkdirSync(dataDir, { recursive: true });
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    fs.writeFileSync(path.join(root, ".env"), `COGNEE_MCP_PORT=8001\nHETZER_GRIMOIRE_KEY=${masterKey}\n`);
+
+    const GrimoireModule = await import("../vault/hetzer-vault.mjs");
+    const vault = new GrimoireModule.Grimoire({
+        dbPath: path.join(dataDir, "hetzer-vault.db"),
+        masterKey,
+    });
+    vault.create({ id: "foreign-key", secret: "foreign-secret", projectId: "nine-router" });
+    vault.create({
+        id: "subprocess-only-key",
+        secret: "subprocess-secret",
+        projectId: "cognee",
+        allowedActions: ["process.start"],
+    });
+    vault.close();
+
+    try {
+        const mockFetch = async () => ({
+            ok: true,
+            json: async () => ({ result: { content: [{ type: "text", text: "ok" }] } }),
+        });
+
+        // 1. Cross-service access should fail
+        await assert.rejects(
+            callMcpTool({
+                root,
+                targetService: "cognee",
+                toolName: "search",
+                args: { cred: "secretRef:foreign-key" },
+                fetchFn: mockFetch,
+            }),
+            /is not permitted for service/
+        );
+
+        // 2. Action mismatch should fail
+        await assert.rejects(
+            callMcpTool({
+                root,
+                targetService: "cognee",
+                toolName: "search",
+                args: { cred: "secretRef:subprocess-only-key" },
+                fetchFn: mockFetch,
+            }),
+            /is not permitted for MCP tool execution/
+        );
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("callMcpTool safely catches transport failures and redacts exception messages", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-mcp-transport-err-"));
+    const dataDir = path.join(root, "data");
+    fs.mkdirSync(dataDir, { recursive: true });
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    fs.writeFileSync(path.join(root, ".env"), `COGNEE_MCP_PORT=8001\nHETZER_GRIMOIRE_KEY=${masterKey}\n`);
+
+    const secretValue = "confidential-transport-key-7711";
+    const GrimoireModule = await import("../vault/hetzer-vault.mjs");
+    const vault = new GrimoireModule.Grimoire({
+        dbPath: path.join(dataDir, "hetzer-vault.db"),
+        masterKey,
+    });
+    vault.create({ id: "transport-key", secret: secretValue, projectId: "cognee" });
+    vault.close();
+
+    try {
+        const mockFailingFetch = async () => {
+            throw new Error(`Transport aborted while sending ${secretValue}`);
+        };
+
+        const result = await callMcpTool({
+            root,
+            targetService: "cognee",
+            toolName: "search",
+            args: { cred: "secretRef:transport-key" },
+            fetchFn: mockFailingFetch,
+        });
+
+        assert.equal(result.ok, false);
+        assert.equal(result.isError, true);
+        assert.doesNotMatch(result.error, /confidential-transport-key-7711/);
+        assert.match(result.error, /secretRef:transport-key/);
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }

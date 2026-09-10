@@ -1,6 +1,6 @@
 # Hetzer measurement and evaluation guide
 
-> Version: 0.4.14
+> Version: 0.4.15
 
 This repository does not contain evidence for vendor-wide speed comparisons, annual cost savings, or regulatory certification. Treat earlier figures for competitor latency, memory, vulnerability counts, and 92% TCO reduction as withdrawn unless they are reintroduced with reproducible data and dated sources.
 

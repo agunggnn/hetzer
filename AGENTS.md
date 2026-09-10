@@ -1,6 +1,6 @@
 # Hetzer Contributor & Agent Guidance
 
-> **Version**: v0.4.14 | **Verify**: `npm run check && npm test && npm run verify`
+> **Version**: v0.4.15 | **Verify**: `npm run check && npm test && npm run verify`
 
 ---
 
@@ -30,6 +30,6 @@
 
 ## 📝 Pending Agent Review (For Codex)
 Review branches sequentially in stack order:
-1. **[PR #9](https://github.com/agunggnn/hetzer/pull/9)** (`feat/http-broker-security-hardening` -> `main`): Security Hardening for Policy-Bound HTTP Credential Broker. (169 tests)
+1. **[PR #10](https://github.com/agunggnn/hetzer/pull/10)** (`feat/mcp-proxy-security-hardening` -> `main`): Security Hardening for MCP Virtual Credential Proxy. (173 tests)
 
 

@@ -101,4 +101,39 @@ test("resolveSecretRefsInPayload resolves exact, inline, and nested secretRef re
         () => resolveSecretRefsInPayload("secretRef:canary-token", resolver),
         (err) => err.code === "ERR_CANARY_TRIPWIRE_TRIGGERED" && err.exitCode === 43
     );
+
+    // Collects resolved credentials into inventory
+    const collected = [];
+    resolveSecretRefsInPayload(input, resolver, collected);
+    assert.equal(collected.length, 4);
+    assert.equal(collected[0].id, "anthropic-key");
+    assert.equal(collected[0].secret, syntheticKey);
+    assert.equal(collected[1].id, "anthropic-key");
+    assert.equal(collected[2].id, "db-url");
+    assert.equal(collected[3].id, "anthropic-key");
+});
+
+test("expandSecretVariants generates raw, JSON, URL, and unicode representations", async () => {
+    const { expandSecretVariants, sanitizeMcpValue } = await import("./protocol.mjs");
+    const complexSecret = 'my"custom\\secret/token';
+    const variants = expandSecretVariants([{ id: "test-cred", secret: complexSecret }]);
+
+    assert.ok(variants.some((v) => v.secret === complexSecret));
+    assert.ok(variants.some((v) => v.secret === 'my\\"custom\\\\secret/token'));
+    assert.ok(variants.some((v) => v.secret === encodeURIComponent(complexSecret)));
+    assert.ok(variants.some((v) => v.secret.includes("\\u0022")));
+
+    const echoedPayload = {
+        literal: `raw: ${complexSecret}`,
+        jsonEscaped: `json: ${JSON.stringify(complexSecret).slice(1, -1)}`,
+        urlEscaped: `url: ${encodeURIComponent(complexSecret)}`,
+    };
+
+    const sanitized = sanitizeMcpValue(echoedPayload, [{ id: "test-cred", secret: complexSecret }]);
+    assert.doesNotMatch(sanitized.literal, /my"custom/);
+    assert.match(sanitized.literal, /secretRef:test-cred/);
+    assert.doesNotMatch(sanitized.jsonEscaped, /my\\"custom/);
+    assert.match(sanitized.jsonEscaped, /secretRef:test-cred/);
+    assert.doesNotMatch(sanitized.urlEscaped, /my%22custom/);
+    assert.match(sanitized.urlEscaped, /secretRef:test-cred/);
 });
