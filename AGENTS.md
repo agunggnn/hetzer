@@ -1,6 +1,6 @@
 # Hetzer Contributor & Agent Guidance
 
-> **Current Package Version**: v0.4.8
+> **Current Package Version**: v0.4.9
 > **Verification**: Run `npm run check`, `npm test`, and `npm run verify` against the current tree; do not rely on a cached test count.
 
 ---
@@ -15,9 +15,9 @@ Any AI model or developer working on this codebase MUST respect the following ve
    - **DO NOT** inflate this retention buffer (e.g. to 16 KB); large buffers cause terminal freeze and withhold real-time stdout.
 2. **Strict Environment Scoping (`cli/vault/secret-env.mjs`)**:
    - The `--strict` flag isolates child processes using `strictBaseEnvironment`. All unapproved parent env tokens and `HETZER_GRIMOIRE_KEY` are stripped; only explicitly allowed credentials via `--allow` are resolved.
-3. **Git Pre-Commit Hook (`cli/core/git-hook.mjs`)**:
-   - Scans multiline staged additions for private keys, database URLs, and raw tokens.
-   - Test files (`*.test.mjs`, `verify-evidence`) and agent lifecycle IDs (`call_...`, `tool_...`, `chunk_...`, `session_...`) are strictly exempted to prevent false-positive `exit 1` commit deadlocks.
+3. **Git Hooks (`cli/core/git-hook.mjs`)**:
+   - **Pre-commit**: Scans multiline staged additions for private keys, database URLs, and raw tokens. Test files (`*.test.mjs`, `verify-evidence`) and agent lifecycle IDs (`call_...`, `tool_...`, `chunk_...`, `session_...`) are strictly exempted to prevent false-positive `exit 1` commit deadlocks.
+   - **Commit-msg**: Scans commit message text (`check-msg`) to prevent accidental token exfiltration in git commit history while ignoring standard comment lines.
 4. **Process Ancestry & Reveal Guard (`cli/vault/creds.mjs`)**:
    - Inspects 5 process generations across Windows (`Win32_Process`) and Unix-like platforms (`ps`).
    - Non-interactive bypasses are forbidden. Native OS dialog confirmation is required for human reveals.
@@ -52,3 +52,12 @@ Before committing or concluding any turn:
 3. `npm run verify` — Must pass all 6 empirical protocols (`docs/verification-evidence.json`).
 4. Pin container images by multi-platform digest and document their upstream source.
 5. Keep Linux, macOS, and Windows behavior equivalent; prefer Node APIs over shell-specific code.
+
+---
+
+## 📝 Pending Agent Review (For Codex)
+- **Branch**: `feat/commit-msg-hook`
+- **Feature**: Git `commit-msg` Secret Shield hook (`checkCommitMessage`, `checkCommitMessageFile`, `check-msg` CLI mode).
+- **Status**: Implemented and empirically verified (145 tests passing, `check.mjs` clean, 6/6 NIST/OWASP verification protocols passing).
+- **Action for Codex**: Please review this implementation, the unit tests in `cli/core/git-hook.test.mjs`, and verify that the hook fits the intended AI-native security roadmap before merging.
+

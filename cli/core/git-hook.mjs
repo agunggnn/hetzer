@@ -136,6 +136,71 @@ function isTestOrFixtureFile(filePath) {
     };
 }
 
+export function checkCommitMessage(text) {
+    const start = performance.now();
+    const violations = [];
+
+    if (typeof text !== "string" || !text.trim()) {
+        return {
+            ok: true,
+            violations,
+            latencyMs: Number((performance.now() - start).toFixed(4)),
+        };
+    }
+
+    const lines = text.split(/\r?\n/);
+    const activeLines = [];
+    for (let index = 0; index < lines.length; index += 1) {
+        const line = lines[index];
+        if (!line.trimStart().startsWith("#")) {
+            activeLines.push({ line: index + 1, text: line });
+        }
+    }
+
+    if (activeLines.length > 0) {
+        let combined = "";
+        const offsets = [];
+        for (const item of activeLines) {
+            offsets.push({ offset: combined.length, line: item.line });
+            combined += `${item.text}\n`;
+        }
+        const scan = scanText(combined);
+        for (const match of scan.matches) {
+            let line = activeLines[0].line;
+            for (let index = offsets.length - 1; index >= 0; index -= 1) {
+                if (offsets[index].offset <= match.index) {
+                    line = offsets[index].line;
+                    break;
+                }
+            }
+            violations.push({
+                file: "COMMIT_EDITMSG",
+                line,
+                type: match.type,
+                label: match.label,
+            });
+        }
+    }
+
+    return {
+        ok: violations.length === 0,
+        violations,
+        latencyMs: Number((performance.now() - start).toFixed(4)),
+    };
+}
+
+export function checkCommitMessageFile(filePath) {
+    if (!filePath || !fs.existsSync(filePath)) {
+        return {
+            ok: true,
+            violations: [],
+            latencyMs: 0,
+        };
+    }
+    const text = fs.readFileSync(filePath, "utf8");
+    return checkCommitMessage(text);
+}
+
 export function installGitHook(root = process.cwd()) {
     const gitDir = findGitDir(root);
     if (!gitDir) {
@@ -146,9 +211,10 @@ export function installGitHook(root = process.cwd()) {
     fs.mkdirSync(hooksDir, { recursive: true });
 
     const preCommitFile = path.join(hooksDir, "pre-commit");
+    const commitMsgFile = path.join(hooksDir, "commit-msg");
     const scriptPathNorm = gitHookScriptPath.replace(/\\/g, "/");
 
-    const hookContent = `#!/bin/sh
+    const preCommitContent = `#!/bin/sh
 # Hetzer Credential-Safety Pre-Commit Hook
 # Scans staged additions for leaked secrets, API keys, and tokens.
 
@@ -164,12 +230,32 @@ fi
 exit 0
 `;
 
-    fs.writeFileSync(preCommitFile, hookContent, { encoding: "utf8", mode: 0o755 });
+    const commitMsgContent = `#!/bin/sh
+# Hetzer Credential-Safety Commit-Msg Hook
+# Scans commit messages for leaked secrets, API keys, and tokens.
+
+if command -v node >/dev/null 2>&1; then
+    node "${scriptPathNorm}" check-msg "$1"
+    EXIT_CODE=$?
+    if [ $EXIT_CODE -ne 0 ]; then
+        exit 1
+    fi
+else
+    echo "[!] Node.js not detected in PATH. Skipping Hetzer commit-msg check."
+fi
+exit 0
+`;
+
+    fs.writeFileSync(preCommitFile, preCommitContent, { encoding: "utf8", mode: 0o755 });
+    fs.writeFileSync(commitMsgFile, commitMsgContent, { encoding: "utf8", mode: 0o755 });
     try { fs.chmodSync(preCommitFile, 0o755); } catch { /* Windows */ }
+    try { fs.chmodSync(commitMsgFile, 0o755); } catch { /* Windows */ }
 
     return {
         installed: true,
         path: preCommitFile,
+        preCommitPath: preCommitFile,
+        commitMsgPath: commitMsgFile,
     };
 }
 
@@ -177,7 +263,11 @@ export function uninstallGitHook(root = process.cwd()) {
     const gitDir = findGitDir(root);
     if (!gitDir) return { uninstalled: false };
 
-    const preCommitFile = path.join(gitDir, "hooks", "pre-commit");
+    let uninstalled = false;
+    const hooksDir = path.join(gitDir, "hooks");
+    const preCommitFile = path.join(hooksDir, "pre-commit");
+    const commitMsgFile = path.join(hooksDir, "commit-msg");
+
     if (fs.existsSync(preCommitFile)) {
         const content = fs.readFileSync(preCommitFile, "utf8");
         if (
@@ -185,10 +275,19 @@ export function uninstallGitHook(root = process.cwd()) {
             || content.includes("Hetzer Zero-Plaintext Pre-Commit Hook")
         ) {
             fs.unlinkSync(preCommitFile);
-            return { uninstalled: true, path: preCommitFile };
+            uninstalled = true;
         }
     }
-    return { uninstalled: false };
+
+    if (fs.existsSync(commitMsgFile)) {
+        const content = fs.readFileSync(commitMsgFile, "utf8");
+        if (content.includes("Hetzer Credential-Safety Commit-Msg Hook")) {
+            fs.unlinkSync(commitMsgFile);
+            uninstalled = true;
+        }
+    }
+
+    return { uninstalled, path: preCommitFile };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -199,15 +298,16 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         try {
             const res = installGitHook(root);
             process.stdout.write("================================================================================\n");
-            process.stdout.write("  HETZER - GIT PRE-COMMIT HOOK INSTALLER\n");
+            process.stdout.write("  HETZER - GIT HOOKS INSTALLER (PRE-COMMIT & COMMIT-MSG)\n");
             process.stdout.write("================================================================================\n");
-            process.stdout.write(`  [v] Hook successfully installed at: ${res.path}\n`);
-            process.stdout.write("  [v] Git commits now run the Hetzer Secret Sniffer hook.\n");
-            process.stdout.write("      Supported token patterns and staged .env files are blocked when the hook runs.\n");
+            process.stdout.write(`  [v] Pre-commit hook installed at : ${res.preCommitPath}\n`);
+            process.stdout.write(`  [v] Commit-msg hook installed at : ${res.commitMsgPath}\n`);
+            process.stdout.write("  [v] Git commits now run the Hetzer Secret Sniffer hooks.\n");
+            process.stdout.write("      Supported token patterns, staged .env files, and commit messages are blocked on leak.\n");
             process.stdout.write("================================================================================\n");
             process.exit(0);
         } catch (err) {
-            process.stderr.write(`[x] Failed to install git hook: ${err.message}\n`);
+            process.stderr.write(`[x] Failed to install git hooks: ${err.message}\n`);
             process.exit(1);
         }
     }
@@ -215,10 +315,36 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (action === "uninstall") {
         const res = uninstallGitHook(root);
         if (res.uninstalled) {
-            process.stdout.write(`[v] Hetzer pre-commit hook successfully uninstalled from: ${res.path}\n`);
+            process.stdout.write(`[v] Hetzer git hooks successfully uninstalled from: ${res.path}\n`);
         } else {
-            process.stdout.write("[i] No Hetzer pre-commit hook installed.\n");
+            process.stdout.write("[i] No Hetzer git hooks installed.\n");
         }
+        process.exit(0);
+    }
+
+    if (action === "check-msg") {
+        const msgFile = process.argv[3];
+        if (!msgFile) {
+            process.stderr.write("[x] Error: Commit message file path required for check-msg\n");
+            process.exit(1);
+        }
+        const result = checkCommitMessageFile(msgFile);
+        if (!result.ok) {
+            process.stderr.write("\n================================================================================\n");
+            process.stderr.write("  🛑 HETZER ARMOR: GIT COMMIT REJECTED (SECRET IN COMMIT MESSAGE!)\n");
+            process.stderr.write("================================================================================\n");
+            process.stderr.write(`  Scan Latency : ${result.latencyMs} ms\n`);
+            process.stderr.write(`  Violations   : Detected ${result.violations.length} raw credential(s) in commit message:\n\n`);
+            for (const v of result.violations) {
+                process.stderr.write(`  * Line ${v.line} -> [${v.type}] ${v.label}\n`);
+            }
+            process.stderr.write("\n  HOW TO FIX:\n");
+            process.stderr.write("  1. Remove the raw token/credential from your commit message.\n");
+            process.stderr.write("  2. If referencing a credential, use: secretRef:<id>\n");
+            process.stderr.write("================================================================================\n\n");
+            process.exit(1);
+        }
+        process.stdout.write(`[v] Hetzer Sniffer: Commit message clean (${result.latencyMs} ms). Commit permitted.\n`);
         process.exit(0);
     }
 
