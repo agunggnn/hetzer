@@ -1,6 +1,6 @@
 # Hetzer Contributor & Agent Guidance
 
-> **Version**: v0.4.13 | **Verify**: `npm run check && npm test && npm run verify`
+> **Version**: v0.4.14 | **Verify**: `npm run check && npm test && npm run verify`
 
 ---
 
@@ -23,12 +23,13 @@
 5. **Canary Tripwire (`cli/vault/canary.mjs`, `cli/vault/exec.mjs`)**: Honeytokens (`canary-token`, `canary-*`, `decoy-*`, `canary_trap_*`) abort with `exitCode 43` (`ERR_CANARY_TRIPWIRE_TRIGGERED`). `hetzer exec --canary` injects `HETZER_CANARY_TOKEN`; stream leaks immediately terminate child processes.
 6. **Timeout Guard (`cli/vault/exec.mjs`)**: `--timeout <duration>` (e.g. `30s`, `5m`, `10000ms`) terminates hanging subprocesses with SIGTERM followed by tree-kill (`taskkill /T /F` on Windows, `SIGKILL` on Unix) and exits with code 124 (`ERR_SUBPROCESS_TIMEOUT`).
 7. **Execution Policy (`cli/vault/exec-policy.mjs`)**: `--policy <path>` restricts child execution to whitelisted commands, permitted credentials, strict isolation, and budget ceilings.
-8. **No False Claims**: Defense-in-depth security layer. Do not claim PCI-DSS 6.4.3 or "100% unbreakable". All claims verified via `npm run verify`.
+8. **HTTP Credential Broker (`cli/vault/http-broker.mjs`)**: Short-lived loopback proxy injecting upstream secrets. Enforces bounded fixed-point path canonicalization, dynamic RFC 7230 hop-by-hop connection stripping, atomic quota reservation, and multi-representation secret redaction.
+9. **No False Claims**: Defense-in-depth security layer. Do not claim PCI-DSS 6.4.3 or "100% unbreakable". All claims verified via `npm run verify`.
 
 ---
 
 ## 📝 Pending Agent Review (For Codex)
 Review branches sequentially in stack order:
-1. **[PR #8](https://github.com/agunggnn/hetzer/pull/8)** (`feat/declarative-exec-policy` -> `main`): Declarative Capability Policies for Subprocess Execution. (164 tests)
+1. **[PR #9](https://github.com/agunggnn/hetzer/pull/9)** (`feat/http-broker-security-hardening` -> `main`): Security Hardening for Policy-Bound HTTP Credential Broker. (169 tests)
 
 

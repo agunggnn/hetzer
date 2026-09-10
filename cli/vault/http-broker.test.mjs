@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -239,3 +240,197 @@ test("brokered child receives only the capability while upstream receives the va
         fs.rmSync(root, { recursive: true, force: true });
     }
 });
+
+test("broker rejects nested-encoded path traversal and delimiter smuggling", async () => {
+    let calls = 0;
+    const broker = await startHttpCredentialBroker({
+        policy: policy(),
+        secret: "synthetic-service-secret",
+        fetchFn: async () => {
+            calls += 1;
+            return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } });
+        },
+    });
+
+    function rawGet(urlPath) {
+        return new Promise((resolve, reject) => {
+            const u = new URL(broker.url);
+            const req = http.request({
+                hostname: u.hostname,
+                port: u.port,
+                path: urlPath,
+                method: "GET",
+                headers: { authorization: `Bearer ${broker.capability}` },
+            }, (res) => {
+                resolve(res.statusCode);
+            });
+            req.on("error", reject);
+            req.end();
+        });
+    }
+
+    const headers = { authorization: `Bearer ${broker.capability}` };
+    try {
+        const doubleTraversal = await fetch(`${broker.url}/v1/%252e%252e/admin`, { headers });
+        assert.equal(doubleTraversal.status, 400);
+
+        const tripleTraversal = await fetch(`${broker.url}/v1/%25252e%25252e/admin`, { headers });
+        assert.equal(tripleTraversal.status, 400);
+
+        // Verbatim single traversal via raw HTTP request
+        const rawSingleStatus = await rawGet("/v1/%2e%2e/admin");
+        assert.equal(rawSingleStatus, 400);
+
+        const encodedSlash = await fetch(`${broker.url}/v1/items%2fsecret`, { headers });
+        assert.equal(encodedSlash.status, 400);
+
+        const doubleEncodedSlash = await fetch(`${broker.url}/v1/items%252fsecret`, { headers });
+        assert.equal(doubleEncodedSlash.status, 400);
+
+        const encodedQuery = await fetch(`${broker.url}/v1/items%3fadmin`, { headers });
+        assert.equal(encodedQuery.status, 400);
+
+        const encodedNull = await fetch(`${broker.url}/v1/items%00admin`, { headers });
+        assert.equal(encodedNull.status, 400);
+
+        const encodedBackslash = await fetch(`${broker.url}/v1/%255cadmin`, { headers });
+        assert.equal(encodedBackslash.status, 400);
+
+        assert.equal(calls, 0);
+
+        const legit = await fetch(`${broker.url}/v1/items?limit=5`, { headers });
+        assert.equal(legit.status, 200);
+        assert.equal(calls, 1);
+    } finally {
+        await broker.close();
+    }
+});
+
+test("broker policy validation rejects hop-by-hop headers and unsafe prefix encodings", () => {
+    assert.throws(() => validateBrokerPolicy(policy({ forwardHeaders: ["keep-alive"] })), /not an allowed HTTP header/);
+    assert.throws(() => validateBrokerPolicy(policy({ forwardHeaders: ["proxy-connection"] })), /not an allowed HTTP header/);
+    assert.throws(() => validateBrokerPolicy(policy({ forwardHeaders: ["proxy-authenticate"] })), /not an allowed HTTP header/);
+    assert.throws(() => validateBrokerPolicy(policy({ allowedPathPrefixes: ["/v1/%252e%252e"] })), /Unsafe allowed path prefix/);
+    assert.throws(() => validateBrokerPolicy(policy({ allowedPathPrefixes: ["/v1%2fadmin"] })), /Unsafe allowed path prefix/);
+});
+
+test("broker dynamically strips hop-by-hop headers nominated in Connection", async () => {
+    let capturedHeaders;
+    const broker = await startHttpCredentialBroker({
+        policy: policy({ forwardHeaders: ["accept", "content-type", "x-custom-token"] }),
+        secret: "synthetic-service-secret",
+        fetchFn: async (_url, options) => {
+            capturedHeaders = options.headers;
+            return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } });
+        },
+    });
+
+    try {
+        const u = new URL(broker.url);
+        await new Promise((resolve, reject) => {
+            const req = http.request({
+                hostname: u.hostname,
+                port: u.port,
+                path: "/v1/items",
+                method: "GET",
+                headers: {
+                    authorization: `Bearer ${broker.capability}`,
+                    accept: "application/json",
+                    "x-custom-token": "drop-me-due-to-connection",
+                    connection: "close, x-custom-token",
+                },
+            }, (res) => {
+                assert.equal(res.statusCode, 200);
+                resolve();
+            });
+            req.on("error", reject);
+            req.end();
+        });
+
+        assert.equal(capturedHeaders["x-api-key"], "synthetic-service-secret");
+        assert.equal(capturedHeaders["accept"], "application/json");
+        assert.equal(capturedHeaders["x-custom-token"], undefined);
+        assert.equal(capturedHeaders["connection"], undefined);
+    } finally {
+        await broker.close();
+    }
+});
+
+test("broker prevents TOCTOU capability replay and enforces request limit concurrently", async () => {
+    let upstreamCalls = 0;
+    const broker = await startHttpCredentialBroker({
+        policy: policy({ maxRequests: 1 }),
+        secret: "synthetic-service-secret",
+        fetchFn: async () => {
+            upstreamCalls += 1;
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return new Response(JSON.stringify({ count: upstreamCalls }), {
+                headers: { "content-type": "application/json" },
+            });
+        },
+    });
+
+    try {
+        const headers = {
+            authorization: `Bearer ${broker.capability}`,
+            "content-type": "application/json",
+        };
+        const responses = await Promise.all([
+            fetch(`${broker.url}/v1/items`, { method: "POST", headers, body: JSON.stringify({ req: 1 }) }),
+            fetch(`${broker.url}/v1/items`, { method: "POST", headers, body: JSON.stringify({ req: 2 }) }),
+            fetch(`${broker.url}/v1/items`, { method: "POST", headers, body: JSON.stringify({ req: 3 }) }),
+            fetch(`${broker.url}/v1/items`, { method: "POST", headers, body: JSON.stringify({ req: 4 }) }),
+            fetch(`${broker.url}/v1/items`, { method: "POST", headers, body: JSON.stringify({ req: 5 }) }),
+        ]);
+
+        const statuses = responses.map((r) => r.status);
+        const successful = statuses.filter((s) => s === 200).length;
+        const rateLimited = statuses.filter((s) => s === 429).length;
+
+        assert.equal(successful, 1, `Expected exactly 1 successful request, got ${successful} (${statuses.join(", ")})`);
+        assert.equal(rateLimited, 4, `Expected exactly 4 rate-limited requests, got ${rateLimited}`);
+        assert.equal(upstreamCalls, 1, "Upstream should have been called exactly once");
+    } finally {
+        await broker.close();
+    }
+});
+
+test("broker redacts multi-representation secrets from upstream error responses", async () => {
+    const complexSecret = 'sk-prod-"secret"\\key/token';
+    const broker = await startHttpCredentialBroker({
+        policy: policy(),
+        secret: complexSecret,
+        fetchFn: async () => {
+            const jsonEsc = JSON.stringify(complexSecret).slice(1, -1);
+            const urlEsc = encodeURIComponent(complexSecret);
+            const uniEsc = complexSecret.replace(/["\\/<>&\x00-\x1f]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+            const rawBody = `{"error":"Unauthorized","raw":"${complexSecret}","jsonEscaped":"${jsonEsc}","urlEncoded":"${urlEsc}","unicodeEscaped":"${uniEsc}"}`;
+            return new Response(rawBody, {
+                status: 401,
+                headers: {
+                    "content-type": "application/json",
+                    "x-request-id": `req-${encodeURIComponent(complexSecret)}`,
+                },
+            });
+        },
+    });
+
+    try {
+        const response = await fetch(`${broker.url}/v1/items`, {
+            headers: { authorization: `Bearer ${broker.capability}` },
+        });
+        const text = await response.text();
+
+        assert.equal(response.status, 401);
+        assert.doesNotMatch(text, /sk-prod-/);
+        assert.doesNotMatch(text, /\\u0022secret/);
+        assert.doesNotMatch(text, /%22secret/);
+        assert.match(text, /secretRef:service-api-key/);
+        const headerValue = response.headers.get("x-request-id");
+        assert.doesNotMatch(headerValue, /sk-prod-/);
+        assert.match(headerValue, /secretRef:service-api-key/);
+    } finally {
+        await broker.close();
+    }
+});
+
