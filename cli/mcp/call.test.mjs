@@ -128,3 +128,53 @@ test("runMcpToolCommand executes tool and writes output to stream", async () => 
         fs.rmSync(root, { recursive: true, force: true });
     }
 });
+
+test("callMcpTool resolves secretRef in arguments and sanitizes sensitive responses", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-mcp-call-vault-"));
+    const dataDir = path.join(root, "data");
+    fs.mkdirSync(dataDir, { recursive: true });
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    fs.writeFileSync(path.join(root, ".env"), `COGNEE_MCP_PORT=8001\nHETZER_GRIMOIRE_KEY=${masterKey}\n`);
+
+    const rawSecret = ["sk-ant-", "api03-secret-value-token-998877"].join("");
+    const leakedReturnedSecret = ["ghp", "_", "123456789012345678901234567890123456"].join("");
+
+    const GrimoireModule = await import("../vault/hetzer-vault.mjs");
+    const vault = new GrimoireModule.Grimoire({
+        dbPath: path.join(dataDir, "hetzer-vault.db"),
+        masterKey,
+    });
+    vault.create({ id: "my-service-key", secret: rawSecret, projectId: "test-service" });
+    vault.close();
+
+    try {
+        let sentArguments = null;
+        const mockFetch = async (url, opts) => {
+            const body = JSON.parse(opts.body);
+            sentArguments = body.params.arguments;
+            return {
+                ok: true,
+                json: async () => ({
+                    result: {
+                        content: [{ type: "text", text: `Success: connected with key ${leakedReturnedSecret}` }],
+                    },
+                }),
+            };
+        };
+
+        const result = await callMcpTool({
+            root,
+            targetService: "cognee",
+            toolName: "search",
+            args: { apiKey: "secretRef:my-service-key" },
+            fetchFn: mockFetch,
+        });
+
+        assert.equal(result.ok, true);
+        assert.equal(sentArguments.apiKey, rawSecret);
+        assert.ok(!result.content.includes(leakedReturnedSecret));
+        assert.ok(result.content.includes("secretRef:github-token"));
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
