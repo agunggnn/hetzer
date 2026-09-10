@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createStreamSanitizer, executeProcess, isReflectionCommand, parseArguments, sanitizeStreamOutput } from "./exec.mjs";
+import { createStreamSanitizer, executeProcess, isReflectionCommand, parseArguments, parseDuration, sanitizeStreamOutput, terminateProcessTree } from "./exec.mjs";
 import { setCredential } from "./creds.mjs";
 
 test("isReflectionCommand accurately detects and blocks environment reflection attempts", () => {
@@ -351,6 +351,132 @@ test("executeProcess with canary enabled completes normally when canary token is
 
     assert.equal(result.status, 0);
     assert.match(capturedOutput, /Hello from legitimate script/);
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+test("parseDuration correctly parses duration strings with various units", () => {
+    assert.equal(parseDuration("500ms"), 500);
+    assert.equal(parseDuration("10s"), 10000);
+    assert.equal(parseDuration("2.5s"), 2500);
+    assert.equal(parseDuration("2m"), 120000);
+    assert.equal(parseDuration("1h"), 3600000);
+    assert.equal(parseDuration(1500), 1500);
+    assert.equal(parseDuration("250"), 250);
+
+    assert.throws(() => parseDuration("0s"), /must be greater than 0/);
+    assert.throws(() => parseDuration("-5s"), /must be greater than 0/);
+    assert.throws(() => parseDuration("abc"), /Invalid timeout duration format/);
+    assert.throws(() => parseDuration(""), /expected duration string/);
+    assert.throws(() => parseDuration(null), /expected duration string/);
+});
+
+test("parseArguments parses --timeout flag correctly", () => {
+    const args = ["--root", ".", "--env-file", ".env", "--timeout", "30s", "--", "node", "-v"];
+    const parsed = parseArguments(args);
+    assert.equal(parsed.timeout, "30s");
+    assert.equal(parsed.timeoutMs, 30000);
+});
+
+test("executeProcess completes within timeout budget without premature abort", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-exec-timeout-pass-"));
+    const envFile = path.join(tempDir, ".env");
+    fs.writeFileSync(envFile, "FOO=bar\n");
+
+    const script = `process.stdout.write("Fast completion\\n");`;
+    const scriptFile = path.join(tempDir, "fast.js");
+    fs.writeFileSync(scriptFile, script);
+
+    let capturedOutput = "";
+    const mockOut = { write(chunk) { capturedOutput += chunk; return true; } };
+
+    const result = await executeProcess({
+        root: tempDir,
+        envFile,
+        timeout: "5s",
+        command: process.execPath,
+        commandArgs: [scriptFile],
+    }, { outStream: mockOut });
+
+    assert.equal(result.status, 0);
+    assert.match(capturedOutput, /Fast completion/);
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+test("executeProcess terminates hanging subprocess when timeout budget is exceeded", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-exec-timeout-fail-"));
+    const envFile = path.join(tempDir, ".env");
+    fs.writeFileSync(envFile, "FOO=bar\n");
+
+    const script = `setInterval(() => {}, 1000);`;
+    const scriptFile = path.join(tempDir, "hang.js");
+    fs.writeFileSync(scriptFile, script);
+
+    let capturedError = "";
+    const mockErr = { write(chunk) { capturedError += chunk; return true; } };
+
+    await assert.rejects(
+        () => executeProcess({
+            root: tempDir,
+            envFile,
+            timeout: "200ms",
+            command: process.execPath,
+            commandArgs: [scriptFile],
+        }, { errStream: mockErr }),
+        (err) => {
+            assert.equal(err.code, "ERR_SUBPROCESS_TIMEOUT");
+            assert.equal(err.exitCode, 124);
+            assert.match(err.message, /timed out after 200ms/);
+            return true;
+        }
+    );
+
+    assert.match(capturedError, /Hetzer Timeout Guard: Subprocess exceeded execution budget \(200ms\)/);
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+test("executeProcess with timeout still redacts secrets before terminating", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-exec-timeout-redact-"));
+    const envFile = path.join(tempDir, ".env");
+    const testSecret = "secret-token-to-redact-123456";
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${masterKey}\nSECRET_VAR=secretRef:my-token\n`);
+
+    setCredential({ root: tempDir, envFile, id: "my-token", secret: testSecret });
+
+    const script = [
+        `process.stdout.write("Leaking secret: " + process.env.SECRET_VAR + "\\n");`,
+        `setInterval(() => {}, 1000);`,
+    ].join("\n");
+    const scriptFile = path.join(tempDir, "leak-hang.js");
+    fs.writeFileSync(scriptFile, script);
+
+    let capturedOut = "";
+    let capturedErr = "";
+    const mockOut = { write(chunk) { capturedOut += chunk; return true; } };
+    const mockErr = { write(chunk) { capturedErr += chunk; return true; } };
+
+    await assert.rejects(
+        () => executeProcess({
+            root: tempDir,
+            envFile,
+            allowNames: ["SECRET_VAR"],
+            timeout: "250ms",
+            command: process.execPath,
+            commandArgs: [scriptFile],
+        }, { outStream: mockOut, errStream: mockErr }),
+        (err) => {
+            assert.equal(err.code, "ERR_SUBPROCESS_TIMEOUT");
+            assert.equal(err.exitCode, 124);
+            return true;
+        }
+    );
+
+    assert.match(capturedOut, /secretRef:my-token/);
+    assert.doesNotMatch(capturedOut, new RegExp(testSecret));
+    assert.match(capturedErr, /Hetzer Timeout Guard/);
 
     fs.rmSync(tempDir, { recursive: true, force: true });
 });
