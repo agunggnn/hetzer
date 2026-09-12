@@ -29,7 +29,7 @@ export function resolveSecretEnvironment({
     const values = fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, "utf8")) : {};
     const allow = allowNames === undefined ? null : new Set(allowNames.map((n) => n.toLowerCase()));
 
-    if (strict && (!allow || allow.size === 0)) {
+    if (strict && allow === null) {
         throw new Error(
             "Security violation: Strict scoping enabled (--strict).\n" +
             "You must explicitly specify which credentials may be resolved via '--allow <id|env-var>'.\n" +

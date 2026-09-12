@@ -46,7 +46,25 @@ hetzer creds set service-api-key
 hetzer broker --policy ./broker-policy.json -- trusted-http-client
 ```
 
+For mediated-by-default execution, place the reviewed policy at `.hetzer/brokers/<credential-id>.json` and select that credential explicitly:
+
+```text
+hetzer exec --allow service-api-key --strict -- trusted-http-client
+```
+
+Alternatively, pass one or more reviewed policies with `--broker-policy <file>`. The child receives the policy's `baseUrlEnv` and `tokenEnv`; when exactly one broker is active it also receives `HETZER_BROKER_URL` and `HETZER_BROKER_CAPABILITY`. Per-credential variants are always available as `HETZER_BROKER_URL_<ID>` and `HETZER_BROKER_CAPABILITY_<ID>` with the ID normalized to uppercase underscores.
+
+If no broker policy exists, execution fails closed. A genuinely local or non-brokerable credential requires both selection and the explicit opt-out:
+
+```text
+hetzer exec --allow local-passphrase --allow-raw-unmediated local-passphrase --strict -- trusted-local-client
+```
+
+Raw opt-outs create a `process.raw-unmediated` vault audit event. Declarative execution policies deny the opt-out unless the credential is also listed in `allowRawUnmediated`.
+
 The child environment contains `SERVICE_BASE_URL` pointing to a random loopback port and `SERVICE_API_KEY` containing the short-lived broker capability. The referenced vault credential remains in the parent broker and is inserted into the configured upstream header.
+
+Hetzer does not set `HTTP_PROXY` or `HTTPS_PROXY`. Generic HTTPS proxying uses `CONNECT`, which prevents this application-layer broker from safely inspecting paths or injecting upstream authentication. Clients must support the base URL and token environment variables named by the broker policy. AWS SigV4, arbitrary TCP, binary downloads, and clients with fixed upstream URLs are not transparently brokered by v1.
 
 The broker always starts the child with Hetzer's strict base environment. It closes when the child exits or the configured TTL ends. The TTL prevents new connections after expiry; an already accepted request may finish within its request timeout.
 

@@ -9,7 +9,8 @@ import { fileURLToPath } from "node:url";
 
 import { parseEnv } from "../core/env.mjs";
 import { CANARY_TOKEN_PATTERN, isCanaryCredential, isCanaryToken, triggerCanaryAlert } from "./canary.mjs";
-import { applyExecPolicy, loadExecPolicy } from "./exec-policy.mjs";
+import { applyExecPolicy, assertNoShellMetacharacters, loadExecPolicy } from "./exec-policy.mjs";
+import { Grimoire, resolveMasterKey, resolveVaultPath } from "./hetzer-vault.mjs";
 import { resolveSecretEnvironment } from "./secret-env.mjs";
 import { scanText } from "./sniffer.mjs";
 
@@ -28,6 +29,10 @@ const FORBIDDEN_REFLECTION = [
     /\bdocker\s+inspect\b/i,
     /process\.env/i,
     /os\.environ/i,
+    /\b(?:cmd|cmd\.exe)\s+\/[ck]\s+.*(?:set\b|echo\s+%)/i,
+    /\b(?:powershell|pwsh)(?:\.exe)?\s+.*(?:\$env:|Get-ChildItem\s+env:|dir\s+env:|Get-Item\s+env:)/i,
+    /\b(?:Get-ChildItem|dir|ls|gci)\s+env:/i,
+    /\$env:/i,
 ];
 
 export function isReflectionCommand(command, commandArgs = []) {
@@ -509,23 +514,82 @@ export function pipeSanitizedChild(child, secretsToRedact = [], {
     });
 }
 
+export function resolveCommandForSpawn(command, commandArgs = []) {
+    if (process.platform !== "win32") {
+        return { cmd: command, args: commandArgs };
+    }
+    const cmdLower = (command || "").toLowerCase();
+    // 1. Resolve npm / npx directly to node <cli.js>
+    if (cmdLower === "npm" || cmdLower === "npm.cmd") {
+        const npmCliPath = path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+        if (fs.existsSync(npmCliPath)) {
+            return { cmd: process.execPath, args: [npmCliPath, ...commandArgs] };
+        }
+    }
+    if (cmdLower === "npx" || cmdLower === "npx.cmd") {
+        const npxCliPath = path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npx-cli.js");
+        if (fs.existsSync(npxCliPath)) {
+            return { cmd: process.execPath, args: [npxCliPath, ...commandArgs] };
+        }
+    }
+
+    // 2. If command has path separators or ends with .exe, execute directly
+    if (cmdLower.endsWith(".exe") || command.includes(path.sep) || command.includes("/")) {
+        return { cmd: command, args: commandArgs };
+    }
+
+    // 3. Search PATH
+    const pathDirs = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+    for (const dir of pathDirs) {
+        const exePath = path.join(dir, `${command}.exe`);
+        if (fs.existsSync(exePath)) {
+            return { cmd: exePath, args: commandArgs };
+        }
+    }
+    for (const dir of pathDirs) {
+        const exactPath = path.join(dir, command);
+        if (fs.existsSync(exactPath)) {
+            const ext = path.extname(exactPath).toLowerCase();
+            if (ext === ".cmd" || ext === ".bat") {
+                const comspec = process.env.ComSpec || "cmd.exe";
+                return { cmd: comspec, args: ["/d", "/s", "/c", exactPath, ...commandArgs] };
+            }
+            return { cmd: exactPath, args: commandArgs };
+        }
+        for (const ext of [".cmd", ".bat"]) {
+            const scriptPath = path.join(dir, `${command}${ext}`);
+            if (fs.existsSync(scriptPath)) {
+                const comspec = process.env.ComSpec || "cmd.exe";
+                return { cmd: comspec, args: ["/d", "/s", "/c", scriptPath, ...commandArgs] };
+            }
+        }
+    }
+    return { cmd: command, args: commandArgs };
+}
+
 export function parseArguments(argv) {
     const marker = argv.indexOf("--");
     if (marker === -1 || !argv[marker + 1]) {
-        throw new Error("Usage: exec --root <path> --env-file <path> [--policy <path>] [--allow NAME,NAME] [--strict] [--canary] [--timeout <duration>] -- <command> [args]");
+        throw new Error("Usage: exec --root <path> --env-file <path> [--policy <path>] [--policy-hash <sha256>] [--broker-policy <path>] [--allow NAME,NAME] [--allow-raw-unmediated NAME,NAME] [--strict] [--canary] [--timeout <duration>] -- <command> [args]");
     }
     const options = argv.slice(0, marker);
     const value = (name) => {
         const index = options.indexOf(name);
         return index >= 0 ? options[index + 1] : "";
     };
+    const values = (name) => options.flatMap((item, index) => item === name && options[index + 1] ? [options[index + 1]] : []);
+    const names = (rawValues) => rawValues.flatMap((raw) => raw.split(",")).map((name) => name.trim()).filter(Boolean);
     const rawTimeout = value("--timeout");
     const rawPolicy = value("--policy");
+    const rawPolicyHash = value("--policy-hash");
     return {
         root: path.resolve(value("--root") || process.cwd()),
         envFile: path.resolve(value("--env-file")),
         policyFile: rawPolicy ? path.resolve(rawPolicy) : undefined,
-        allowNames: value("--allow") ? value("--allow").split(",").map((name) => name.trim()).filter(Boolean) : undefined,
+        policyHash: rawPolicyHash || undefined,
+        brokerPolicyFiles: values("--broker-policy").map((file) => path.resolve(file)),
+        allowNames: values("--allow").length ? names(values("--allow")) : undefined,
+        allowRawUnmediated: names(values("--allow-raw-unmediated")),
         strict: options.includes("--strict"),
         canary: options.includes("--canary"),
         timeout: rawTimeout || undefined,
@@ -535,49 +599,265 @@ export function parseArguments(argv) {
     };
 }
 
-export function executeProcess(options, { outStream = process.stdout, errStream = process.stderr } = {}) {
-    return new Promise((resolve, reject) => {
-        let effectiveOptions = { ...options };
-        try {
-            if (effectiveOptions.policyFile) {
-                const loadedPolicy = loadExecPolicy(effectiveOptions.policyFile, effectiveOptions.root);
-                effectiveOptions = applyExecPolicy(loadedPolicy, effectiveOptions);
-            } else if (effectiveOptions.policy) {
-                effectiveOptions = applyExecPolicy(effectiveOptions.policy, effectiveOptions);
+function selectedCredentialBindings(envFile, allowNames = []) {
+    const values = fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, "utf8")) : {};
+    const allow = new Set(allowNames.map((name) => String(name).toLowerCase()));
+    return Object.entries(values).flatMap(([envName, value]) => {
+        const reference = String(value || "");
+        if (!reference.startsWith("secretRef:")) return [];
+        const id = reference.slice("secretRef:".length);
+        if (!allow.has(envName.toLowerCase()) && !allow.has(id.toLowerCase())) return [];
+        return [{ envName, id }];
+    });
+}
+
+function automaticBrokerPolicyFile(root, credentialId) {
+    return path.join(root, ".hetzer", "brokers", `${credentialId}.json`);
+}
+
+function brokerEnvSuffix(credentialId) {
+    return credentialId.toUpperCase().replace(/[^A-Z0-9_]/g, "_");
+}
+
+async function prepareExecutionEnvironment(effectiveOptions, {
+    baseEnv,
+    brokerFetchFn,
+    brokerRandomBytes,
+} = {}) {
+    const requestedNames = effectiveOptions.allowNames || [];
+    const bindings = selectedCredentialBindings(effectiveOptions.envFile, requestedNames);
+    const requestedIds = new Set(bindings.map(({ id }) => id));
+    const rawAllowed = new Set((effectiveOptions.allowRawUnmediated || []).map((id) => String(id).toLowerCase()));
+    for (const id of rawAllowed) {
+        if (![...bindings].some((binding) => binding.id.toLowerCase() === id)) {
+            throw Object.assign(new Error(`Raw unmediated credential '${id}' must also be selected with --allow.`), {
+                code: "ERR_RAW_UNMEDIATED_NOT_SELECTED",
+            });
+        }
+    }
+
+    const { loadBrokerPolicy, openHttpCredentialBroker } = await import("./http-broker.mjs");
+    const policyByCredential = new Map();
+    for (const policyFile of effectiveOptions.brokerPolicyFiles || []) {
+        const policy = loadBrokerPolicy(policyFile);
+        if (policyByCredential.has(policy.credentialId)) {
+            throw new Error(`Multiple HTTP broker policies were supplied for credential '${policy.credentialId}'.`);
+        }
+        policyByCredential.set(policy.credentialId, { policy, policyFile });
+    }
+    for (const id of requestedIds) {
+        if (policyByCredential.has(id)) continue;
+        const policyFile = automaticBrokerPolicyFile(effectiveOptions.root, id);
+        if (fs.existsSync(policyFile)) {
+            const policy = loadBrokerPolicy(policyFile);
+            if (policy.credentialId !== id) {
+                throw new Error(`Automatic broker policy '${policyFile}' must reference secretRef:${id}.`);
             }
-        } catch (err) {
-            return reject(err);
+            policyByCredential.set(id, { policy, policyFile });
         }
+    }
+    for (const credentialId of policyByCredential.keys()) {
+        if (!requestedIds.has(credentialId)) {
+            throw new Error(`Broker policy credential '${credentialId}' must also be selected with --allow.`);
+        }
+        if (rawAllowed.has(credentialId.toLowerCase())) {
+            throw new Error(`Credential '${credentialId}' cannot be both brokered and allowed as raw unmediated.`);
+        }
+    }
 
-        if (isReflectionCommand(effectiveOptions.command, effectiveOptions.commandArgs)) {
-            const fullCmd = [effectiveOptions.command, ...effectiveOptions.commandArgs].join(" ");
-            const err = new Error(
-                `Security violation: Command '${fullCmd}' is blocked by the credential-safety policy.\n` +
-                "Environment reflection commands (printenv, env, export, inline dumps) are forbidden in 'hetzer exec' to prevent secret leakage into agent context or terminal logs."
+    const rawBindings = [];
+    for (const binding of bindings) {
+        if (policyByCredential.has(binding.id)) continue;
+        if (rawAllowed.has(binding.id.toLowerCase())) {
+            rawBindings.push(binding);
+            continue;
+        }
+        const error = new Error(
+            `Credential '${binding.id}' has no HTTP broker policy and raw injection is denied by default. `
+            + `Configure '${automaticBrokerPolicyFile(effectiveOptions.root, binding.id)}' or explicitly use --allow-raw-unmediated ${binding.id}.`
+        );
+        error.code = "ERR_RAW_UNMEDIATED_FORBIDDEN";
+        throw error;
+    }
+
+    const env = resolveSecretEnvironment({
+        ...effectiveOptions,
+        baseEnv,
+        allowNames: rawBindings.map(({ envName }) => envName),
+        action: "process.start",
+    });
+    delete env.HETZER_BROKER_URL;
+    delete env.HETZER_BROKER_CAPABILITY;
+    for (const name of Object.keys(env)) {
+        if (/^HETZER_BROKER_(?:URL|CAPABILITY)_[A-Z0-9_]+$/.test(name)) delete env[name];
+    }
+    const secretsToRedact = collectResolvedSecrets(effectiveOptions.envFile, env);
+    if (rawBindings.length) {
+        const envValues = fs.existsSync(effectiveOptions.envFile)
+            ? parseEnv(fs.readFileSync(effectiveOptions.envFile, "utf8"))
+            : {};
+        const masterKey = resolveMasterKey({ root: effectiveOptions.root, envValues, baseEnv });
+        if (!masterKey || String(masterKey).startsWith("secretRef:")) {
+            throw new Error("Grimoire master key is unavailable.");
+        }
+        const vault = new Grimoire({
+            dbPath: resolveVaultPath(effectiveOptions.root) || path.join(effectiveOptions.root, "data", "hetzer-vault.db"),
+            legacyFile: path.join(effectiveOptions.root, "data", "vault.json"),
+            masterKey,
+        });
+        try {
+            for (const { envName, id } of rawBindings) {
+                const credential = vault.find(id);
+                vault.recordAudit({
+                    actor: "hetzer-cli",
+                    action: "process.raw-unmediated",
+                    targetId: credential?.projectId,
+                    credentialId: id,
+                    reason: "User explicitly allowed raw unmediated credential injection",
+                    outcome: "allowed",
+                    metadata: { envName, command: path.basename(effectiveOptions.command) },
+                });
+            }
+        } finally {
+            vault.close();
+        }
+    }
+    const brokers = [];
+    const claimedBrokerEnvNames = new Set();
+    try {
+        for (const [credentialId, descriptor] of policyByCredential) {
+            if (!requestedIds.has(credentialId)) continue;
+            for (const envName of [descriptor.policy.baseUrlEnv, descriptor.policy.tokenEnv]) {
+                if (claimedBrokerEnvNames.has(envName)) {
+                    throw new Error(`HTTP broker environment variable '${envName}' is claimed by multiple policies.`);
+                }
+                claimedBrokerEnvNames.add(envName);
+            }
+            const opened = await openHttpCredentialBroker({
+                root: effectiveOptions.root,
+                envFile: effectiveOptions.envFile,
+                policy: descriptor.policy,
+                baseEnv,
+                fetchFn: brokerFetchFn,
+                randomBytes: brokerRandomBytes,
+            });
+            const brokerUrl = `${opened.broker.url}${opened.policy.basePath === "/" ? "" : opened.policy.basePath}`;
+            env[opened.policy.baseUrlEnv] = brokerUrl;
+            env[opened.policy.tokenEnv] = opened.broker.capability;
+            const suffix = brokerEnvSuffix(credentialId);
+            env[`HETZER_BROKER_URL_${suffix}`] = brokerUrl;
+            env[`HETZER_BROKER_CAPABILITY_${suffix}`] = opened.broker.capability;
+            secretsToRedact.push(
+                { id: credentialId, secret: opened.secret },
+                { id: `broker-capability-${credentialId}`, secret: opened.broker.capability },
             );
-            err.code = "ERR_REFLECTION_BLOCKED";
-            return reject(err);
+            brokers.push(opened);
         }
+        if (brokers.length === 1) {
+            const opened = brokers[0];
+            env.HETZER_BROKER_URL = `${opened.broker.url}${opened.policy.basePath === "/" ? "" : opened.policy.basePath}`;
+            env.HETZER_BROKER_CAPABILITY = opened.broker.capability;
+        }
+        return { env, secretsToRedact, brokers };
+    } catch (error) {
+        await Promise.all(brokers.map(async (opened) => {
+            await opened.broker.close();
+            opened.secret = "";
+        }));
+        throw error;
+    }
+}
 
-        const env = resolveSecretEnvironment({ ...effectiveOptions, action: "process.start" });
+export async function executeProcess(options, {
+    outStream = process.stdout,
+    errStream = process.stderr,
+    baseEnv = process.env,
+    brokerFetchFn = globalThis.fetch,
+    brokerRandomBytes,
+} = {}) {
+    let effectiveOptions = { ...options };
+    if (effectiveOptions.policyFile) {
+        const loadedPolicy = loadExecPolicy(effectiveOptions.policyFile, effectiveOptions.root, {
+            expectedHash: effectiveOptions.policyHash,
+        });
+        effectiveOptions = applyExecPolicy(loadedPolicy, effectiveOptions);
 
-        const secretsToRedact = collectResolvedSecrets(effectiveOptions.envFile, env);
+        try {
+            const envValues = fs.existsSync(effectiveOptions.envFile)
+                ? parseEnv(fs.readFileSync(effectiveOptions.envFile, "utf8"))
+                : {};
+            const masterKey = resolveMasterKey({ root: effectiveOptions.root, envValues, baseEnv });
+            if (masterKey && !String(masterKey).startsWith("secretRef:")) {
+                const vault = new Grimoire({
+                    dbPath: resolveVaultPath(effectiveOptions.root) || path.join(effectiveOptions.root, "data", "hetzer-vault.db"),
+                    legacyFile: path.join(effectiveOptions.root, "data", "vault.json"),
+                    masterKey,
+                });
+                vault.recordAudit({
+                    actor: "hetzer-cli",
+                    action: "policy.loaded",
+                    targetId: "execution-policy",
+                    credentialId: path.basename(loadedPolicy.policyFile),
+                    reason: "Execution policy validated and loaded",
+                    outcome: "allowed",
+                    metadata: { policyHash: loadedPolicy.policyHash, command: path.basename(effectiveOptions.command) },
+                });
+                vault.close();
+            }
+        } catch {
+            // Fail soft on audit write
+        }
+    } else if (effectiveOptions.policy) {
+        effectiveOptions = applyExecPolicy(effectiveOptions.policy, effectiveOptions);
+    }
 
-        const targetCmd = (process.platform === "win32" && effectiveOptions.command.includes(" ") && !effectiveOptions.command.startsWith('"'))
-            ? `"${effectiveOptions.command}"`
-            : effectiveOptions.command;
+    assertNoShellMetacharacters(effectiveOptions.command, effectiveOptions.commandArgs);
 
-        const child = spawn(targetCmd, effectiveOptions.commandArgs, {
+    if (isReflectionCommand(effectiveOptions.command, effectiveOptions.commandArgs)) {
+        const fullCmd = [effectiveOptions.command, ...effectiveOptions.commandArgs].join(" ");
+        const err = new Error(
+            `Security violation: Command '${fullCmd}' is blocked by the credential-safety policy.\n` +
+            "Environment reflection commands (printenv, env, export, inline dumps) are forbidden in 'hetzer exec' to prevent secret leakage into agent context or terminal logs."
+        );
+        err.code = "ERR_REFLECTION_BLOCKED";
+        throw err;
+    }
+    if (effectiveOptions.strict && effectiveOptions.allowNames === undefined) {
+        throw new Error(
+            "Security violation: Strict scoping enabled (--strict).\n"
+            + "You must explicitly specify which credentials may be resolved via '--allow <id|env-var>'.\n"
+            + "No ungranted secrets are accessible in strict mode."
+        );
+    }
+
+    const { env, secretsToRedact, brokers } = await prepareExecutionEnvironment(
+        effectiveOptions,
+        { baseEnv, brokerFetchFn, brokerRandomBytes },
+    );
+    try {
+        const { cmd: spawnCmd, args: spawnArgs } = resolveCommandForSpawn(
+            effectiveOptions.command,
+            effectiveOptions.commandArgs
+        );
+        const child = spawn(spawnCmd, spawnArgs, {
             stdio: ["inherit", "pipe", "pipe"],
             env,
             windowsHide: true,
-            shell: process.platform === "win32",
+            shell: false,
         });
-
         const timeoutMs = effectiveOptions.timeoutMs ?? (effectiveOptions.timeout ? parseDuration(effectiveOptions.timeout) : undefined);
-
-        pipeSanitizedChild(child, secretsToRedact, { outStream, errStream, root: effectiveOptions.root, timeoutMs }).then(resolve, reject);
-    });
+        return await pipeSanitizedChild(child, secretsToRedact, {
+            outStream,
+            errStream,
+            root: effectiveOptions.root,
+            timeoutMs,
+        });
+    } finally {
+        await Promise.all(brokers.map(async (opened) => {
+            await opened.broker.close();
+            opened.secret = "";
+        }));
+    }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

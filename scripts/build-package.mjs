@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -41,8 +42,21 @@ const publicStage = stagePackage({
 try {
     const scoped = pack(scopedStage);
     const publicNpm = pack(publicStage);
-    process.stdout.write(`Built ${scoped.filename} (${scoped.integrity})\n`);
-    process.stdout.write(`Built ${publicNpm.filename} (${publicNpm.integrity})\n`);
+    const scopedSha256 = crypto.createHash("sha256").update(fs.readFileSync(path.join(artifactRoot, scoped.filename))).digest("hex");
+    const publicSha256 = crypto.createHash("sha256").update(fs.readFileSync(path.join(artifactRoot, publicNpm.filename))).digest("hex");
+    const checksums = [
+        "# SHA-256 Checksums",
+        `${scopedSha256}  ${scoped.filename}`,
+        `${publicSha256}  ${publicNpm.filename}`,
+        "",
+        "# Subresource Integrity (SRI)",
+        `${scoped.integrity}  ${scoped.filename}`,
+        `${publicNpm.integrity}  ${publicNpm.filename}`,
+    ].join("\n") + "\n";
+    fs.writeFileSync(path.join(artifactRoot, "checksums.txt"), checksums);
+    process.stdout.write(`Built ${scoped.filename} (sha256: ${scopedSha256})\n`);
+    process.stdout.write(`Built ${publicNpm.filename} (sha256: ${publicSha256})\n`);
+    process.stdout.write(`Generated ${path.join(artifactRoot, "checksums.txt")}\n`);
 } finally {
     removeStagedPackage(scopedStage);
     removeStagedPackage(publicStage);

@@ -18,12 +18,12 @@ jobs:
       contents: write
     steps:
       - name: Checkout full history
-        uses: actions/checkout@v6
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
       - name: Setup Node.js 22
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.2.0
         with:
           node-version: 22
           cache: npm
@@ -50,10 +50,10 @@ jobs:
         run: npm run build:package
 
       - name: Upload workflow artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
         with:
           name: hetzer-packages-${{ steps.metadata.outputs.tag }}
-          path: artifacts/*.tgz
+          path: artifacts/*
           if-no-files-found: error
           retention-days: 30
 
@@ -85,14 +85,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.metadata.outputs.tag }}
-        run: gh release create "$RELEASE_TAG" artifacts/*.tgz --verify-tag --title "Hetzer $RELEASE_TAG" --generate-notes
+        run: gh release create "$RELEASE_TAG" artifacts/* --verify-tag --title "Hetzer $RELEASE_TAG" --generate-notes
 
       - name: Refresh artifacts on an existing release
         if: steps.github_release.outputs.exists == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.metadata.outputs.tag }}
-        run: gh release upload "$RELEASE_TAG" artifacts/*.tgz --clobber
+        run: gh release upload "$RELEASE_TAG" artifacts/* --clobber
 
   publish-gpr:
     needs: release
