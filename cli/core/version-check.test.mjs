@@ -57,7 +57,8 @@ test("readUpdateCache and writeUpdateCache handle cache lifecycle safely", () =>
 
 test("fetchLatestRelease resolves GitHub releases and falls back gracefully", async () => {
     const mockFetch = async (url) => {
-        if (url.includes("api.github.com")) {
+        const parsedUrl = new URL(String(url));
+        if (parsedUrl.hostname === "api.github.com") {
             return {
                 ok: true,
                 json: async () => ({
@@ -78,10 +79,11 @@ test("fetchLatestRelease resolves GitHub releases and falls back gracefully", as
 
 test("fetchLatestRelease falls back to npm registry if GitHub fails", async () => {
     const mockFetch = async (url) => {
-        if (url.includes("api.github.com")) {
+        const parsedUrl = new URL(String(url));
+        if (parsedUrl.hostname === "api.github.com") {
             return { ok: false, status: 403 };
         }
-        if (url.includes("registry.npmjs.org")) {
+        if (parsedUrl.hostname === "registry.npmjs.org") {
             return {
                 ok: true,
                 json: async () => ({ version: "0.4.18" }),
