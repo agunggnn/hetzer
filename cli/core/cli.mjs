@@ -29,6 +29,13 @@ import {
     resolveLifecycleTarget,
     updateComposeCommands,
 } from "./update.mjs";
+import {
+    checkForUpdates,
+    formatUpdateBanner,
+    getUpdateCachePath,
+    isNewerVersion,
+    readUpdateCache,
+} from "./version-check.mjs";
 import { verifyModuleDeployment } from "./verifier.mjs";
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -139,6 +146,7 @@ export function suggestCommand(input) {
 export const KNOWN_COMMANDS = new Set([
     "help", "--help", "-h",
     "version", "--version", "-v",
+    "check-update", "check_update",
     "doctor",
     "init",
     "protect", "armor", "protec",
@@ -515,6 +523,8 @@ Commands:
   mcp tools <service>       List MCP tools with Offline / Hybrid / LLM classification
   mcp call <srv> <tool> [a] Call MCP tool directly from CLI without external AI client
   publish                   Build, verify test suite, and publish package to npm
+  version [--check]         Display Hetzer version (use --check to query latest release)
+  check-update              Check if a newer version of Hetzer is available
   tui                       Launch interactive terminal operations dashboard
 `;
 }
@@ -544,6 +554,40 @@ export async function main(argv = process.argv.slice(2), options = {}) {
     if (["version", "--version", "-v"].includes(command)) {
         const manifest = JSON.parse(fs.readFileSync(path.join(cliRoot, "..", "package.json"), "utf8"));
         process.stdout.write(`hetzer v${manifest.version}\n`);
+        const wantsCheck = args.includes("--check") || args.includes("-c");
+        if (wantsCheck) {
+            process.stdout.write("Checking for updates...\n");
+            const update = await checkForUpdates({ currentVersion: manifest.version, force: true });
+            if (update.updateAvailable) {
+                process.stdout.write(formatUpdateBanner(update));
+            } else if (update.networkFailed) {
+                process.stdout.write("Unable to reach update registry. Check your internet connection.\n");
+            } else {
+                process.stdout.write("You are using the latest version of Hetzer.\n");
+            }
+        } else {
+            const cached = readUpdateCache(getUpdateCachePath());
+            if (cached && cached.latestVersion && isNewerVersion(manifest.version, cached.latestVersion)) {
+                process.stdout.write(formatUpdateBanner({
+                    currentVersion: manifest.version,
+                    latestVersion: cached.latestVersion,
+                    url: cached.url || "https://github.com/agunggnn/hetzer/releases",
+                }));
+            }
+        }
+        return;
+    }
+    if (["check-update", "check_update"].includes(command)) {
+        const manifest = JSON.parse(fs.readFileSync(path.join(cliRoot, "..", "package.json"), "utf8"));
+        process.stdout.write(`Checking for updates (current: v${manifest.version})...\n`);
+        const update = await checkForUpdates({ currentVersion: manifest.version, force: true });
+        if (update.updateAvailable) {
+            process.stdout.write(formatUpdateBanner(update));
+        } else if (update.networkFailed) {
+            process.stdout.write("Unable to reach update registry. Check your internet connection.\n");
+        } else {
+            process.stdout.write(`Hetzer is up to date (v${manifest.version}).\n`);
+        }
         return;
     }
     if (command === "doctor") {

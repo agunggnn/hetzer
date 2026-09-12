@@ -314,3 +314,18 @@ test("version command reports package version correctly", async () => {
         process.stdout.write = originalStdout;
     }
 });
+
+test("check-update command executes and reports update status", async () => {
+    let output = "";
+    const originalStdout = process.stdout.write;
+    process.stdout.write = (chunk) => {
+        output += chunk;
+        return true;
+    };
+    try {
+        await main(["check-update"]);
+        assert.match(output, /Checking for updates/);
+    } finally {
+        process.stdout.write = originalStdout;
+    }
+});
