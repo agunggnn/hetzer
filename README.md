@@ -100,7 +100,7 @@ All built with **0 external npm dependencies** (100% Node.js standard library: `
 | Control | Covered | Boundary |
 |---|---|---|
 | Vault at rest | AES-256-GCM encryption with a unique random IV and authenticated metadata | A process that can read both the database and master-key file can decrypt entries |
-| `hetzer exec` | Resolves allowed references and sanitizes child stdout/stderr with bounded rolling and structured-stream filters | Child memory contains resolved values; transformed output, direct device/file/network writes, and unrelated processes remain outside this path |
+| `hetzer exec` | Mediates selected HTTP credentials through reviewed broker policies; raw injection requires an explicit audited opt-out | Raw-opted-out values exist in child memory; transformed output, direct device/file/network writes, and unrelated processes remain outside this path |
 | Scanner | Supported patterns, database URLs, private-key blocks up to 16 KiB, and high-entropy candidates | Pattern matching can produce false positives and false negatives |
 | Git hooks | Staged `.env` filenames, diff additions (`pre-commit`), and commit message text (`commit-msg`) | Hooks can be bypassed via `--no-verify` and do not scan past repository history |
 | Canary tripwires | Guarded resolution, reveal, and subprocess stream outputs (`hetzer exec --canary`) | Detects and aborts guarded paths/leaks; does not detect arbitrary out-of-band disk reads by the same OS user |
@@ -177,7 +177,7 @@ flowchart TB
 │  ► Intercepts child process stdout/stderr in memory before terminal emit.   │
 │  ► Known injected values are redacted even when split across output chunks. │
 │  ► Terminal controls and supported long structured values are filtered.     │
-│  ► --strict starts with a minimal environment and injects approved refs.     │
+│  ► --strict starts minimal; broker policies replace refs with capabilities. │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  Layer 3: Anti-Reflection Execution Guard                                   │
 │  ► Blocks reflection commands ('printenv', 'env', 'export', 'docker inspect'│
@@ -345,7 +345,7 @@ All Hetzer commands are executed via the `hetzer` CLI:
 | `hetzer creds set <id>` | Encrypts and saves a credential via AES-256-GCM using a masked prompt |
 | `hetzer creds isolate-key` | Moves master key outside workspace to `~/.hetzer/grimoire.key` (mode 0600) |
 | `hetzer canary [setup]` | Deploys decoy canary honey-tokens to catch prompt injection & scraping |
-| `hetzer exec [--allow <ids>] [--strict] [--canary] -- <c>` | Runs command with scoped secret injection, stream sanitization, and active canary tripwire |
+| `hetzer exec [--allow <ids>] [--broker-policy <file>] [--allow-raw-unmediated <ids>] [--strict] [--canary] -- <c>` | Runs with broker-mediated credentials by default; raw injection requires an audited, policy-permitted opt-out |
 | `hetzer broker --policy <file> -- <c>` | Runs a compatible HTTP client with a short-lived loopback capability instead of the long-lived credential |
 | `hetzer sniffer [scan\|redact]` | Scans or redacts supported credential candidates from input text |
 | `hetzer skill [install\|status]`| Deploys Universal AI Agent Skills to Hermes, AGY, OpenCode, Cursor, Claude |
@@ -375,12 +375,12 @@ hetzer creds reveal nine-router-initial-password
 ```
 
 ### 2. Can AI Agents (Claude, Cursor, Cline, GPT) see these credentials?
-Hetzer keeps plaintext out of MCP vault-list and vault-existence responses, resolves references just-in-time via its MCP virtual proxy, and `hetzer exec` injects approved values directly into child processes. This reduces leakage while maintaining operational reality:
+Hetzer keeps plaintext out of MCP vault-list and vault-existence responses, resolves references just-in-time via its MCP virtual proxy, and mediates selected `hetzer exec` credentials through reviewed HTTP broker policies. This reduces leakage while maintaining operational reality:
 - The MCP tools exposed to AI (`hetzer_vault_has` and `hetzer_vault_list`) **only return metadata** and abstract reference strings (`secretRef:<id>`).
 - **No `reveal` tool is exposed by Hetzer's MCP server**.
 - **MCP Virtual Credential Proxy**: When an agent invokes an MCP tool, it passes references like `secretRef:<id>`. Hetzer resolves this just-in-time for upstream execution, checks for honeytokens, and recursively sanitizes outgoing tool responses before context delivery.
 - **Canary Tripwires**: Any attempt by an autonomous agent or injected prompt to access canary credentials (`canary-token`, `canary-*`, `decoy-*`) triggers a critical security incident and aborts with `exitCode 43`.
-- Credentials injected into a child exist in that process environment and memory. `hetzer exec` blocks common reflection commands, sanitizes supported output, and terminates processes if canary tokens leak (`--canary`). These are application safeguards rather than full OS sandboxing.
+- Credentials explicitly permitted with `--allow-raw-unmediated` exist in child environment and memory. The opt-out is audited and must also be permitted by a declarative execution policy when one is active. These are application safeguards rather than full OS sandboxing.
 - Agent instructions do not intercept arbitrary prompts, files, debuggers, alternate processes, or tools. Use OS account separation and a centrally managed secret system for hostile-code boundaries.
 
 ### 3. What credential scenarios does Hetzer support?

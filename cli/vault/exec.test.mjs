@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createStreamSanitizer, executeProcess, isReflectionCommand, parseArguments, parseDuration, sanitizeStreamOutput, terminateProcessTree } from "./exec.mjs";
+import { createStreamSanitizer, executeProcess, isReflectionCommand, parseArguments, parseDuration, resolveCommandForSpawn, sanitizeStreamOutput, terminateProcessTree } from "./exec.mjs";
+import { Grimoire } from "./hetzer-vault.mjs";
 import { setCredential } from "./creds.mjs";
 
 test("isReflectionCommand accurately detects and blocks environment reflection attempts", () => {
@@ -153,6 +154,8 @@ test("executeProcess sanitizes stdout and stderr streams", async () => {
     const result = await executeProcess({
         root: tempDir,
         envFile,
+        allowNames: ["npm-token"],
+        allowRawUnmediated: ["npm-token"],
         command: process.execPath,
         commandArgs: [scriptFile],
     }, { outStream: mockOutStream, errStream: mockErrStream });
@@ -163,6 +166,21 @@ test("executeProcess sanitizes stdout and stderr streams", async () => {
     assert.doesNotMatch(capturedOutput, new RegExp(secretValue));
     assert.match(capturedError, /Rejected secret: secretRef:npm-token/);
     assert.doesNotMatch(capturedError, new RegExp(secretValue));
+
+    const auditVault = new (await import("./hetzer-vault.mjs")).Grimoire({
+        dbPath: path.join(dataDir, "hetzer-vault.db"),
+        masterKey,
+    });
+    try {
+        const audit = auditVault.db.prepare(
+            "SELECT action, credential_id, outcome FROM vault_audit_events WHERE action = ? ORDER BY id DESC LIMIT 1"
+        ).get("process.raw-unmediated");
+        assert.equal(audit.action, "process.raw-unmediated");
+        assert.equal(audit.credential_id, "npm-token");
+        assert.equal(audit.outcome, "allowed");
+    } finally {
+        auditVault.close();
+    }
 
     fs.rmSync(tempDir, { recursive: true, force: true });
 });
@@ -206,6 +224,7 @@ test("executeProcess enforces strict scoping when requested", async () => {
         envFile,
         strict: true,
         allowNames: ["npm-token"],
+        allowRawUnmediated: ["npm-token"],
         command: process.execPath,
         commandArgs: [scriptFile],
     }, { outStream: mockOut });
@@ -214,6 +233,89 @@ test("executeProcess enforces strict scoping when requested", async () => {
     assert.match(captured, /got: secretRef:npm-token/);
 
     fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+test("executeProcess denies raw credentials unless explicitly opted out", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-exec-fail-closed-"));
+    const envFile = path.join(tempDir, ".env");
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${masterKey}\n`);
+    setCredential({ root: tempDir, envFile, id: "npm-token", secret: "synthetic-fail-closed-value" });
+
+    try {
+        await assert.rejects(
+            () => executeProcess({
+                root: tempDir,
+                envFile,
+                allowNames: ["npm-token"],
+                command: process.execPath,
+                commandArgs: ["-e", "process.stdout.write('should-not-run')"],
+            }),
+            (error) => error.code === "ERR_RAW_UNMEDIATED_FORBIDDEN",
+        );
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test("executeProcess automatically mediates credentials with a broker policy", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-exec-mediated-"));
+    const envFile = path.join(tempDir, ".env");
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    const rawSecret = "synthetic-mediated-value-123456";
+    fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${masterKey}\n`);
+    setCredential({ root: tempDir, envFile, id: "npm-token", secret: rawSecret });
+    const policyDir = path.join(tempDir, ".hetzer", "brokers");
+    fs.mkdirSync(policyDir, { recursive: true });
+    fs.writeFileSync(path.join(policyDir, "npm-token.json"), JSON.stringify({
+        version: 1,
+        target: "https://registry.example.test",
+        credential: "secretRef:npm-token",
+        baseUrlEnv: "SERVICE_BASE_URL",
+        tokenEnv: "NODE_AUTH_TOKEN",
+        basePath: "/v1",
+        clientAuth: { header: "authorization", scheme: "Bearer" },
+        upstreamAuth: { header: "authorization", scheme: "Bearer" },
+        allowedMethods: ["GET"],
+        allowedPathPrefixes: ["/v1"],
+        ttlSeconds: 30,
+        maxRequests: 1,
+    }));
+    const scriptFile = path.join(tempDir, "client.mjs");
+    fs.writeFileSync(scriptFile, [
+        "const response = await fetch(`${process.env.SERVICE_BASE_URL}/items`, {",
+        "  headers: { authorization: `Bearer ${process.env.NODE_AUTH_TOKEN}` },",
+        "});",
+        "const genericMatches = process.env.HETZER_BROKER_URL === process.env.SERVICE_BASE_URL;",
+        "process.stdout.write(`${response.status}:${await response.text()}:generic=${genericMatches}:proxy=${Boolean(process.env.HTTP_PROXY)}`);",
+    ].join("\n"));
+
+    let upstreamCredential = "";
+    let output = "";
+    try {
+        const result = await executeProcess({
+            root: tempDir,
+            envFile,
+            allowNames: ["npm-token"],
+            strict: true,
+            command: process.execPath,
+            commandArgs: [scriptFile],
+        }, {
+            baseEnv: { ...process.env, HETZER_GRIMOIRE_KEY: masterKey, HTTP_PROXY: "" },
+            brokerRandomBytes: () => Buffer.alloc(32, 9),
+            brokerFetchFn: async (_url, options) => {
+                upstreamCredential = options.headers.authorization;
+                return new Response("mediated-ok", { headers: { "content-type": "text/plain" } });
+            },
+            outStream: { write(chunk) { output += String(chunk); return true; } },
+        });
+        assert.equal(result.status, 0);
+        assert.equal(upstreamCredential, `Bearer ${rawSecret}`);
+        assert.equal(output, "200:mediated-ok:generic=true:proxy=false");
+        assert.doesNotMatch(output, new RegExp(rawSecret));
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
 });
 
 test("parseArguments parses --canary flag properly", () => {
@@ -229,6 +331,23 @@ test("parseArguments parses --canary flag properly", () => {
     assert.equal(parsed.canary, true);
     assert.equal(parsed.command, "node");
     assert.deepEqual(parsed.commandArgs, ["-v"]);
+});
+
+test("parseArguments accepts repeatable broker policies and explicit raw credential IDs", () => {
+    const parsed = parseArguments([
+        "--root", process.cwd(),
+        "--env-file", ".env",
+        "--allow", "service-key,local-passphrase",
+        "--broker-policy", "service-policy.json",
+        "--broker-policy", "second-policy.json",
+        "--allow-raw-unmediated", "local-passphrase",
+        "--",
+        "node", "client.mjs",
+    ]);
+    assert.deepEqual(parsed.allowNames, ["service-key", "local-passphrase"]);
+    assert.deepEqual(parsed.allowRawUnmediated, ["local-passphrase"]);
+    assert.equal(parsed.brokerPolicyFiles.length, 2);
+    assert.match(parsed.brokerPolicyFiles[0], /service-policy\.json$/);
 });
 
 test("createStreamSanitizer detects canary honeytoken in chunks and trips onCanaryDetected", () => {
@@ -463,6 +582,7 @@ test("executeProcess with timeout still redacts secrets before terminating", asy
             root: tempDir,
             envFile,
             allowNames: ["SECRET_VAR"],
+            allowRawUnmediated: ["my-token"],
             timeout: "250ms",
             command: process.execPath,
             commandArgs: [scriptFile],
@@ -479,5 +599,151 @@ test("executeProcess with timeout still redacts secrets before terminating", asy
     assert.match(capturedErr, /Hetzer Timeout Guard/);
 
     fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+test("resolveCommandForSpawn correctly resolves executables on all platforms", () => {
+    if (process.platform === "win32") {
+        const npmRes = resolveCommandForSpawn("npm", ["test"]);
+        assert.ok(npmRes.cmd.toLowerCase().includes("node"), "npm should resolve to node binary");
+        assert.ok(npmRes.args[0].includes("npm-cli.js"), "npm should pass npm-cli.js as first arg");
+        assert.equal(npmRes.args[1], "test");
+
+        const npxRes = resolveCommandForSpawn("npx", ["--version"]);
+        assert.ok(npxRes.cmd.toLowerCase().includes("node"), "npx should resolve to node binary");
+        assert.ok(npxRes.args[0].includes("npx-cli.js"), "npx should pass npx-cli.js as first arg");
+
+        const nodeRes = resolveCommandForSpawn("node", ["index.js"]);
+        assert.ok(nodeRes.cmd.toLowerCase().includes("node"), "node should resolve");
+        assert.deepEqual(nodeRes.args, ["index.js"]);
+    } else {
+        const res = resolveCommandForSpawn("npm", ["test"]);
+        assert.equal(res.cmd, "npm");
+        assert.deepEqual(res.args, ["test"]);
+    }
+});
+
+test("fuzz and property tests: createStreamSanitizer handles random chunk boundaries and ANSI/formatting escapes", () => {
+    const secret = "npm_secret_token_1234567890abcdef";
+    const secretsToRedact = [{ id: "npm-token", secret }];
+
+    let seed = 424242;
+    function rand() {
+        seed = (seed * 1664525 + 1013904223) % 4294967296;
+        return seed / 4294967296;
+    }
+
+    // 1. Property test: Random chunk boundaries
+    for (let iter = 0; iter < 50; iter++) {
+        const prefix = "Log output before secret: ";
+        const suffix = " - Log output after secret.";
+        const fullStream = prefix + secret + suffix;
+
+        const sanitizer = createStreamSanitizer(secretsToRedact);
+        let output = "";
+
+        // Slice fullStream into random chunks between 1 and 7 characters
+        let pos = 0;
+        while (pos < fullStream.length) {
+            const chunkSize = 1 + Math.floor(rand() * 7);
+            const chunk = fullStream.slice(pos, pos + chunkSize);
+            output += sanitizer.write(chunk);
+            pos += chunkSize;
+        }
+        output += sanitizer.end();
+
+        assert.doesNotMatch(output, new RegExp(secret), `Iteration ${iter} leaked raw secret`);
+        assert.match(output, /secretRef:npm-token/, `Iteration ${iter} failed to redact secret`);
+    }
+
+    // 2. Property test: Interleaved ANSI color escapes
+    const ansiVariants = [
+        `npm_\x1b[31msecret\x1b[0m_token_\x1b[1;32m1234567890abcdef\x1b[0m`,
+        `\x1b[33m${secret}\x1b[0m`,
+        `npm_secret_\x1b[42mtoken_1234567890abcdef\x1b[49m`,
+    ];
+
+    for (const variant of ansiVariants) {
+        const sanitizer = createStreamSanitizer(secretsToRedact);
+        const out = sanitizer.write(variant) + sanitizer.end();
+        assert.doesNotMatch(out, new RegExp(secret));
+        assert.match(out, /secretRef:npm-token/);
+    }
+
+    // 3. Property test: Canary token tripped across chunk boundaries
+    const canary = "canary_trap_0123456789abcdef0123456789abcdef";
+    const canaryRedact = [{ id: "canary-token", secret: canary, isCanary: true }];
+
+    for (let chunkSize = 1; chunkSize <= 5; chunkSize++) {
+        let canaryAlerted = false;
+        const sanitizer = createStreamSanitizer(canaryRedact, {
+            onCanaryDetected: () => { canaryAlerted = true; },
+        });
+
+        const stream = `Diagnostic info: ${canary} end`;
+        for (let i = 0; i < stream.length; i += chunkSize) {
+            sanitizer.write(stream.slice(i, i + chunkSize));
+        }
+        sanitizer.end();
+
+        assert.equal(canaryAlerted, true, `Canary failed to alert at chunk size ${chunkSize}`);
+    }
+});
+
+test("parseArguments parses --policy-hash and executeProcess records policy.loaded audit event", async () => {
+    const parsed = parseArguments([
+        "--root", "/workspace",
+        "--env-file", "/workspace/.env",
+        "--policy", "/workspace/policy.json",
+        "--policy-hash", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        "--",
+        "node", "script.js",
+    ]);
+    assert.equal(parsed.policyHash, "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
+    assert.ok(parsed.policyFile.endsWith("policy.json"));
+
+    // Test executeProcess with valid policy records policy.loaded audit row
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-policy-audit-"));
+    const envFile = path.join(tempDir, ".env");
+    const policyFile = path.join(tempDir, "policy.json");
+    const masterKey = "k".repeat(48);
+
+    fs.mkdirSync(path.join(tempDir, "data"), { recursive: true });
+    fs.writeFileSync(envFile, "TEST_KEY=123\n");
+    const policyContent = {
+        version: 1,
+        name: "test-policy",
+        allowedCommands: ["node -e *"],
+    };
+    fs.writeFileSync(policyFile, JSON.stringify(policyContent));
+
+    const dbPath = path.join(tempDir, "data", "hetzer-vault.db");
+    const vault = new Grimoire({ dbPath, masterKey });
+    vault.close();
+
+    try {
+        await executeProcess({
+            root: tempDir,
+            envFile,
+            policyFile,
+            command: process.execPath,
+            commandArgs: ["-e", "process.stdout.write('ok')"],
+        }, {
+            baseEnv: { ...process.env, HETZER_GRIMOIRE_KEY: masterKey },
+        });
+
+        // Verify audit record exists
+        const readVault = new Grimoire({ dbPath, masterKey });
+        try {
+            const auditEvents = readVault.listAudit();
+            const policyAudit = auditEvents.find((e) => e.action === "policy.loaded");
+            assert.ok(policyAudit, "Expected policy.loaded audit event in vault");
+            assert.equal(policyAudit.outcome, "allowed");
+            assert.equal(policyAudit.target_id, "execution-policy");
+        } finally {
+            readVault.close();
+        }
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
 });
 

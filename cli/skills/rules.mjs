@@ -16,11 +16,13 @@ Hetzer is defense in depth. It does not intercept arbitrary prompts, files, proc
 
 ## Scoped execution
 - Run trusted commands with minimal inheritance: \`hetzer exec --allow <id> --strict -- <command> [args]\`.
-- Application code reads the injected environment variable normally. Never place a credential in arguments or generated source.
+- Configure HTTP credentials with reviewed \`.hetzer/brokers/<id>.json\` policies so the child receives only a loopback URL and short-lived capability.
+- Raw injection is denied by default. Use \`--allow-raw-unmediated <id>\` only for genuinely local/non-brokerable credentials; the opt-out is audited.
+- Never place a credential in arguments or generated source.
 - Hetzer sanitizes guarded stdout/stderr and its own MCP responses. MCP vault tools expose only metadata through \`hetzer_vault_has\` and \`hetzer_vault_list\`; use scanner tools only on text already in scope.
 
 ## Boundaries
-- An authorized child receives plaintext in memory and may transform it or send it through files, networks, IPC, debuggers, or direct device output. Output scanning cannot prevent those actions.
+- A raw-opted-out child receives plaintext in memory and may transform it or send it through files, networks, IPC, debuggers, or direct device output. Output scanning cannot prevent those actions.
 - The vault key and encrypted data remain accessible to processes with the same OS-user permissions. Use least-privilege credentials, short lifetimes, restricted egress, and trusted commands.
 - Never claim universal interception, containment, or compliance. Describe Hetzer as an empirical credential-safety layer.
 `;
@@ -30,8 +32,9 @@ export const ENTRY_POINTER_BLOCK = [
     "## 🛡️ Hetzer credential safety",
     "- NEVER print secret tokens, passwords, or API keys in plaintext in conversation, code, or logs.",
     "- Always use references: `secretRef:<credential-id>` (e.g. `secretRef:npm-token`, `secretRef:openai-api-key`).",
-    "- Execute with scoped injection: `hetzer exec --allow <id> --strict -- <cmd>` (never run `creds reveal` or `printenv`).",
-    "- `hetzer exec` scopes referenced credentials and sanitizes guarded child output; it does not intercept unrelated tools or prompts.",
+    "- Execute with mediated scoping: `hetzer exec --allow <id> --strict -- <cmd>` (never run `creds reveal` or `printenv`).",
+    "- Raw injection requires the audited `--allow-raw-unmediated <id>` opt-out for local/non-brokerable credentials.",
+    "- `hetzer exec` mediates configured HTTP credentials and sanitizes guarded child output; it does not intercept unrelated tools or prompts.",
     "- User management command: `hetzer creds set <id>`.",
     POINTER_END,
 ].join("\n");

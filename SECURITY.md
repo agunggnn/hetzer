@@ -12,7 +12,7 @@ affected version, operating system, reproduction steps, and likely impact.
 
 ## Deployment & Security Boundary
 
-- **Credential Reference Policy**: Managed configuration should use `secretRef:<id>`. Hetzer does not intercept arbitrary files or prompts. Resolved values exist in child-process memory during `hetzer exec`.
+- **Credential Reference Policy**: Managed configuration should use `secretRef:<id>`. Selected HTTP credentials are brokered when a reviewed `.hetzer/brokers/<id>.json` policy exists. Raw child injection is denied unless explicitly requested with the audited `--allow-raw-unmediated <id>` opt-out. Hetzer does not intercept arbitrary files or prompts; raw-opted-out values exist in child-process memory.
 - **Master Key Workspace Separation**: The master key `HETZER_GRIMOIRE_KEY` can be relocated out of workspace directories to `~/.hetzer/grimoire.key` (POSIX mode `0600`) via `hetzer creds isolate-key`. Same-user and privileged processes may still read it.
 - **Loopback Enforcement**: Hetzer binds all daemon services and container ports to `127.0.0.1` by default. Any non-loopback binding requires explicit TLS, firewall, and reverse-proxy authentication.
 - **7-Layer Defense Shield**:

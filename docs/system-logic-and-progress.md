@@ -19,7 +19,7 @@ sequenceDiagram
     CLI-->>Config: output only; no plaintext writeback
 ```
 
-`--allow` selects reference bindings. `--strict` also removes inherited environment variables except a small cross-platform runtime allowlist. The child still receives plaintext values in its environment and memory.
+`--allow` selects reference bindings. Matching `.hetzer/brokers/<credential-id>.json` policies are started automatically and place only a loopback URL and capability in the child. Direct plaintext injection fails closed unless explicitly requested through the audited `--allow-raw-unmediated <id>` opt-out. `--strict` also removes inherited environment variables except a small cross-platform runtime allowlist. Only raw-opted-out values enter child environment and memory.
 
 ## Implemented components
 
@@ -27,8 +27,8 @@ sequenceDiagram
 |---|---|---|
 | Grimoire vault | `cli/vault/hetzer-vault.mjs` | AES-256-GCM credential values in SQLite with target/action/expiry checks |
 | Secret scanner | `cli/vault/sniffer.mjs` | Provider regexes, database URLs, bounded PEM keys, and Shannon-entropy candidates |
-| Process runner | `cli/vault/exec.mjs` | Scope resolution, strict base environment, reflection guard, stream sanitizer, subprocess canary stream tripwire, execution timeout guard |
-| Execution policy | `cli/vault/exec-policy.mjs` | Declarative capability policies: command whitelisting, credential boundaries, strict isolation, and timeout limits |
+| Process runner | `cli/vault/exec.mjs` | Broker-by-default selection, audited raw opt-out, strict base environment, reflection guard, stream sanitizer, subprocess canary stream tripwire, execution timeout guard |
+| Execution policy | `cli/vault/exec-policy.mjs` | Declarative capability policies: command whitelisting, credential boundaries, raw-opt-out boundaries, strict isolation, and timeout limits |
 | Compose runner | `cli/vault/compose-runner.mjs` | Scoped Compose environment and sanitized Docker/containers output pipes |
 | Credential CLI | `cli/vault/creds.mjs` | Set/list/reveal, TTY and agent heuristics, required native UI confirmation |
 | Canary | `cli/vault/canary.mjs` | Decoy token injection, aborts guarded reveal/resolution/stream leak with exit code 43, terminates child process tree |
@@ -52,13 +52,17 @@ sequenceDiagram
 - commit-msg hook blocks raw credentials in commit message text and exempts comment lines;
 - MCP virtual credential proxy resolves `secretRef:<id>` in tool payloads and sanitizes outputs;
 - subprocess canary stream tripwire terminates child processes on stream leak;
+- exact structured argv allowlist matching prevents command chaining and shell metacharacter injection;
+- subprocess execution uses shell: false across all platforms, eliminating shell expansion vulnerabilities;
+- policy trust roots enforce regular file checks, POSIX permissions, and SHA-256 integrity auditing;
+- HTTP broker path canonicalization prevents multi-layer percent-encoding, matrix parameter (`;`), and directory traversal bypasses;
 - HTTP broker capabilities authenticate scoped requests and reject unpermitted paths;
 - installer tests redirect user-level paths to a temporary home.
 
 ## Known boundaries
 
 - Pattern and entropy scanning is heuristic and bounded. It cannot prove that text contains no secrets.
-- `hetzer exec` is not a sandbox. Authorized child code can transform a value, send it over the network, or access other same-user resources.
+- `hetzer exec` is not a sandbox. Raw-opted-out child code can transform a value, send it over the network, or access other same-user resources. Brokered clients can still make any operation permitted by their broker policy and upstream account.
 - TTY, environment-marker, process-name, and UI checks do not authenticate a human and can be imitated by same-user code.
 - The isolated key file is separate from the project but remains a user-readable file.
 - Canaries observe only guarded application paths.

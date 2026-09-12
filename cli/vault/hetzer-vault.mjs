@@ -676,6 +676,16 @@ export class Grimoire {
         );
     }
 
+    listAudit(options = {}) {
+        const limit = options.limit || 100;
+        return this.db.prepare(`
+            SELECT id, actor, action, target_id, credential_id, reason, outcome, metadata, created_at
+            FROM vault_audit_events
+            ORDER BY id DESC
+            LIMIT ?
+        `).all(limit);
+    }
+
     recordAuditFinding(targetId, finding) {
         const id = crypto.randomUUID();
         this.db.prepare(`

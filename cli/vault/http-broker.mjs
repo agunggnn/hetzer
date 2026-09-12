@@ -9,7 +9,8 @@ import { fileURLToPath } from "node:url";
 
 import { parseEnv } from "../core/env.mjs";
 import { isCanaryCredential, triggerCanaryAlert } from "./canary.mjs";
-import { isReflectionCommand, pipeSanitizedChild } from "./exec.mjs";
+import { assertNoShellMetacharacters } from "./exec-policy.mjs";
+import { isReflectionCommand, pipeSanitizedChild, resolveCommandForSpawn } from "./exec.mjs";
 import { Grimoire, parseSecretRef, resolveMasterKey, resolveVaultPath } from "./hetzer-vault.mjs";
 import { strictBaseEnvironment } from "./secret-env.mjs";
 
@@ -61,11 +62,11 @@ function validateHeader(value, label) {
     return header;
 }
 
-function decodePathToFixedPoint(input, maxPasses = 3) {
+export function decodePathToFixedPoint(input, maxPasses = 3) {
     let current = input;
     for (let i = 0; i < maxPasses; i++) {
         if (!current.includes("%")) return current;
-        if (/%2[fF]|%5[cC]|%00|%3[fF]|%23/i.test(current)) {
+        if (/%2[fF]|%5[cC]|%00|%3[fF]|%23|%3[bB]/i.test(current)) {
             throw new Error("Path contains encoded delimiters or separators.");
         }
         let next;
@@ -78,7 +79,7 @@ function decodePathToFixedPoint(input, maxPasses = 3) {
         current = next;
     }
     if (current.includes("%")) {
-        if (/%2[fF]|%5[cC]|%00|%3[fF]|%23/i.test(current)) {
+        if (/%2[fF]|%5[cC]|%00|%3[fF]|%23|%3[bB]/i.test(current)) {
             throw new Error("Path contains encoded delimiters or separators.");
         }
         let next;
@@ -94,21 +95,21 @@ function decodePathToFixedPoint(input, maxPasses = 3) {
     return current;
 }
 
-function canonicalizePath(rawPath, { isPrefix = false } = {}) {
+export function canonicalizePath(rawPath, { isPrefix = false } = {}) {
     const value = String(rawPath || "").trim();
-    if (!value.startsWith("/") || value.startsWith("//") || value.includes("\\") || value.includes("?") || value.includes("#") || value.includes("\0")) {
+    if (!value.startsWith("/") || value.startsWith("//") || value.includes("\\") || value.includes("?") || value.includes("#") || value.includes("\0") || value.includes(";")) {
         throw new Error("Invalid path format.");
     }
-    if (/%2[fF]|%5[cC]|%00|%3[fF]|%23/i.test(value)) {
+    if (/%2[fF]|%5[cC]|%00|%3[fF]|%23|%3[bB]/i.test(value)) {
         throw new Error("Path contains encoded delimiters or separators.");
     }
     const canonical = decodePathToFixedPoint(value);
-    if (canonical.includes("\\") || canonical.includes("\0") || canonical.includes("?") || canonical.includes("#")) {
+    if (canonical.includes("\\") || canonical.includes("\0") || canonical.includes("?") || canonical.includes("#") || canonical.includes(";")) {
         throw new Error("Path contains unsafe decoded characters.");
     }
     const segments = canonical.split("/");
     for (const segment of segments) {
-        if (segment === "." || segment === "..") {
+        if (segment === "." || segment === ".." || segment.startsWith("..")) {
             throw new Error("Path traversal segments are not allowed.");
         }
     }
@@ -208,15 +209,62 @@ export function validateBrokerPolicy(input) {
     });
 }
 
-export function loadBrokerPolicy(policyFile) {
+export function loadBrokerPolicy(policyFile, { expectedHash } = {}) {
     const resolved = path.resolve(policyFile);
+    if (!fs.existsSync(resolved)) {
+        throw new Error(`Broker policy file not found: '${resolved}'`);
+    }
+
+    const stat = fs.statSync(resolved);
+    if (!stat.isFile()) {
+        throw new Error(`Broker policy path must be a regular file: '${resolved}'`);
+    }
+
+    if (process.platform !== "win32") {
+        const mode = stat.mode;
+        if ((mode & 0o002) !== 0) {
+            throw new Error(`Broker policy file '${resolved}' is insecure: world-writable.`);
+        }
+        if ((mode & 0o020) !== 0) {
+            throw new Error(`Broker policy file '${resolved}' is insecure: group-writable.`);
+        }
+        if (typeof process.getuid === "function") {
+            const uid = process.getuid();
+            if (stat.uid !== uid && stat.uid !== 0) {
+                throw new Error(`Broker policy file '${resolved}' is not owned by the current user or root.`);
+            }
+        }
+    }
+
+    const rawContent = fs.readFileSync(resolved, "utf8");
+    const policyHash = crypto.createHash("sha256").update(rawContent).digest("hex");
+
     let parsed;
     try {
-        parsed = JSON.parse(fs.readFileSync(resolved, "utf8"));
+        parsed = JSON.parse(rawContent);
     } catch (error) {
         throw new Error(`Unable to read broker policy '${resolved}': ${error.message}`);
     }
-    return validateBrokerPolicy(parsed);
+
+    const validated = validateBrokerPolicy(parsed);
+
+    const requiredHash = expectedHash || parsed.integrity?.sha256;
+    if (requiredHash && requiredHash.toLowerCase() !== policyHash.toLowerCase()) {
+        const err = new Error(
+            `Broker policy integrity verification failed for '${resolved}'.\n` +
+            `Expected SHA-256: ${requiredHash}\n` +
+            `Actual SHA-256:   ${policyHash}`
+        );
+        err.code = "ERR_POLICY_INTEGRITY_FAILED";
+        err.exitCode = 1;
+        throw err;
+    }
+
+    return Object.freeze({
+        ...validated,
+        policyFile: resolved,
+        policyHash,
+    });
 }
 
 function matchesCapability(actual, expected) {
@@ -481,6 +529,60 @@ export async function startHttpCredentialBroker({
     };
 }
 
+export async function openHttpCredentialBroker({
+    root = process.cwd(),
+    envFile = path.join(root, ".env"),
+    policy: rawPolicy,
+    policyFile,
+    baseEnv = process.env,
+    fetchFn = globalThis.fetch,
+    randomBytes = crypto.randomBytes,
+} = {}) {
+    const policy = rawPolicy
+        ? (rawPolicy?.[VALIDATED_POLICY] ? rawPolicy : validateBrokerPolicy(rawPolicy))
+        : loadBrokerPolicy(policyFile);
+    const envValues = fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, "utf8")) : {};
+    const masterKey = resolveMasterKey({ root, envValues, baseEnv });
+    if (!masterKey || String(masterKey).startsWith("secretRef:")) {
+        throw new Error("Grimoire master key is unavailable.");
+    }
+    if (isCanaryCredential(policy.credentialId)) {
+        triggerCanaryAlert({ id: policy.credentialId, actor: "process.broker", action: "http.proxy", root });
+    }
+
+    const vault = new Grimoire({
+        dbPath: resolveVaultPath(root) || path.join(root, "data", "hetzer-vault.db"),
+        legacyFile: path.join(root, "data", "vault.json"),
+        masterKey,
+    });
+    let secret;
+    try {
+        const credential = vault.find(policy.credentialId);
+        if (!credential) throw new Error(`Credential '${policy.credentialId}' was not found.`);
+        secret = vault.resolve(policy.credentialId, { targetId: credential.projectId, action: "process.start" });
+        if (secret === null) throw new Error(`Credential '${policy.credentialId}' is not allowed for broker execution.`);
+        vault.recordAudit({
+            actor: "hetzer-cli",
+            action: "http.proxy.start",
+            targetId: credential.projectId,
+            credentialId: policy.credentialId,
+            reason: "Started a short-lived loopback credential broker",
+            outcome: "allowed",
+            metadata: { targetOrigin: policy.targetOrigin, ttlSeconds: policy.ttlSeconds, maxRequests: policy.maxRequests },
+        });
+    } finally {
+        vault.close();
+    }
+
+    try {
+        const broker = await startHttpCredentialBroker({ policy, secret, fetchFn, randomBytes });
+        return { broker, policy, secret };
+    } catch (error) {
+        secret = "";
+        throw error;
+    }
+}
+
 export function parseBrokerArguments(argv) {
     const marker = argv.indexOf("--");
     if (marker === -1 || !argv[marker + 1]) {
@@ -508,56 +610,32 @@ export async function executeBrokeredProcess(options, {
     baseEnv = process.env,
     fetchFn = globalThis.fetch,
 } = {}) {
+    assertNoShellMetacharacters(options.command, options.commandArgs);
     if (isReflectionCommand(options.command, options.commandArgs)) {
         throw Object.assign(new Error("Environment reflection commands are forbidden in broker execution."), { code: "ERR_REFLECTION_BLOCKED" });
     }
-    const policy = loadBrokerPolicy(options.policyFile);
-    const envValues = fs.existsSync(options.envFile) ? parseEnv(fs.readFileSync(options.envFile, "utf8")) : {};
-    const masterKey = resolveMasterKey({ root: options.root, envValues, baseEnv });
-    if (!masterKey || String(masterKey).startsWith("secretRef:")) throw new Error("Grimoire master key is unavailable.");
-    if (isCanaryCredential(policy.credentialId)) {
-        triggerCanaryAlert({ id: policy.credentialId, actor: "process.broker", action: "http.proxy", root: options.root });
-    }
-
-    const vault = new Grimoire({
-        dbPath: resolveVaultPath(options.root) || path.join(options.root, "data", "hetzer-vault.db"),
-        legacyFile: path.join(options.root, "data", "vault.json"),
-        masterKey,
+    let secret = "";
+    const opened = await openHttpCredentialBroker({
+        root: options.root,
+        envFile: options.envFile,
+        policyFile: options.policyFile,
+        baseEnv,
+        fetchFn,
     });
-    let secret;
-    try {
-        const credential = vault.find(policy.credentialId);
-        if (!credential) throw new Error(`Credential '${policy.credentialId}' was not found.`);
-        secret = vault.resolve(policy.credentialId, { targetId: credential.projectId, action: "process.start" });
-        if (secret === null) throw new Error(`Credential '${policy.credentialId}' is not allowed for broker execution.`);
-        vault.recordAudit({
-            actor: "hetzer-cli",
-            action: "http.proxy.start",
-            targetId: credential.projectId,
-            credentialId: policy.credentialId,
-            reason: "Started a short-lived loopback credential broker",
-            outcome: "allowed",
-            metadata: { targetOrigin: policy.targetOrigin, ttlSeconds: policy.ttlSeconds, maxRequests: policy.maxRequests },
-        });
-    } finally {
-        vault.close();
-    }
-
-    const broker = await startHttpCredentialBroker({ policy, secret, fetchFn });
+    const { broker, policy } = opened;
+    secret = opened.secret;
     const childEnv = {
         ...strictBaseEnvironment(baseEnv),
         HETZER_ROOT: options.root,
         [policy.baseUrlEnv]: `${broker.url}${policy.basePath === "/" ? "" : policy.basePath}`,
         [policy.tokenEnv]: broker.capability,
     };
-    const targetCmd = process.platform === "win32" && options.command.includes(" ") && !options.command.startsWith('"')
-        ? `"${options.command}"`
-        : options.command;
-    const child = spawn(targetCmd, options.commandArgs, {
+    const resolved = resolveCommandForSpawn(options.command, options.commandArgs);
+    const child = spawn(resolved.cmd, resolved.args, {
         stdio: ["inherit", "pipe", "pipe"],
         env: childEnv,
         windowsHide: true,
-        shell: process.platform === "win32",
+        shell: false,
     });
     try {
         return await pipeSanitizedChild(child, [

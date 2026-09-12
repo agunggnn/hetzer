@@ -4,8 +4,17 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-import { executeBrokeredProcess, parseBrokerArguments, startHttpCredentialBroker, validateBrokerPolicy } from "./http-broker.mjs";
+import {
+    canonicalizePath,
+    decodePathToFixedPoint,
+    executeBrokeredProcess,
+    parseBrokerArguments,
+    startHttpCredentialBroker,
+    validateBrokerPolicy,
+} from "./http-broker.mjs";
 import { Grimoire } from "./hetzer-vault.mjs";
 
 function policy(overrides = {}) {
@@ -241,6 +250,71 @@ test("brokered child receives only the capability while upstream receives the va
     }
 });
 
+test("E2E executeBrokeredProcess rejects shell metacharacters across API and CLI invocation", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-broker-e2e-shell-"));
+    const envFile = path.join(root, ".env");
+    const policyFile = path.join(root, "broker-policy.json");
+    const brokerScript = path.join(path.dirname(fileURLToPath(import.meta.url)), "http-broker.mjs");
+    fs.writeFileSync(envFile, "HETZER_PROJECT_NAME=test\n");
+    fs.writeFileSync(policyFile, JSON.stringify(policy()));
+
+    // 1. Direct API: Rejects chained commands, pipelines, redirects, and metacharacters
+    const metacharacterVectors = [
+        { command: "node", args: ["safe.js", "&&", "calc"] },
+        { command: "node", args: ["safe.js", "||", "echo", "fail"] },
+        { command: "node", args: ["safe.js", ";", "rm", "-rf"] },
+        { command: "node", args: ["safe.js", "&", "whoami"] },
+        { command: "node", args: ["safe.js", "|", "cat"] },
+        { command: "node", args: ["safe.js", ">", "leak.txt"] },
+        { command: "node", args: ["safe.js", "<", "input.txt"] },
+        { command: "node", args: ["safe.js", "$VAR"] },
+        { command: "node", args: ["safe.js", "%USERPROFILE%"] },
+        { command: "node", args: ["safe.js", "`whoami`"] },
+        { command: "node; rm -rf", args: ["safe.js"] },
+        { command: "node && calc", args: [] },
+    ];
+
+    for (const vector of metacharacterVectors) {
+        await assert.rejects(
+            () => executeBrokeredProcess({
+                root,
+                envFile,
+                policyFile,
+                command: vector.command,
+                commandArgs: vector.args,
+            }),
+            (err) => {
+                assert.equal(err.code, "ERR_SHELL_METACHARACTERS_FORBIDDEN");
+                assert.match(err.message, /forbidden shell metacharacters/i);
+                return true;
+            },
+            `Expected metacharacter vector to be rejected: ${vector.command} ${vector.args.join(" ")}`
+        );
+    }
+
+    // 2. Subprocess CLI E2E: invoking http-broker.mjs directly fails closed on metacharacters
+    const evilMarker = path.join(root, "evil-should-not-exist.txt");
+    const cliResult = spawnSync(process.execPath, [
+        brokerScript,
+        "--policy", policyFile,
+        "--root", root,
+        "--env-file", envFile,
+        "--",
+        process.execPath, "-e", "process.stdout.write('safe')",
+        "&&",
+        process.execPath, "-e", `require('fs').writeFileSync(${JSON.stringify(evilMarker)}, 'pwned')`,
+    ], {
+        encoding: "utf8",
+        windowsHide: true,
+    });
+
+    assert.notEqual(cliResult.status, 0, "CLI should exit with non-zero status code on metacharacters");
+    assert.match(cliResult.stderr, /forbidden shell metacharacters/i);
+    assert.equal(fs.existsSync(evilMarker), false, "Chained command must not have been executed");
+
+    fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("broker rejects nested-encoded path traversal and delimiter smuggling", async () => {
     let calls = 0;
     const broker = await startHttpCredentialBroker({
@@ -431,6 +505,95 @@ test("broker redacts multi-representation secrets from upstream error responses"
         assert.match(headerValue, /secretRef:service-api-key/);
     } finally {
         await broker.close();
+    }
+});
+
+test("fuzz and property tests: decodePathToFixedPoint & canonicalizePath resist multi-encoding and directory traversal", () => {
+    const maliciousCorpus = [
+        "/..",
+        "/../secret",
+        "/v1/../../etc/passwd",
+        "/v1/..\\..\\windows\\win.ini",
+        "/v1/%2e%2e/admin",
+        "/v1/%252e%252e/admin",
+        "/v1/%2e%2e%2fadmin",
+        "/v1/%2fadmin",
+        "/v1/%2Fadmin",
+        "/v1/%5cadmin",
+        "/v1/%5Cadmin",
+        "/v1/%00admin",
+        "/v1/%3fadmin",
+        "/v1/%23admin",
+        "/v1/..;/admin",
+        "//v1/admin",
+        "/v1/admin?key=value",
+        "/v1/admin#frag",
+        "\\v1\\admin",
+        "/v1/./admin",
+        "/v1/..../admin",
+        "/v1/%25252fadmin",
+    ];
+
+    for (const vector of maliciousCorpus) {
+        assert.throws(
+            () => canonicalizePath(vector),
+            (err) => {
+                assert.match(err.message, /Path|Invalid path format|encoded delimiters|traversal/i);
+                return true;
+            },
+            `Expected malicious vector to be rejected: ${vector}`
+        );
+    }
+
+    // Property-based fuzzing test
+    const fuzzChars = ["a", "b", "0", "1", "-", "_", "/", "\\", "%", ".", "?", "#", "\0"];
+    const encodedPayloads = ["%2f", "%2F", "%5c", "%5C", "%00", "%3f", "%23", "%2e", "%252f", "%252e"];
+
+    // Seeded pseudo-random generator for determinism
+    let seed = 13377331;
+    function rand() {
+        seed = (seed * 1664525 + 1013904223) % 4294967296;
+        return seed / 4294967296;
+    }
+
+    for (let i = 0; i < 200; i++) {
+        let pathStr = "/";
+        const segmentsCount = 1 + Math.floor(rand() * 4);
+        for (let s = 0; s < segmentsCount; s++) {
+            if (rand() < 0.3) {
+                pathStr += encodedPayloads[Math.floor(rand() * encodedPayloads.length)];
+            } else if (rand() < 0.2) {
+                pathStr += "..";
+            } else {
+                let seg = "";
+                const segLen = 1 + Math.floor(rand() * 6);
+                for (let c = 0; c < segLen; c++) {
+                    seg += fuzzChars[Math.floor(rand() * fuzzChars.length)];
+                }
+                pathStr += seg;
+            }
+            if (s < segmentsCount - 1) pathStr += "/";
+        }
+
+        try {
+            const canonical = canonicalizePath(pathStr);
+            // Property invariant: If accepted, must be strictly canonical and safe
+            assert.ok(canonical.startsWith("/"), "Accepted path must start with /");
+            assert.ok(!canonical.startsWith("//"), "Accepted path must not start with //");
+            assert.ok(!canonical.includes("\\"), "Accepted path must not contain backslash");
+            assert.ok(!canonical.includes("?"), "Accepted path must not contain query delimiter");
+            assert.ok(!canonical.includes("#"), "Accepted path must not contain fragment delimiter");
+            assert.ok(!canonical.includes("\0"), "Accepted path must not contain null byte");
+            assert.ok(!/%2[fF]|%5[cC]|%00|%3[fF]|%23/i.test(canonical), "Accepted path must not contain encoded delimiters");
+            const parts = canonical.split("/");
+            for (const part of parts) {
+                assert.notEqual(part, "..", "Accepted path must not have '..' segments");
+                assert.notEqual(part, ".", "Accepted path must not have '.' segments");
+            }
+        } catch (err) {
+            // Expected for malicious vectors
+            assert.ok(err instanceof Error);
+        }
     }
 });
 

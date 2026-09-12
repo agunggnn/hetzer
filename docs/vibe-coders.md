@@ -26,7 +26,7 @@ Enter credentials only through the masked `creds set` prompt. Store `secretRef:<
 hetzer exec --allow openai-api-key --strict -- node app.js
 ```
 
-`--strict` supplies a minimal inherited environment and adds only allowed vault references from the configured `.env`. Some tools need extra non-secret environment settings; configure those explicitly rather than disabling scoping without review.
+The selected credential is brokered automatically when `.hetzer/brokers/openai-api-key.json` exists. `--strict` supplies a minimal inherited environment plus the broker URL and short-lived capability. For a local, non-brokerable credential, raw injection requires the separately audited `--allow-raw-unmediated <id>` flag. Some tools need extra non-secret environment settings; configure those explicitly rather than disabling scoping without review.
 
 Hetzer sanitizes known injected values and supported scanner candidates in child stdout/stderr, including values divided across stream chunks. It removes terminal control characters and suppresses supported long structured values with bounded streaming filters. Deliberately transformed, unsupported, non-UTF-8, or externally emitted values may still leak; keep normal application logging and network controls.
 
