@@ -17,6 +17,7 @@ import {
     POINTER_END,
     POINTER_START,
 } from "./rules.mjs";
+import { auditAgentContext } from "./audit.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cliRoot = path.resolve(here, "..");
@@ -420,17 +421,33 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const target = args[1] || "all";
     const root = process.cwd();
 
-    if (action === "status" || action === "list") {
+    if (["status", "list", "audit", "check"].includes(action)) {
         const detected = detectPlatforms(root);
+        const audit = auditAgentContext(root);
         process.stdout.write("================================================================================\n");
-        process.stdout.write("  HETZER - AI AGENT SKILL INTEGRATION STATUS\n");
+        process.stdout.write("  HETZER - AI AGENT INTEGRATION & CONTEXT STATUS\n");
         process.stdout.write("================================================================================\n");
+        process.stdout.write("  PLATFORM DETECTION:\n");
         for (const p of detected) {
             const status = p.detected ? "[v] Detected" : "[ ] Not detected";
-            process.stdout.write(`  ${p.name.padEnd(26)} : ${status}\n`);
+            process.stdout.write(`    ${p.name.padEnd(26)} : ${status}\n`);
+        }
+        process.stdout.write("--------------------------------------------------------------------------------\n");
+        process.stdout.write("  CONTEXT & TOKEN FOOTPRINT:\n");
+        process.stdout.write(`    Context Status             : ${audit.summary}\n`);
+        process.stdout.write(`    Prompt Cache Friendliness  : ${audit.cacheFriendly ? "Optimal (Static prefix, 0 cache-break)" : "Warning (Dynamic elements detected)"}\n`);
+        if (audit.files.length > 0) {
+            process.stdout.write("    Audited Agent Rules        :\n");
+            for (const f of audit.files) {
+                const mode = f.onDemand ? "On-demand" : "Always active";
+                const stat = f.withinBudget ? "PASS" : "FAIL";
+                process.stdout.write(`      * ${f.path.padEnd(32)} : ${String(f.tokens).padStart(4)} tokens (${mode}, budget: ${f.budget}) [${stat}]\n`);
+            }
         }
         process.stdout.write("================================================================================\n");
-        process.stdout.write("Run 'hetzer skill install' to configure across all detected agents.\n");
+        if (action === "audit" && !audit.ok) {
+            process.exit(1);
+        }
         process.exit(0);
     }
 

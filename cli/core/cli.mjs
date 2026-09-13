@@ -22,6 +22,7 @@ import { setupCanaryTrap } from "../vault/canary.mjs";
 import { redactAndVault, scanText, restoreSecrets } from "../vault/sniffer.mjs";
 import { getHetzerAsciiBanner, printHetzerBanner } from "./banner.mjs";
 import { runDoctor } from "./doctor.mjs";
+import { auditAgentContext } from "../skills/audit.mjs";
 import { parseEnv } from "./env.mjs";
 import {
     migrateBundledImagePins,
@@ -652,6 +653,8 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         process.stdout.write(`  [v] Git Pre-Commit     : ${gitHookInstalled ? "Hook installed for supported scanner rules" : "Skipped (no .git directory found)"}\n`);
         process.stdout.write(`  [v] Workspace .env     : ${envStatus}\n`);
         process.stdout.write("  [v] Resource Overhead  : 0 Docker containers, 0 background RAM, 0 npm dependencies\n");
+        const contextAudit = auditAgentContext(workspaceRoot);
+        process.stdout.write(`  [v] Context Overhead   : ${contextAudit.summary}\n`);
         process.stdout.write("--------------------------------------------------------------------------------\n");
         process.stdout.write("  These controls reduce accidental credential disclosure; review the documented boundaries.\n");
         if (!isGlobalCliInstalled()) {

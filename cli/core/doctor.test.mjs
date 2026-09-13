@@ -11,6 +11,7 @@ import {
     checkDockerDaemon,
     checkFilePermissions,
     checkNodeRuntime,
+    checkAgentContextHealth,
     getOperatingSystemInfo,
     runDoctor,
 } from "./doctor.mjs";
@@ -120,6 +121,18 @@ test("applyDoctorFixes automatically creates missing data directory", () => {
         const fixes = applyDoctorFixes({ root: tempRoot, out: { write: () => {} } });
         assert.ok(fixes.some((f) => f.includes("data/")));
         assert.equal(fs.existsSync(path.join(tempRoot, "data")), true);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test("checkAgentContextHealth returns audit summary for workspace", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-doctor-context-"));
+    try {
+        const res = checkAgentContextHealth(tempRoot);
+        assert.equal(res.configured, false);
+        assert.equal(res.ok, true);
+        assert.equal(res.summary, "Not configured");
     } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });
     }
