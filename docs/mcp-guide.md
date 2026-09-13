@@ -1,6 +1,6 @@
 # Model Context Protocol (MCP) Guide & Integration
 
-> **Version**: 1.0.0-rc  
+> **Version**: v0.5.1  
 > **Status**: Production Reference Guide  
 > **Target Audiences**: AI Engineers, Agent Developers, DevOps
 
@@ -15,8 +15,10 @@
    - [Cline / Roo Code](#33-cline--roo-code)
    - [Windsurf & OpenCode](#34-windsurf--opencode)
 4. [Testing & Calling Tools via CLI](#4-testing--calling-tools-via-cli)
-5. [Cognee Memory Tools Reference](#5-cognee-memory-tools-reference)
-6. [Troubleshooting & Diagnostics](#6-troubleshooting--diagnostics)
+5. [Hetzer Native Defense Tools Reference](#5-hetzer-native-defense-tools-reference)
+6. [Real-Time Tool Output Sanitization & Virtual Proxy](#6-real-time-tool-output-sanitization--virtual-proxy)
+7. [Jagdpanzer Multi-Container & Cognitive Memory Integration](#7-jagdpanzer-multi-container--cognitive-memory-integration)
+8. [Troubleshooting & Diagnostics](#8-troubleshooting--diagnostics)
 
 ---
 
@@ -25,8 +27,8 @@
 The **Model Context Protocol (MCP)** standardizes how AI applications connect to external tools, databases, and context servers. Hetzer acts as an **autonomous MCP orchestrator and security bridge**, providing:
 - **Embedded Stdio FastMCP Server** (`hetzer mcp serve`): Direct high-speed JSON-RPC bridge for Claude Desktop, Cursor, and Cline.
 - **Native Defense Tools**: Explicit text scanning (`hetzer_sniffer_scan`), redaction with per-item vault status (`hetzer_sniffer_redact`), and credential existence checks (`hetzer_vault_has`, `hetzer_vault_list`).
-- **MCP Output Sanitization**: Scans serialized Hetzer tool return values and error messages via `sanitizeStreamOutput` before return. Other MCP servers and client tools are outside this path.
-- **Automated Loopback Networking**: Zero-plaintext API key injection and port bindings (`127.0.0.1:8001/mcp`) for Cognee and active modules.
+- **Virtual Credential Proxy & Just-In-Time Secret Resolution**: Transparently resolves `secretRef:<id>` parameters just-in-time while enforcing capability bindings.
+- **MCP Output Sanitization**: Scans serialized tool return values and error messages via `sanitizeStreamOutput` before return, preventing credential reflection.
 - **Operational Tool Classification**: Automated labeling as `[OFFLINE]`, `[HYBRID]`, and `[LLM REASONING]`.
 
 ---
@@ -35,26 +37,26 @@ The **Model Context Protocol (MCP)** standardizes how AI applications connect to
 
 In high-throughput AI agent environments, knowing whether a tool call consumes cloud tokens or executes locally is critical for latency, cost control, and privacy. Hetzer tags all discovered tools:
 
-### `[OFFLINE]` (local operation)
+### `[OFFLINE]` (Local Operation)
 - **Execution**: Implemented by a local process without intended model inference.
-- **Latency**: Depends on the operation, host, and local services.
-- **Cost**: Does not directly request LLM generation tokens.
-- **Privacy**: Review the implementation and configured services; classification is metadata, not network enforcement.
-- **Use Cases**: System health probes, local cache lookups, database status checks.
+- **Latency**: Sub-millisecond to low milliseconds.
+- **Cost**: 0 tokens.
+- **Privacy**: Text and data remain entirely on the local host.
+- **Use Cases**: System health probes, local cache lookups, credential redaction, secret existence probes.
 
-### `[HYBRID]` (Local Indexing & Graph Search)
-- **Execution**: Local embedded engines (LanceDB vector search, Kùzu graph traversal, SQLite queries).
-- **Latency**: Depends on index size, host resources, and configuration.
+### `[HYBRID]` (Local Indexing & Search)
+- **Execution**: Local embedded engines (vector databases, graph traversals, SQLite queries).
+- **Latency**: Low milliseconds depending on index size and host resources.
 - **Cost**: 0 generation tokens (may use local embeddings if configured with Ollama).
-- **Privacy**: Local configurations can keep data on the machine; remote embedding or model providers change this boundary.
-- **Use Cases**: Semantic retrieval (`recall`), subgraph relationship queries.
+- **Privacy**: Keeps data on the machine unless remote embedding APIs are configured.
+- **Use Cases**: Semantic retrieval, subgraph relationship queries, index scanning.
 
 ### `[LLM REASONING]` (Cognitive Synthesis)
 - **Execution**: Requires model inference (OpenAI, Anthropic, Gemini, or local Ollama).
-- **Latency**: Depends on the selected local or remote model provider.
+- **Latency**: Upstream provider round-trip time.
 - **Cost**: Incurs token usage on upstream model provider.
-- **Privacy**: Text payloads routed securely through 9Router or configured upstream endpoint.
-- **Use Cases**: Knowledge graph distillation (`remember`), memory summarization (`improve`).
+- **Privacy**: Text payloads routed securely through configured upstream endpoint.
+- **Use Cases**: Knowledge graph distillation, code reasoning, automated remediation.
 
 ---
 
@@ -62,7 +64,7 @@ In high-throughput AI agent environments, knowing whether a tool call consumes c
 
 ### 3.1 Claude Desktop
 
-Add Hetzer's MCP endpoint to your Claude Desktop configuration file:
+Add Hetzer's MCP stdio server to your Claude Desktop configuration:
 - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 - **Linux**: `~/.config/Claude/claude_desktop_config.json`
@@ -70,8 +72,9 @@ Add Hetzer's MCP endpoint to your Claude Desktop configuration file:
 ```json
 {
   "mcpServers": {
-    "hetzer-cognee": {
-      "url": "http://127.0.0.1:8001/mcp"
+    "hetzer": {
+      "command": "hetzer",
+      "args": ["mcp", "serve"]
     }
   }
 }
@@ -84,8 +87,9 @@ Inside your project root or workspace settings, create or update `.cursor/mcp.js
 ```json
 {
   "mcpServers": {
-    "hetzer-memory": {
-      "url": "http://127.0.0.1:8001/mcp"
+    "hetzer": {
+      "command": "hetzer",
+      "args": ["mcp", "serve"]
     }
   }
 }
@@ -98,11 +102,13 @@ In VS Code, open Settings or edit `cline_mcp_settings.json`:
 ```json
 {
   "mcpServers": {
-    "hetzer-core-memory": {
-      "url": "http://127.0.0.1:8001/mcp",
+    "hetzer": {
+      "command": "hetzer",
+      "args": ["mcp", "serve"],
       "disabled": false,
       "autoApprove": [
-        "recall"
+        "hetzer_sniffer_scan",
+        "hetzer_vault_has"
       ]
     }
   }
@@ -116,8 +122,9 @@ In Windsurf (`~/.codeium/windsurf/mcp_config.json`) or OpenCode settings:
 ```json
 {
   "mcpServers": {
-    "hetzer-memory": {
-      "serverUrl": "http://127.0.0.1:8001/mcp"
+    "hetzer": {
+      "command": "hetzer",
+      "args": ["mcp", "serve"]
     }
   }
 }
@@ -130,68 +137,39 @@ In Windsurf (`~/.codeium/windsurf/mcp_config.json`) or OpenCode settings:
 Hetzer allows developers to interact with MCP tools directly from the terminal without opening an AI IDE:
 
 ### 4.1 Ping and Health Diagnostics
-Test protocol handshake and roundtrip response latency:
+Test protocol handshake and roundtrip response latency for active MCP endpoints:
 ```bash
-hetzer mcp ping cognee
+hetzer mcp ping <service>
 ```
 *Output:*
 ```text
-[v] MCP Endpoint: http://127.0.0.1:8001/mcp
+[v] MCP Endpoint: http://127.0.0.1:<port>/mcp
 [v] Protocol: JSON-RPC 2.0 (SSE streaming enabled)
 [v] Latency: 12ms
-[v] Server Info: cognee-mcp v0.1.2
+[v] Server Info: hetzer-mcp v0.5.1
 ```
 
 ### 4.2 List Discovered Tools
 Inspect tools with their parameter schemas and operational classifications:
 ```bash
-hetzer mcp tools cognee
+hetzer mcp tools <service>
 ```
 
 ### 4.3 Direct Tool Execution (`hetzer mcp call`)
 Execute tools synchronously with JSON arguments:
 ```bash
-# Save information to persistent memory
-hetzer mcp call cognee remember '{"text": "Production DB host is 10.0.0.45 on port 5432"}'
-
-# Search memory
-hetzer mcp call cognee recall '{"query": "production database host"}'
+# Execute an MCP tool securely
+hetzer mcp call <service> <tool-name> '{"arg": "value"}'
 ```
 
 ---
 
-## 5. Cognee Memory Tools Reference
-
-When the `cognee` module is active, the following cognitive tools are exposed:
-
-### `remember` `[LLM REASONING]`
-- **Description**: Ingests unstructured text, documents, or conversation history into memory. Executes entity extraction, builds graph nodes, and indexes vector embeddings.
-- **Parameters**:
-  - `text` *(string, required)*: The text or document content to store.
-
-### `recall` `[HYBRID]`
-- **Description**: Semantically searches the vector and graph stores for relevant context matching the query.
-- **Parameters**:
-  - `query` *(string, required)*: Natural language question or search phrase.
-
-### `improve` `[LLM REASONING]`
-- **Description**: Refines, consolidates, and resolves conflicting memories across historical knowledge graphs.
-- **Parameters**:
-  - `context` *(string, optional)*: Specific domain or focus area to optimize.
-
-### `forget_memory` `[OFFLINE]`
-- **Description**: Deletes specific nodes or memory scopes from the local database.
-- **Parameters**:
-  - `memory_id` *(string, required)*: The identifier of the memory entity to purge.
-
----
-
-## 6. Hetzer Native Defense Tools Reference
+## 5. Hetzer Native Defense Tools Reference
 
 When connected to Hetzer's stdio FastMCP server (`hetzer mcp serve`), AI agents gain access to local defense utilities designed to inspect and secure credentials without exposing plaintext values:
 
 ### `hetzer_sniffer_scan` `[OFFLINE]`
-- **Description**: Scans provided text or code snippets for supported API-key patterns, private-key blocks up to 16 KiB, credentialed database URLs, and bounded high-entropy candidates. Runtime depends on input and environment.
+- **Description**: Scans provided text or code snippets for supported API-key patterns, private-key blocks up to 16 KiB, credentialed database URLs, and bounded high-entropy candidates.
 - **Parameters**:
   - `text` *(string, required)*: The text payload to scan.
 
@@ -213,12 +191,22 @@ When connected to Hetzer's stdio FastMCP server (`hetzer mcp serve`), AI agents 
 
 ---
 
-## 7. Real-Time Tool Output Sanitization
+## 6. Real-Time Tool Output Sanitization & Virtual Proxy
 
-To reduce accidental credential exposure in Hetzer tool output, the MCP protocol handler (`cli/mcp/protocol.mjs`) pipes serialized `tools/call` responses through `sanitizeStreamOutput`:
-- If an upstream tool returns a value matching a supported scanner rule, Hetzer replaces the matched value with a `secretRef:<id>` placeholder.
-- Structured JSON outputs and error messages are symmetrically sanitized.
-- **Boundary**: This reduces exposure through Hetzer's MCP response path. Unsupported or transformed secrets and responses from other tools may still reach a client or model provider.
+To eliminate accidental credential exposure in agent workflows:
+1. **Just-in-Time Resolution**: When an agent sends a tool payload containing `secretRef:<id>`, Hetzer's virtual proxy resolves the secret just-in-time before passing it to the target tool.
+2. **Output Sanitization**: The MCP protocol handler (`cli/mcp/protocol.mjs`) pipes serialized `tools/call` responses through `sanitizeStreamOutput`. If a tool reflects or echoes raw secret values, Hetzer automatically redacts them back to `secretRef:<id>`.
+3. **Multi-Representation Redaction**: Redacts raw plaintext, JSON-escaped strings (`\"`), URL-encoded strings (`%2F`), and Unicode-escaped characters (`\u002F`).
+
+---
+
+## 7. Jagdpanzer Multi-Container & Cognitive Memory Integration
+
+Multi-container stack orchestration (persistent graph and vector memory engines like Cognee, Mem0, LanceDB, and multi-service Docker Compose networks) is decoupled from Hetzer and maintained in [**Jagdpanzer**](https://github.com/agunggnn/jagdpanzer).
+
+When deploying cognitive memory stacks with Jagdpanzer:
+- Jagdpanzer exposes memory MCP endpoints (e.g. `remember`, `recall`, `improve`) via loopback or container networks.
+- Hetzer acts as the client-side armor and security proxy, mediating all credentials (`secretRef:<id>`) passed into cognitive memory endpoints and sanitizing responses.
 
 ---
 
@@ -226,18 +214,16 @@ To reduce accidental credential exposure in Hetzer tool output, the MCP protocol
 
 ### Issue: `HTTP 406: Not Acceptable`
 - **Root Cause**: The client did not supply `Accept: text/event-stream` or `Accept: application/json` headers required by MCP SSE servers.
-- **Solution**: Handled automatically in Hetzer v0.3.0 (`cli/mcp/call.mjs` and `cli/mcp/ping.mjs`). If using custom curl, ensure:
-  ```bash
-  curl -H "Accept: application/json, text/event-stream" http://127.0.0.1:8001/mcp
-  ```
+- **Solution**: Handled automatically in Hetzer (`cli/mcp/call.mjs` and `cli/mcp/ping.mjs`).
 
-### Issue: `ECONNREFUSED 127.0.0.1:8001`
-- **Root Cause**: The Cognee container is not running or still initializing.
-- **Solution**: Run `hetzer status` to verify container health. If unhealthy, execute:
+### Issue: Stdio MCP Server Fails to Connect
+- **Root Cause**: `hetzer` binary is not in your system `PATH`, or Node.js >= 18 is not accessible.
+- **Solution**: Test manually in terminal:
   ```bash
-  hetzer up --wait cognee
+  hetzer mcp serve
   ```
+  Ensure JSON-RPC messages are emitted cleanly over stdio.
 
 ---
 
-*For full architectural details, refer to [docs/architecture.md](architecture.md) and [docs/system-logic-and-progress.md](system-logic-and-progress.md).*
+*For full architectural details, refer to [docs/architecture.md](architecture.md).*

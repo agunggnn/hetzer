@@ -13,12 +13,12 @@ const registry = {
     modules: [
         { id: "core", profile: "core", lifecycle: "compose" },
         { id: "9router", profile: "9router", lifecycle: "compose" },
-        { id: "cognee", profile: "cognee", lifecycle: "compose" },
+        { id: "sample-mod", profile: "sample-mod", lifecycle: "compose" },
         { id: "external", profile: "external", lifecycle: "external" },
     ],
     services: [
         { id: "9router", module: { id: "9router" } },
-        { id: "cognee-mcp", module: { id: "cognee" } },
+        { id: "sample-mcp", module: { id: "sample-mod" } },
     ],
 };
 
@@ -30,8 +30,8 @@ test("lifecycle targets accept module ids, service ids, and all", () => {
 });
 
 test("selected profiles map back to Compose modules", () => {
-    assert.deepEqual(moduleIdsForProfiles(registry, ["core", "cognee"]), ["core", "cognee"]);
-    assert.deepEqual(moduleIdsForProfiles(registry, ["*"]), ["core", "9router", "cognee"]);
+    assert.deepEqual(moduleIdsForProfiles(registry, ["core", "sample-mod"]), ["core", "sample-mod"]);
+    assert.deepEqual(moduleIdsForProfiles(registry, ["*"]), ["core", "9router", "sample-mod"]);
 });
 
 test("known 9Router pins migrate while custom pins remain untouched", () => {

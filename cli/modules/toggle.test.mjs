@@ -26,22 +26,22 @@ test("setModuleEnabled adds to HETZER_ENABLED_MODULES", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-toggle-"));
     const envFile = path.join(root, ".env");
     fs.writeFileSync(envFile, "HETZER_ENABLED_MODULES=\nHETZER_DISABLED_MODULES=\n");
-    setupTempModule(root, "cognee");
-    setModuleEnabled({ root, envFile, moduleId: "cognee", enabled: true, builtinFile: path.resolve("cli/modules/builtin.json") });
+    setupTempModule(root, "sample-mod");
+    setModuleEnabled({ root, envFile, moduleId: "sample-mod", enabled: true, builtinFile: path.resolve("cli/modules/builtin.json") });
     const updated = fs.readFileSync(envFile, "utf8");
-    assert.ok(updated.includes("HETZER_ENABLED_MODULES=cognee"));
+    assert.ok(updated.includes("HETZER_ENABLED_MODULES=sample-mod"));
     fs.rmSync(root, { recursive: true, force: true });
 });
 
 test("setModuleEnabled removes from HETZER_ENABLED_MODULES", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-toggle-"));
     const envFile = path.join(root, ".env");
-    fs.writeFileSync(envFile, "HETZER_ENABLED_MODULES=cognee\nHETZER_DISABLED_MODULES=\n");
-    setupTempModule(root, "cognee");
-    setModuleEnabled({ root, envFile, moduleId: "cognee", enabled: false, builtinFile: path.resolve("cli/modules/builtin.json") });
+    fs.writeFileSync(envFile, "HETZER_ENABLED_MODULES=sample-mod\nHETZER_DISABLED_MODULES=\n");
+    setupTempModule(root, "sample-mod");
+    setModuleEnabled({ root, envFile, moduleId: "sample-mod", enabled: false, builtinFile: path.resolve("cli/modules/builtin.json") });
     const updated = fs.readFileSync(envFile, "utf8");
-    assert.ok(updated.includes("HETZER_DISABLED_MODULES=cognee"));
-    assert.ok(!updated.includes("HETZER_ENABLED_MODULES=cognee"));
+    assert.ok(updated.includes("HETZER_DISABLED_MODULES=sample-mod"));
+    assert.ok(!updated.includes("HETZER_ENABLED_MODULES=sample-mod"));
     fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -49,7 +49,7 @@ test("setModuleEnabled throws on unknown module", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-toggle-"));
     const envFile = path.join(root, ".env");
     fs.writeFileSync(envFile, "HETZER_ENABLED_MODULES=\nHETZER_DISABLED_MODULES=\n");
-    setupTempModule(root, "cognee");
+    setupTempModule(root, "sample-mod");
     assert.throws(() => setModuleEnabled({ root, envFile, moduleId: "nonexistent", enabled: true, builtinFile: path.resolve("cli/modules/builtin.json") }), /not installed/);
     fs.rmSync(root, { recursive: true, force: true });
 });
@@ -82,9 +82,9 @@ test("setModuleEnabled sets chmod 600 on .env (Unix)", { skip: process.platform 
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-toggle-"));
     const envFile = path.join(root, ".env");
     fs.writeFileSync(envFile, "HETZER_ENABLED_MODULES=\nHETZER_DISABLED_MODULES=\n");
-    setupTempModule(root, "cognee");
+    setupTempModule(root, "sample-mod");
     fs.chmodSync(envFile, 0o644); // start with loose perms
-    setModuleEnabled({ root, envFile, moduleId: "cognee", enabled: true, builtinFile: path.resolve("cli/modules/builtin.json") });
+    setModuleEnabled({ root, envFile, moduleId: "sample-mod", enabled: true, builtinFile: path.resolve("cli/modules/builtin.json") });
     const stats = fs.statSync(envFile);
     assert.equal(stats.mode & 0o777, 0o600);
     fs.rmSync(root, { recursive: true, force: true });

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "sample-mod",
+  "label": "Sample Module",
+  "version": "1.0.0",
+  "profile": "sample-mod",
+  "lifecycle": "compose",
+  "surface": "headless",
+  "defaultEnabled": false,
+  "requires": [
+    "core"
+  ],
+  "composeFiles": [
+    "docker-compose.sample-mod.yml"
+  ],
+  "services": [
+    {
+      "id": "sample-mod",
+      "label": "Sample Service",
+      "composeService": "sample",
+      "profile": "sample-mod",
+      "urlEnv": "SAMPLE_MOD_MCP_URL",
+      "portEnv": "SAMPLE_MOD_MCP_PORT",
+      "fallbackPort": 8001,
+      "healthPath": "/health",
+      "mcpServer": {
+        "name": "sample-mod",
+        "transport": "http",
+        "path": "/mcp"
+      }
+    }
+  ]
+}

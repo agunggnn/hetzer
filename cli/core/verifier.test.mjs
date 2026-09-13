@@ -55,7 +55,7 @@ test("verifyModuleDeployment polls until Docker healthcheck reaches healthy", as
     };
 
     const res = await verifyModuleDeployment({
-        serviceId: "cognee-mcp",
+        serviceId: "sample-mcp",
         exec: mockExec,
         out: mockOut,
         timeoutMs: 500,
@@ -86,7 +86,7 @@ test("verifyModuleDeployment performs HTTP smoketest when endpointUrl provided",
     });
 
     const res = await verifyModuleDeployment({
-        serviceId: "cognee-mcp",
+        serviceId: "sample-mcp",
         endpointUrl: "http://127.0.0.1:8001/mcp",
         exec: mockExec,
         out: mockOut,
@@ -117,7 +117,7 @@ test("verifyModuleDeployment detects failure and provides diagnosis", async () =
     };
 
     const res = await verifyModuleDeployment({
-        serviceId: "cognee-mcp",
+        serviceId: "sample-mcp",
         exec: mockExec,
         out: mockOut,
         timeoutMs: 10,

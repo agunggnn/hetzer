@@ -10,28 +10,28 @@ const module = (id, requires = [], options = {}) => ({
 test("module resolution follows dependencies and active all selection", () => {
     const registry = { modules: [
         module("core"),
-        module("cognee", ["core"]),
+        module("sample-mod", ["core"]),
         module("later", ["core"], { enabled: false }),
     ] };
-    assert.deepEqual(resolveModuleProfiles({ registry, target: "cognee" }), ["core", "cognee"]);
-    assert.deepEqual(resolveModuleProfiles({ registry, target: "*" }), ["core", "cognee"]);
+    assert.deepEqual(resolveModuleProfiles({ registry, target: "sample-mod" }), ["core", "sample-mod"]);
+    assert.deepEqual(resolveModuleProfiles({ registry, target: "*" }), ["core", "sample-mod"]);
 });
 
 test("inactive modules must be explicitly installed before start", () => {
     assert.throws(() => resolveModuleProfiles({
-        registry: { modules: [module("core"), module("cognee", ["core"], { enabled: false })] },
-        target: "cognee",
-    }), /hetzer install cognee/);
+        registry: { modules: [module("core"), module("sample-mod", ["core"], { enabled: false })] },
+        target: "sample-mod",
+    }), /hetzer install sample-mod/);
 });
 
 test("resolveModuleProfiles includes core plus enabled modules", () => {
     const registry = { modules: [
         module("core"),
-        module("cognee", ["core"]),
+        module("sample-mod", ["core"]),
         module("data", ["core"]),
     ] };
-    assert.deepEqual(resolveModuleProfiles({ registry, target: "*" }), ["core", "cognee", "data"]);
-    assert.deepEqual(resolveModuleProfiles({ registry, target: "cognee" }), ["core", "cognee"]);
+    assert.deepEqual(resolveModuleProfiles({ registry, target: "*" }), ["core", "sample-mod", "data"]);
+    assert.deepEqual(resolveModuleProfiles({ registry, target: "sample-mod" }), ["core", "sample-mod"]);
 });
 
 test("resolveModuleProfiles falls back to core only when nothing enabled", () => {

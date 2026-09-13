@@ -53,9 +53,9 @@ test("analyzeContainerFailure uses static heuristics fallback when 9Router offli
     };
 
     const res = await analyzeContainerFailure({
-        serviceId: "cognee-mcp",
-        logs: "PermissionError: [Errno 13] Permission denied: '/cognee-data/system'",
-        composeContent: "volumes: - cognee_data:/cognee-data",
+        serviceId: "sample-srv",
+        logs: "PermissionError: [Errno 13] Permission denied: '/sample-data/system'",
+        composeContent: "volumes: - sample_data:/sample-data",
         root: ".",
         fetchFn: mockOfflineFetch,
     });

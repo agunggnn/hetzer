@@ -19,30 +19,30 @@ test("MCP configure preserves other servers and registers Hetzer", () => {
 
 test("MCP configure registers enabled module HTTP servers", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-mcp-module-"));
-    const recipe = path.join(root, "modules", "cognee");
+    const recipe = path.join(root, "modules", "sample-mod");
     fs.mkdirSync(recipe, { recursive: true });
-    fs.writeFileSync(path.join(recipe, "docker-compose.cognee.yml"), "services: {}\n");
+    fs.writeFileSync(path.join(recipe, "docker-compose.sample-mod.yml"), "services: {}\n");
     fs.writeFileSync(path.join(recipe, "module.json"), JSON.stringify({
-        id: "cognee",
-        label: "Cognee Memory",
+        id: "sample-mod",
+        label: "Sample Module",
         lifecycle: "compose",
         surface: "headless",
         defaultEnabled: false,
         requires: ["core"],
-        composeFiles: ["docker-compose.cognee.yml"],
+        composeFiles: ["docker-compose.sample-mod.yml"],
         services: [{
-            id: "cognee",
-            label: "Cognee Memory",
-            portEnv: "COGNEE_MCP_PORT",
+            id: "sample-mod",
+            label: "Sample Service",
+            portEnv: "SAMPLE_MOD_MCP_PORT",
             fallbackPort: 8001,
-            mcpServer: { name: "cognee", transport: "http", path: "/mcp" },
+            mcpServer: { name: "sample-mod", transport: "http", path: "/mcp" },
         }],
     }));
-    fs.writeFileSync(path.join(root, ".env"), "HETZER_ENABLED_MODULES=cognee\nCOGNEE_MCP_PORT=8111\n");
+    fs.writeFileSync(path.join(root, ".env"), "HETZER_ENABLED_MODULES=sample-mod\nSAMPLE_MOD_MCP_PORT=8111\n");
 
     configureMcp(root);
     const config = JSON.parse(fs.readFileSync(path.join(root, ".mcp.json"), "utf8"));
-    assert.deepEqual(config.mcpServers.cognee, {
+    assert.deepEqual(config.mcpServers["sample-mod"], {
         type: "http",
         url: "http://127.0.0.1:8111/mcp",
     });

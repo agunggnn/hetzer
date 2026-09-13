@@ -27,7 +27,7 @@ test("initializeProject creates a secured, repeatable project contract", () => {
     assert.match(values.NINE_ROUTER_JWT_SECRET, /^secretRef:/);
     assert.ok(values.HETZER_GRIMOIRE_KEY.length >= 32);
     assert.equal(fs.existsSync(path.join(root, "data", "hetzer-vault.db")), true);
-    assert.equal(fs.existsSync(path.join(root, "modules", "cognee", "module.json")), true);
+    assert.equal(fs.existsSync(path.join(root, "modules", "sample-mod", "module.json")), true);
 
     initializeProject(root);
     assert.equal(fs.readFileSync(path.join(root, ".env"), "utf8"), first);
@@ -98,7 +98,7 @@ test("isHetzerWorkspace and resolveProjectRoot identify local workspace vs globa
     }
 });
 
-test("printModuleHelp renders native module guide for 9router and cognee", () => {
+test("printModuleHelp renders native module guide for 9router", () => {
     let output = "";
     const originalWrite = process.stdout.write;
     process.stdout.write = (chunk) => {
@@ -122,13 +122,13 @@ test("install auto-scaffolds module directory from templates if missing in works
     try {
         fs.writeFileSync(path.join(tempDir, "docker-compose.yml"), "services:\n");
         fs.writeFileSync(path.join(tempDir, ".env"), "HETZER_ENABLED_MODULES=\nHETZER_DISABLED_MODULES=\n");
-        assert.equal(fs.existsSync(path.join(tempDir, "modules", "cognee", "module.json")), false);
+        assert.equal(fs.existsSync(path.join(tempDir, "modules", "sample-mod", "module.json")), false);
 
-        await main(["install", "cognee"], { root: tempDir });
+        await main(["install", "sample-mod"], { root: tempDir });
 
-        assert.equal(fs.existsSync(path.join(tempDir, "modules", "cognee", "module.json")), true);
+        assert.equal(fs.existsSync(path.join(tempDir, "modules", "sample-mod", "module.json")), true);
         const envContent = fs.readFileSync(path.join(tempDir, ".env"), "utf8");
-        assert.match(envContent, /HETZER_ENABLED_MODULES=.*cognee/);
+        assert.match(envContent, /HETZER_ENABLED_MODULES=.*sample-mod/);
     } finally {
         process.stdout.write = originalStdout;
         fs.rmSync(tempDir, { recursive: true, force: true });

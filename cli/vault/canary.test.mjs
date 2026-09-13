@@ -14,7 +14,7 @@ test("isCanaryCredential accurately detects decoy credential identifiers", () =>
     assert.equal(isCanaryCredential("decoy-password"), true);
     assert.equal(isCanaryCredential("npm-token"), false);
     assert.equal(isCanaryCredential("github-token"), false);
-    assert.equal(isCanaryCredential("cognee-llm-api-key"), false);
+    assert.equal(isCanaryCredential("nine-router-jwt-secret"), false);
 });
 
 test("setupCanaryTrap stores decoy honey-token and updates .env safely", () => {

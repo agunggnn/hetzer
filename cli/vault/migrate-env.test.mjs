@@ -7,20 +7,20 @@ import test from "node:test";
 import { Grimoire } from "./hetzer-vault.mjs";
 import { autoIngestPlaintextEnv, migrateEnvCredentials } from "./migrate-env.mjs";
 
-test("Cognee provider keys move from plaintext to scoped Vault references", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-cognee-key-"));
+test("Module secret keys move from plaintext to scoped Vault references", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-jwt-key-"));
     const envFile = path.join(root, ".env");
     const masterKey = "test-migration-master-key-that-is-long-enough";
-    fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${masterKey}\nCOGNEE_LLM_API_KEY=provider-secret\n`);
+    fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${masterKey}\nNINE_ROUTER_JWT_SECRET=jwt-test-secret-value\n`);
 
     const migrated = migrateEnvCredentials({ root, envFile, masterKey, authorizationRef: "user:test-approval" });
-    assert.deepEqual(migrated, ["COGNEE_LLM_API_KEY"]);
-    assert.match(fs.readFileSync(envFile, "utf8"), /COGNEE_LLM_API_KEY=secretRef:cognee-llm-api-key/);
+    assert.deepEqual(migrated, ["NINE_ROUTER_JWT_SECRET"]);
+    assert.match(fs.readFileSync(envFile, "utf8"), /NINE_ROUTER_JWT_SECRET=secretRef:nine-router-jwt-secret/);
     const vault = new Grimoire({ dbPath: path.join(root, "data", "hetzer-vault.db"), masterKey });
-    assert.equal(vault.resolveRef("secretRef:cognee-llm-api-key", {
-        targetId: "cognee",
+    assert.equal(vault.resolveRef("secretRef:nine-router-jwt-secret", {
+        targetId: "nine-router",
         action: "compose.start",
-    }), "provider-secret");
+    }), "jwt-test-secret-value");
     vault.close();
     fs.rmSync(root, { recursive: true, force: true });
 });
