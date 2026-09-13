@@ -244,6 +244,10 @@ function compose(root, envFile, args) {
     ], { cwd: root });
 }
 
+function warnOrchestrationDeprecated(command) {
+    process.stderr.write(`[!] DEPRECATED: Multi-container stack orchestration in Hetzer ('hetzer ${command}') is deprecated. Use Jagdpanzer (https://github.com/agunggnn/jagdpanzer) for full ops stacks.\n`);
+}
+
 function profileArguments(root, values, target) {
     const registry = registryFor(root, values);
     const resolvedTarget = resolveLifecycleTarget(registry, target);
@@ -500,16 +504,16 @@ Options:
 Commands:
   init [directory]          Initialize a new instance (default: ~/.hetzer or current workspace)
   doctor [--fix]            Check system & Docker compatibility (--fix to auto-repair)
-  up [module|all] [--wait]  Start core, 9router, or active module containers (--wait polls health)
+  up [module|all] [--wait]  Start containers [deprecated; use Jagdpanzer]
   update [target|all]       Pull and update module/service image digests
-  down [-v]                 Stop services (use -v to purge persistent data volumes)
-  status                    View container states and image digests
-  logs [service]            Stream service logs
-  modules [module]          List available modules or print detailed module guide
-  install <module>          Enable module (e.g. 9router, cognee)
-  remove <module>           Disable module without deleting persistent data
-  module <id> [action|help] Print native command guide or run host module action
-  module create <id> [--source <repo>] Scaffold new module recipe (AI-assisted via 9Router)
+  down [-v]                 Stop services [deprecated; use Jagdpanzer]
+  status                    View container states [deprecated; use Jagdpanzer]
+  logs [service]            Stream service logs [deprecated; use Jagdpanzer]
+  modules [module]          List available modules [deprecated; use Jagdpanzer]
+  install <module>          Enable module [deprecated; use Jagdpanzer]
+  remove <module>           Disable module [deprecated; use Jagdpanzer]
+  module <id> [action|help] Host module actions [deprecated; use Jagdpanzer]
+  module create <id> [--source <repo>] Scaffold new module recipe [deprecated]
   validate [module]         Validate module integrity, security, and compose recipe
   creds [list|reveal|set]   Manage encrypted secrets in Grimoire Vault (AES-256-GCM)
   canary [setup]            Deploy decoy canary honey-token tripwire to catch prompt injections
@@ -526,7 +530,7 @@ Commands:
   publish                   Build, verify test suite, and publish package to npm
   version [--check]         Display Hetzer version (use --check to query latest release)
   check-update              Check if a newer version of Hetzer is available
-  tui                       Launch interactive terminal operations dashboard
+  tui                       Terminal dashboard [deprecated; use Jagdpanzer]
 `;
 }
 
@@ -717,6 +721,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
 
     const { envFile, values } = projectEnvironment(root);
     if (["install", "remove"].includes(command)) {
+        warnOrchestrationDeprecated(command);
         if (!args[0]) throw new Error(`Usage: hetzer ${command} <module>`);
         const moduleId = args[0];
         if (command === "install") {
@@ -860,6 +865,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         throw new Error(`Unknown canary subcommand: '${sub}'. Use 'setup'.`);
     }
     if (command === "modules") {
+        warnOrchestrationDeprecated(command);
         if (args[0] && !args[0].startsWith("-")) {
             printModuleHelp(args[0], root, values);
             return;
@@ -868,6 +874,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         return;
     }
     if (command === "up") {
+        warnOrchestrationDeprecated(command);
         printHetzerBanner();
         const hasVerify = args.includes("--verify") || args.includes("--wait");
         const filteredArgs = args.filter((a) => a !== "--verify" && a !== "--wait");
@@ -917,14 +924,17 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         return;
     }
     if (command === "down") {
+        warnOrchestrationDeprecated(command);
         compose(root, envFile, [...profileArguments(root, values, "*").arguments, "down", ...args]);
         return;
     }
     if (command === "status") {
+        warnOrchestrationDeprecated(command);
         compose(root, envFile, [...profileArguments(root, values, "*").arguments, "ps", "--all"]);
         return;
     }
     if (command === "logs") {
+        warnOrchestrationDeprecated(command);
         const registry = registryFor(root, values);
         const mappedArgs = [];
         for (const arg of args) {
@@ -982,6 +992,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         return;
     }
     if (command === "module") {
+        warnOrchestrationDeprecated(command);
         const moduleId = args[0];
         const action = args[1];
         if (moduleId === "create") {
@@ -1081,7 +1092,6 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             process.stdout.write("       hetzer module create <id> [options]\n\n");
             process.stdout.write("Native module guides:\n");
             process.stdout.write("  hetzer module 9router help\n");
-            process.stdout.write("  hetzer module cognee help\n");
             process.stdout.write("  hetzer module validate [id]     (Validate module recipes & security standards)\n");
             process.stdout.write("  hetzer module create <id>       (Generate boilerplate recipe for a new module)\n\n");
             process.stdout.write("Run 'hetzer modules' to list all available modules.\n");
@@ -1214,6 +1224,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         return;
     }
     if (command === "tui") {
+        warnOrchestrationDeprecated(command);
         run(process.execPath, [path.join(cliRoot, "modules", "tui.mjs"), "--root", root], { cwd: root });
         return;
     }
