@@ -9,8 +9,9 @@ import { fileURLToPath } from "node:url";
 
 import { parseEnv } from "../core/env.mjs";
 import { CANARY_TOKEN_PATTERN, isCanaryCredential, isCanaryToken, triggerCanaryAlert } from "./canary.mjs";
-import { applyExecPolicy, assertNoShellMetacharacters, loadExecPolicy } from "./exec-policy.mjs";
+import { applyExecPolicy, assertNoShellMetacharacters, assertNoSensitivePathAccess, assertNoUntrustedDownloader, loadExecPolicy } from "./exec-policy.mjs";
 import { Grimoire, resolveMasterKey, resolveVaultPath } from "./hetzer-vault.mjs";
+import { executeSandboxedProcess } from "./sandbox.mjs";
 import { resolveSecretEnvironment } from "./secret-env.mjs";
 import { scanText } from "./sniffer.mjs";
 
@@ -570,7 +571,7 @@ export function resolveCommandForSpawn(command, commandArgs = []) {
 export function parseArguments(argv) {
     const marker = argv.indexOf("--");
     if (marker === -1 || !argv[marker + 1]) {
-        throw new Error("Usage: exec --root <path> --env-file <path> [--policy <path>] [--policy-hash <sha256>] [--broker-policy <path>] [--allow NAME,NAME] [--allow-raw-unmediated NAME,NAME] [--strict] [--canary] [--timeout <duration>] -- <command> [args]");
+        throw new Error("Usage: exec --root <path> --env-file <path> [--policy <path>] [--policy-hash <sha256>] [--broker-policy <path>] [--allow NAME,NAME] [--allow-raw-unmediated NAME,NAME] [--strict] [--canary] [--sandbox [image]] [--sandbox-network <net>] [--sandbox-ro] [--timeout <duration>] -- <command> [args]");
     }
     const options = argv.slice(0, marker);
     const value = (name) => {
@@ -582,6 +583,10 @@ export function parseArguments(argv) {
     const rawTimeout = value("--timeout");
     const rawPolicy = value("--policy");
     const rawPolicyHash = value("--policy-hash");
+    const isSandbox = options.includes("--sandbox") || Boolean(value("--sandbox-image"));
+    const rawSandboxVal = value("--sandbox");
+    const sandboxImage = value("--sandbox-image") || (rawSandboxVal && !rawSandboxVal.startsWith("-") ? rawSandboxVal : undefined);
+    const sandboxNetwork = value("--sandbox-network") || undefined;
     return {
         root: path.resolve(value("--root") || process.cwd()),
         envFile: path.resolve(value("--env-file")),
@@ -590,6 +595,12 @@ export function parseArguments(argv) {
         brokerPolicyFiles: values("--broker-policy").map((file) => path.resolve(file)),
         allowNames: values("--allow").length ? names(values("--allow")) : undefined,
         allowRawUnmediated: names(values("--allow-raw-unmediated")),
+        allowSensitivePaths: options.includes("--allow-sensitive-paths"),
+        allowUntrustedDownloaders: options.includes("--allow-untrusted-downloaders"),
+        sandbox: isSandbox,
+        sandboxImage: sandboxImage || undefined,
+        sandboxNetwork,
+        sandboxRo: options.includes("--sandbox-ro"),
         strict: options.includes("--strict"),
         canary: options.includes("--canary"),
         timeout: rawTimeout || undefined,
@@ -619,7 +630,7 @@ function brokerEnvSuffix(credentialId) {
     return credentialId.toUpperCase().replace(/[^A-Z0-9_]/g, "_");
 }
 
-async function prepareExecutionEnvironment(effectiveOptions, {
+export async function prepareExecutionEnvironment(effectiveOptions, {
     baseEnv,
     brokerFetchFn,
     brokerRandomBytes,
@@ -813,6 +824,13 @@ export async function executeProcess(options, {
 
     assertNoShellMetacharacters(effectiveOptions.command, effectiveOptions.commandArgs);
 
+    if (!effectiveOptions.allowSensitivePaths) {
+        assertNoSensitivePathAccess(effectiveOptions.command, effectiveOptions.commandArgs);
+    }
+    if (!effectiveOptions.allowUntrustedDownloaders) {
+        assertNoUntrustedDownloader(effectiveOptions.command, effectiveOptions.commandArgs);
+    }
+
     if (isReflectionCommand(effectiveOptions.command, effectiveOptions.commandArgs)) {
         const fullCmd = [effectiveOptions.command, ...effectiveOptions.commandArgs].join(" ");
         const err = new Error(
@@ -828,6 +846,16 @@ export async function executeProcess(options, {
             + "You must explicitly specify which credentials may be resolved via '--allow <id|env-var>'.\n"
             + "No ungranted secrets are accessible in strict mode."
         );
+    }
+
+    if (effectiveOptions.sandbox) {
+        return await executeSandboxedProcess(effectiveOptions, {
+            outStream,
+            errStream,
+            baseEnv,
+            brokerFetchFn,
+            brokerRandomBytes,
+        });
     }
 
     const { env, secretsToRedact, brokers } = await prepareExecutionEnvironment(

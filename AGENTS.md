@@ -1,6 +1,6 @@
 # Hetzer Contributor & Agent Guidance
 
-> **Version**: v0.4.20 | **Verify**: `npm run check && npm test && npm run verify`
+> **Version**: v0.4.21 | **Verify**: `npm run check && npm test && npm run verify`
 
 ---
 
@@ -25,7 +25,9 @@
 6. **Timeout Guard (`cli/vault/exec.mjs`)**: `--timeout <duration>` (e.g. `30s`, `5m`, `10000ms`) terminates hanging subprocesses with SIGTERM followed by tree-kill (`taskkill /T /F` on Windows, `SIGKILL` on Unix) and exits with code 124 (`ERR_SUBPROCESS_TIMEOUT`).
 7. **Execution Policy (`cli/vault/exec-policy.mjs`)**: `--policy <path>` restricts child execution via exact structured `argv` rules, rejects shell metacharacters (`&`, `|`, `;`, `<`, `>`, `$`, `%`), executes with `shell: false`, and validates policy trust roots via SHA-256 integrity hashes.
 8. **HTTP Credential Broker (`cli/vault/http-broker.mjs`)**: Short-lived loopback proxy injecting upstream secrets. Enforces bounded fixed-point path canonicalization (blocking matrix parameters `;` and directory traversal), dynamic RFC 7230 hop-by-hop connection stripping, atomic quota reservation, and multi-representation secret redaction.
-9. **No False Claims**: Defense-in-depth security layer. Do not claim PCI-DSS 6.4.3 or "100% unbreakable". All claims verified via `npm run verify`.
+9. **Sensitive Host Path & Downloader Guard (`cli/vault/exec-policy.mjs`)**: Blocks access to host browser cookies (`%LOCALAPPDATA%`, Chrome, Edge, Brave, Opera), crypto wallets (`solana/id.json`, Exodus), SSH/cloud credentials, and Living-Off-The-Land downloaders (`certutil -urlcache`, `bitsadmin`, `mshta`, `irm | iex`).
+10. **Ephemeral Container Sandbox (`cli/vault/sandbox.mjs`)**: `hetzer exec --sandbox [image]` isolates untrusted agent executions inside transient containers (`--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--pids-limit=100`, unmounting host AppData and home directories) while bridging loopback HTTP credential broker upstream (`host.docker.internal`).
+11. **No False Claims**: Defense-in-depth security layer. Do not claim PCI-DSS 6.4.3 or "100% unbreakable". All claims verified via `npm run verify`.
 
 ---
 

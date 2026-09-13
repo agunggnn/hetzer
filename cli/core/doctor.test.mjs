@@ -12,6 +12,7 @@ import {
     checkFilePermissions,
     checkNodeRuntime,
     checkAgentContextHealth,
+    checkAgentSandboxSafety,
     getOperatingSystemInfo,
     runDoctor,
 } from "./doctor.mjs";
@@ -137,4 +138,30 @@ test("checkAgentContextHealth returns audit summary for workspace", () => {
         fs.rmSync(tempRoot, { recursive: true, force: true });
     }
 });
+
+test("checkAgentSandboxSafety flags plaintext API keys and bare-metal agent execution", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-doctor-sandbox-"));
+    try {
+        // 1. Clean workspace returns clean report
+        const cleanRes = checkAgentSandboxSafety(tempRoot, { homeDir: null });
+        assert.equal(cleanRes.ok, true);
+        assert.equal(cleanRes.issues.length, 0);
+
+        // 2. Plaintext API key inside agent config triggers issue
+        const hermesDir = path.join(tempRoot, ".hermes");
+        fs.mkdirSync(hermesDir, { recursive: true });
+        const testToken = ["npm_", "0123456789abcdef0123456789abcdef0123"].join("");
+        fs.writeFileSync(path.join(hermesDir, "config.yaml"), `api_token: "${testToken}"\nmodel: "claude-3-5"\n`);
+
+        const leakRes = checkAgentSandboxSafety(tempRoot, { homeDir: null });
+        assert.equal(leakRes.ok, false);
+        assert.ok(leakRes.rawTokensCount >= 1);
+        const secretIssue = leakRes.issues.find((i) => i.type === "PLAINTEXT_AGENT_SECRET");
+        assert.ok(secretIssue);
+        assert.match(secretIssue.detail, /config\.yaml/);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
 

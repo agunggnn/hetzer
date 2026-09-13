@@ -151,17 +151,12 @@ To operate agents safely on Windows:
    hetzer creds set anthropic-api-key
    hetzer creds set openrouter-api-key
    ```
-2. **Execute with Mediated HTTP Broker**:
-   Never export raw keys into shell profiles or configuration files. Direct agent network calls to `HETZER_BROKER_URL`.
-3. **Isolate Agent Workspace via Ephemeral Containers**:
-   Mount only the specific workspace directory:
+2. **Execute with Mediated HTTP Broker & Ephemeral Sandbox (`hetzer exec --sandbox`)**:
+   Use Hetzer's native sandbox runner to automatically spin up a capability-dropped container (`--cap-drop=ALL`) that mounts only `./` workspace, isolates host AppData and home directories, and translates loopback broker endpoints:
    ```bash
-   docker run --rm -it \
-     -v "E:\Projects\MyProject:/workspace:rw" \
-     --network host \
-     -e ANTHROPIC_BASE_URL="http://127.0.0.1:4141" \
-     -e ANTHROPIC_API_KEY="dummy-broker-capability" \
-     hermes-agent
+   hetzer exec --allow anthropic-api-key --sandbox -- node agent.js
    ```
+3. **Automated Sensitive Host Path & Living-Off-The-Land Downloader Deny-List**:
+   Even if run locally on bare-metal without `--sandbox`, `hetzer exec` automatically blocks child processes from reading host cookies (`%LOCALAPPDATA%`, Chrome, Edge, Brave, Opera), crypto wallets (`solana/id.json`), or executing unpermitted living-off-the-land downloaders (`certutil -urlcache`, `bitsadmin`, `mshta`, `powershell irm | iex`).
 4. **Audit Configuration Regularly**:
-   Run `hetzer doctor` to verify that no plaintext tokens or dynamic prompt-cache breaks exist in your agent configuration.
+   Run `hetzer doctor` to verify that no plaintext tokens or uncontained bare-metal agent configurations exist on your system.
