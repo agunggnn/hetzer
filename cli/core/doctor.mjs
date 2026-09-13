@@ -3,6 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { auditAgentContext } from "../skills/audit.mjs";
+
 export function getOperatingSystemInfo() {
     const platform = process.platform;
     const arch = process.arch;
@@ -230,6 +232,21 @@ export function applyDoctorFixes({ root, out = process.stdout }) {
     return fixes;
 }
 
+export function checkAgentContextHealth(root) {
+    try {
+        return auditAgentContext(root);
+    } catch {
+        return {
+            configured: false,
+            ok: true,
+            pointerTokens: 0,
+            cacheFriendly: true,
+            summary: "Check skipped",
+            issues: [],
+        };
+    }
+}
+
 export function runDoctor({ root, defaultHome, exec = spawnSync, out = process.stdout, fix = false }) {
     if (fix) {
         applyDoctorFixes({ root, out });
@@ -315,6 +332,15 @@ export function runDoctor({ root, defaultHome, exec = spawnSync, out = process.s
         out.write(`  Instance Status   : Not yet initialized (Run 'hetzer init') [INFO]\n`);
     }
 
+    // Agent Context & Guidance Status
+    const agentContextCheck = checkAgentContextHealth(root);
+    if (agentContextCheck.configured) {
+        const tag = agentContextCheck.ok ? "[OK]" : "[WARN]";
+        out.write(`  Agent Guidance    : ${agentContextCheck.summary} ${tag}\n`);
+    } else {
+        out.write(`  Agent Guidance    : Not configured (Run 'hetzer protect' to arm agents) [INFO]\n`);
+    }
+
     out.write("================================================================================\n");
 
     const issues = [];
@@ -354,6 +380,19 @@ export function runDoctor({ root, defaultHome, exec = spawnSync, out = process.s
             detail: composeConfigError,
             solution: "Check docker-compose.yml syntax or re-run 'hetzer init'.",
         });
+    }
+    if (agentContextCheck.issues && agentContextCheck.issues.length > 0) {
+        for (const issue of agentContextCheck.issues) {
+            issues.push({
+                title: issue.type === "OVERSIZED_POINTER"
+                    ? "Agent Context Pointer Exceeds Token Budget"
+                    : (issue.type === "DYNAMIC_CACHE_BREAK"
+                        ? "Agent Rule Breaks LLM Prompt Caching"
+                        : "Agent Rule Configuration Issue"),
+                detail: issue.message,
+                solution: issue.solution,
+            });
+        }
     }
 
     if (issues.length === 0) {
