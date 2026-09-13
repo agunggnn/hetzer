@@ -75,6 +75,7 @@ For structured navigation and deep architectural insights, explore the dedicated
 | 🌐 **[Model Context Protocol Guide (`docs/mcp-guide.md`)](docs/mcp-guide.md)** | Connect Hetzer to Claude Desktop, Cursor, Cline, OpenCode, `[OFFLINE]`/`[HYBRID]`/`[LLM]` classification, and CLI testing. |
 | 🔄 **[HTTP Credential Broker (`docs/http-credential-broker.md`)](docs/http-credential-broker.md)** | Loopback proxy injecting upstream credentials via short-lived capabilities without exposing long-lived secrets to child environments. |
 | 🛡️ **[Security Boundary & Isolation Roadmap (`docs/hetzer-vs-strongdm-analysis.md`)](docs/hetzer-vs-strongdm-analysis.md)** | Engineering analysis of implemented controls, architectural boundaries, and isolation roadmap. |
+| ☣️ **[Agent Threat Model & Sandbox Case Study (`docs/agent-sandbox-threat-model.md`)](docs/agent-sandbox-threat-model.md)** | Incident analysis of un-sandboxed agent session hijacking (*Pass-the-Cookie*), why antivirus fails, and the Sandbox-Credential Paradox. |
 | 🧠 **[Cognee Persistent Memory Module (`docs/modules/cognee.md`)](docs/modules/cognee.md)** | Graph and vector persistent memory, local Ollama integration, and memory tools. |
 
 ---

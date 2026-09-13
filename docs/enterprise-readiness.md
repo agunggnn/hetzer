@@ -62,3 +62,7 @@ See [the measurement guide](value-benchmark.md) for rules governing performance,
 ## Enterprise hardware roadmap
 
 For organizations requiring hardware-enforced protection against same-user memory dumps (`/proc/$pid/mem`), physical token theft, or multi-tenant hypervisor threats, see the dedicated [Hardware Root of Trust Roadmap](hardware-root-of-trust-roadmap.md). It outlines the 4-phase evolution across Linux Kernel Keyring (`v0.5.0`), TPM 2.0 platform sealing (`v0.6.0`), Dedicated HSM & Cloud KMS FIPS 140-2/3 Level 3 integration (`v1.0.0`), and Confidential Computing TEE enclaves (`v2.0.0`).
+
+## Agent sandbox threat model & incident case study
+
+For enterprise threat modeling on autonomous agents, browser session hijacking (*Pass-the-Cookie*), and the Sandbox-Credential Paradox, review the dedicated [Agent Threat Model & Sandbox Case Study](agent-sandbox-threat-model.md). It analyzes real-world evasion of endpoint antivirus and specifies dual-barrier containment using containerization combined with the Hetzer HTTP Credential Broker.
