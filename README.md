@@ -67,16 +67,16 @@ For structured navigation and deep architectural insights, explore the dedicated
 |---|---|
 | ⚡ **[Practical Credential-Safety Guide (`docs/vibe-coders.md`)](docs/vibe-coders.md)** | One-command setup and the boundaries developers and agent users need to understand. |
 | 🚀 **[Installation Guide (`docs/installation.md`)](docs/installation.md)** | Multi-OS setup (Ubuntu, Debian, CentOS, Windows WSL2, macOS, VPS), Docker requirements, and troubleshooting. |
-| 🏛️ **[System Architecture (`docs/architecture.md`)](docs/architecture.md)** | Grimoire Vault (AES-256-GCM), 7-layer defense shield, 9Router Gateway, Cognee Memory, and network boundaries. |
+| 🏛️ **[System Architecture (`docs/architecture.md`)](docs/architecture.md)** | Grimoire Vault (AES-256-GCM), 7-layer defense shield, execution sandbox, HTTP broker, and network boundaries. |
 | 🔬 **[System Logic & Progress Tracker (`docs/system-logic-and-progress.md`)](docs/system-logic-and-progress.md)** | Deep subsystem implementation specs, execution flows, test coverage status, and upcoming roadmap. |
 | 📊 **[Measurement & Evaluation Guide (`docs/value-benchmark.md`)](docs/value-benchmark.md)** | Reproducible local measurements, comparison rules, and limits on compliance/TCO claims. |
 | 🏦 **[Enterprise & Banking Readiness (`docs/enterprise-readiness.md`)](docs/enterprise-readiness.md)** | Regulatory compliance evaluation (PCI-DSS 4.0, SOC 2, ISO 27001, OJK, Bank Indonesia), threat models, and financial hardening guide. |
 | 🔐 **[Hardware Root of Trust Roadmap (`docs/hardware-root-of-trust-roadmap.md`)](docs/hardware-root-of-trust-roadmap.md)** | Architectural evolution for Linux Kernel Keyring, TPM 2.0 platform sealing, TEE enclaves, and Codex implementation directives. |
-| 🌐 **[Model Context Protocol Guide (`docs/mcp-guide.md`)](docs/mcp-guide.md)** | Connect Hetzer to Claude Desktop, Cursor, Cline, OpenCode, `[OFFLINE]`/`[HYBRID]`/`[LLM]` classification, and CLI testing. |
+| 🌐 **[Model Context Protocol Guide (`docs/mcp-guide.md`)](docs/mcp-guide.md)** | Connect Hetzer to Claude Desktop, Cursor, Cline, OpenCode, FastMCP security tools, and CLI testing. |
 | 🔄 **[HTTP Credential Broker (`docs/http-credential-broker.md`)](docs/http-credential-broker.md)** | Loopback proxy injecting upstream credentials via short-lived capabilities without exposing long-lived secrets to child environments. |
 | 🛡️ **[Security Boundary & Isolation Roadmap (`docs/hetzer-vs-strongdm-analysis.md`)](docs/hetzer-vs-strongdm-analysis.md)** | Engineering analysis of implemented controls, architectural boundaries, and isolation roadmap. |
 | ☣️ **[Agent Threat Model & Sandbox Case Study (`docs/agent-sandbox-threat-model.md`)](docs/agent-sandbox-threat-model.md)** | Incident analysis of un-sandboxed agent session hijacking (*Pass-the-Cookie*), why antivirus fails, and the Sandbox-Credential Paradox. |
-| 🧠 **[Cognee Persistent Memory Module (`docs/modules/cognee.md`)](docs/modules/cognee.md)** | Graph and vector persistent memory, local Ollama integration, and memory tools. |
+| 🛡️ **[Jagdpanzer Multi-Container Fleet Ops](https://github.com/agunggnn/jagdpanzer)** | Multi-container stack orchestration, persistent cognitive memory (Cognee), and automated agent networks. |
 
 ---
 
@@ -91,7 +91,7 @@ With Hetzer, you get:
 4. **Dual Git Guards (`pre-commit` & `commit-msg`)**: Inspects staged filenames, diff additions before commit, and validates commit messages against raw credentials.
 5. **Canary Honey-Tokens & Active Stream Tripwires**: Deploys decoy canary tokens (`HETZER_CANARY_TOKEN`, `canary-*`). Guarded resolution aborts with exit code 43. Guarded subprocesses (`hetzer exec --canary`) terminate child processes if canary tokens leak into stdout/stderr.
 6. **HTTP Credential Broker**: Loopback proxy (`127.0.0.1`) injecting upstream credentials via ephemeral capabilities without exposing raw secrets to child environments.
-7. **9Router AI Gateway & Cognee Memory (Optional Full-Stack)**: Multi-provider model routing with automatic fallback and tri-layer relational/vector/graph persistent memory in ~1.4 GiB RAM.
+7. **Ephemeral Container Sandbox (`hetzer exec --sandbox`) & Fleet Separation**: Isolates untrusted agent commands in transient containers (`--cap-drop=ALL`, `--pids-limit=100`, unmounting host AppData), cleanly delegating multi-container cluster ops to [Jagdpanzer](https://github.com/agunggnn/jagdpanzer).
 
 All built with **0 external npm dependencies** (100% Node.js standard library: `node:crypto`, `node:sqlite`, `node:fs`, `node:perf_hooks`).
 
@@ -116,7 +116,7 @@ All built with **0 external npm dependencies** (100% Node.js standard library: `
 ```mermaid
 flowchart TB
     subgraph Clients["AI Clients & Developer Interfaces"]
-        CLI["Hetzer CLI\n(hetzer up / creds / mcp)"]
+        CLI["Hetzer CLI\n(hetzer exec / creds / mcp)"]
         TUI["Terminal Live Monitor\n(hetzer tui)"]
         Claude["Claude Desktop / Code"]
         Cursor["Cursor IDE"]
@@ -130,36 +130,31 @@ flowchart TB
         SecretSniffer["Secret Scanner\n(Regex Rules + Entropy Detector)"]
         GrimoireVault[("Grimoire Vault\nSQLite WAL + AES-256-GCM\ndata/hetzer-vault.db")]
         MCPBridge["Universal MCP Bridge\n(stdio & JSON-RPC Protocol)"]
-        ModuleResolver["Module & Profile Resolver\n(Docker Compose Merger)"]
-        HealthVerifier["Active Healthcheck & Probe Engine"]
+        HTTPBroker["HTTP Credential Broker\n(127.0.0.1 Loopback Proxy)"]
+        CanaryEngine["Canary Tripwire Engine\n(Exit Code 43 on Stream Leak)"]
     end
 
-    subgraph DockerPlane["Docker Isolated Network (127.0.0.1 Loopback)"]
-        subgraph NineRouter["9Router AI Gateway (:20140)"]
-            RouterProxy["Multi-Provider Model Router & Fallback"]
-        end
-
-        subgraph CogneeSvc["Cognee Memory Engine (:8001)"]
-            MCPEndpoint["MCP Server (:8001/mcp)"]
-            RelationalDB[("SQLite WAL\nRelational Metadata")]
-            VectorDB[("LanceDB\nVector Embeddings")]
-            GraphDB[("Kùzu Graph DB\nKnowledge Graph")]
-        end
+    subgraph ExecutionPlane["Guarded Execution Environments"]
+        SubprocessHost["Guarded Host Process\n(Stream Redactor + Strict Scoping)"]
+        ContainerSandbox["Ephemeral Container Sandbox\n(Docker / Podman: --cap-drop=ALL,\nno host AppData mount)"]
+        JagdpanzerFleet["Jagdpanzer Ops Fleet\n(Multi-Container Clusters & Memory)"]
     end
 
     CLI --> GrimoireVault
-    CLI --> ModuleResolver
+    CLI --> HTTPBroker
     CLI --> MCPBridge
     GitCommit --> SecretSniffer
-    TUI --> HealthVerifier
     Claude -.->|"stdio MCP"| MCPBridge
     Cursor -.->|"stdio MCP"| MCPBridge
     Hermes -.->|"stdio MCP"| MCPBridge
     AGY -.->|"Native Skill"| GrimoireVault
     OpenCode -.->|"Native Skill"| GrimoireVault
 
-    ModuleResolver -->|"docker compose up\n(Ephemeral Credential Injection)"| DockerPlane
-    MCPBridge -->|"Direct Probe & Call"| MCPEndpoint
+    CLI -->|"hetzer exec"| SubprocessHost
+    CLI -->|"hetzer exec --sandbox"| ContainerSandbox
+    SubprocessHost -.->|"Ephemeral Tokens"| HTTPBroker
+    ContainerSandbox -.->|"Loopback Bridge"| HTTPBroker
+    CLI -.->|"Fleet Ops Delegation"| JagdpanzerFleet
 ```
 
 ---
@@ -353,7 +348,7 @@ All Hetzer commands are executed via the `hetzer` CLI:
 | `hetzer skill [install\|status]`| Deploys Universal AI Agent Skills to Hermes, AGY, OpenCode, Cursor, Claude |
 | `hetzer hook [install\|uninstall\|check\|check-msg]` | Installs or tests Dual Git Guards (`pre-commit` staged diff & `commit-msg` text) |
 | `hetzer modules` | Displays available and active native extension modules |
-| `hetzer install <module>` | Enables and configures an extension module (e.g. `cognee`, `9router`) |
+| `hetzer install <module>` | Enables and configures an extension module (e.g. `9router`) |
 | `hetzer remove <module>` | Disables an extension module without deleting persistent data |
 | `hetzer module create <id>` | Generates a new module recipe using 9Router AI code analysis |
 | `hetzer mcp ping [service]` | Diagnoses JSON-RPC handshake and latency for MCP endpoints |
@@ -431,7 +426,7 @@ Hetzer stands on the shoulders of giants. We express our deepest gratitude and r
 - 🔍 **[TruffleHog](https://github.com/trufflesecurity/trufflehog)** (*Truffle Security*) & **[Gitleaks](https://github.com/gitleaks/gitleaks)** (*Zachary Rice*): High-speed regex and Shannon entropy scanners that defined modern Git credential leakage prevention.
 - 🌐 **[Model Context Protocol (MCP)](https://github.com/modelcontextprotocol)** (*Anthropic*): The open standard that enables autonomous AI clients to seamlessly and safely consume local tools and defense boundaries.
 - 🚦 **[9Router](https://github.com/decolua/9router)** (*Decolua*): High-performance multi-provider local AI model router, fallback balancer, and reverse proxy.
-- 🧠 **[Cognee](https://github.com/topoteretes/cognee)** (*Topoteretes*): Advanced tri-layer relational, vector, and knowledge graph persistent memory engine for autonomous agents.
+- 🧠 **[Cognee](https://github.com/topoteretes/cognee)** (*Topoteretes*): Advanced tri-layer relational, vector, and knowledge graph persistent memory engine for autonomous agents (integrated in [Jagdpanzer](https://github.com/agunggnn/jagdpanzer)).
 - 🛡️ **[LLM-Guard](https://github.com/protectai/llm-guard)** (*Protect AI*): Pioneered real-time LLM input/output scanning and token redaction before context transmission.
 - 🤖 **Autonomous AI Agent Ecosystems**:
   - **[Hermes Agent](https://github.com/NousResearch/Hermes-Function-Calling)** (*NousResearch*)

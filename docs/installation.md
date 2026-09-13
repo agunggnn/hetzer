@@ -26,7 +26,7 @@
 5. [Pre-flight Diagnostics (`hetzer doctor`)](#5-pre-flight-diagnostics-hetzer-doctor)
 6. [Project Initialization & Secret Setup](#6-project-initialization--secret-setup)
 7. [Starting Services & Active Healthchecks](#7-starting-services--active-healthchecks)
-8. [Enabling Persistent Memory (Cognee Module)](#8-enabling-persistent-memory-cognee-module)
+8. [Multi-Container Fleet Ops (Jagdpanzer Delegation)](#8-multi-container-fleet-ops-jagdpanzer-delegation)
 9. [Updating & Maintenance](#9-updating--maintenance)
 10. [Uninstallation & Teardown](#10-uninstallation--teardown)
 11. [Troubleshooting & FAQ](#11-troubleshooting--faq)
@@ -41,7 +41,7 @@ Hetzer is engineered for high density and low memory consumption. It does not re
 |---|---|---|---|
 | **Headless Armor & Skills** | Any machine with Node.js >= 22.5 | **< 10 MiB RAM** | ❌ **No (0 Docker)** |
 | **Full Stack (Core + 9Router)** | 1 Core CPU, 1.0 GiB RAM | ~200 MiB active | ✅ Yes (Docker Compose v2) |
-| **Full Stack + Cognee Memory**| 2 Cores CPU, 3.0 GiB RAM | ~1.4 GiB active | ✅ Yes (Docker Compose v2) |
+| **Ephemeral Sandbox Isolation** | Docker or Podman engine | Transient (< 50 MiB) | ✅ Optional (`hetzer exec --sandbox`) |
 
 ---
 
@@ -290,25 +290,20 @@ hetzer tui
 
 ---
 
-## 8. Enabling Persistent Memory (Cognee Module)
+## 8. Multi-Container Fleet Ops (Jagdpanzer Delegation)
 
-Cognee is an optional module that adds graph and vector persistent memory via the Model Context Protocol (MCP).
+Multi-container stack orchestration (databases, persistent memory engines, and multi-service topologies) is cleanly separated from Hetzer and maintained in [**Jagdpanzer**](https://github.com/agunggnn/jagdpanzer).
 
+Hetzer operates strictly as a lightweight single-command runtime armor, stream redactor, and container sandbox:
 ```bash
-# 1. Install the module
-hetzer install cognee
+# Isolate untrusted commands inside ephemeral containers:
+hetzer exec --sandbox alpine:latest -- python -c "print('hello')"
 
-# 2. Configure your LLM API key into the Vault
-hetzer creds set cognee-llm-api-key
-
-# 3. Launch Cognee
-hetzer up --wait cognee
-
-# 4. Register MCP endpoint into .mcp.json
-hetzer mcp configure
+# Mediate credentials securely through the HTTP broker:
+hetzer exec --allow api-key -- python script.py
 ```
 
-Claude Desktop, Cursor, and Cline can now immediately access memory tools (`remember`, `recall`, `improve`).
+For persistent cognitive memory pipelines, multi-service Docker Compose clusters, and automated microservice networks, please deploy via [Jagdpanzer](https://github.com/agunggnn/jagdpanzer).
 
 ---
 
@@ -357,8 +352,8 @@ sudo usermod -aG docker $USER && newgrp docker
 ### Q2: `HTTP 406 Not Acceptable` when calling MCP tools
 **Fix**: Ensure your MCP client sends `Accept: application/json, text/event-stream`. The Hetzer MCP bridge handles this automatically.
 
-### Q3: `Container cognee-mcp restarting (ExitCode 1, Health: unhealthy)`
-**Fix**: Ensure Docker volume permissions are clean. Hetzer enforces `user: "0:0"` in `docker-compose.cognee.yml`. Run `hetzer up --wait cognee`.
+### Q3: `ERR_CANARY_TRIPWIRE_TRIGGERED (exitCode 43)`
+**Fix**: A honeytoken canary (`canary-token`, `canary-*`, or `HETZER_CANARY_TOKEN`) was leaked into a process stream or network call. The subprocess was immediately terminated by Hetzer's tripwire guard. Audit the command payload or script to locate the leaked token reference.
 
 ---
 

@@ -369,23 +369,7 @@ function printInitWizard(result) {
 function printModuleGuide(moduleId, action) {
     if (action === "install") {
         process.stdout.write(`Module '${moduleId}' successfully enabled.\n`);
-        if (moduleId === "cognee") {
-            process.stdout.write("\n================================================================================\n");
-            process.stdout.write("  MODULE CONFIGURATION GUIDE: cognee\n");
-            process.stdout.write("================================================================================\n");
-            process.stdout.write("The 'cognee' module provides persistent graph & vector memory via Model Context Protocol (MCP).\n\n");
-            process.stdout.write("REQUIRED CREDENTIALS:\n");
-            process.stdout.write("  This module requires an LLM API key (OpenAI, Anthropic, OpenRouter, etc.).\n\n");
-            process.stdout.write("HOW TO CONFIGURE CREDENTIALS:\n");
-            process.stdout.write("  Run the following command to store the API key in the encrypted Vault:\n");
-            process.stdout.write("    hetzer creds set cognee-llm-api-key\n\n");
-            process.stdout.write("HOW TO START & CONNECT:\n");
-            process.stdout.write("  1. Start service   : hetzer up cognee\n");
-            process.stdout.write("  2. Setup MCP       : hetzer mcp configure\n");
-            process.stdout.write("  3. Use MCP         : In Claude Desktop / Cursor / Cline, the following tools activate:\n");
-            process.stdout.write("                       - remember, recall, improve, forget_memory\n");
-            process.stdout.write("================================================================================\n");
-        } else if (moduleId === "9router") {
+        if (moduleId === "9router") {
             process.stdout.write("\n================================================================================\n");
             process.stdout.write("  MODULE GUIDE: 9router\n");
             process.stdout.write("================================================================================\n");
@@ -883,12 +867,10 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         compose(root, envFile, [...selection.arguments, "pull", "--policy", "always", "--ignore-buildable"]);
         compose(root, envFile, [...selection.arguments, "up", "-d"]);
         if (hasVerify || (target !== "*" && target !== "all")) {
-            const serviceId = target === "cognee" ? "cognee-mcp" : (target === "9router" ? "nine-router" : target);
+            const serviceId = target === "9router" ? "nine-router" : target;
             const composeFile = path.join(root, "modules", target, `docker-compose.${target}.yml`);
-            const endpointUrl = target === "cognee"
-                ? `http://127.0.0.1:${values.COGNEE_MCP_PORT || 8001}/health`
-                : (target === "9router" ? `http://127.0.0.1:${values.NINE_ROUTER_PORT || 20140}/api/health` : null);
-            const timeoutMs = target === "cognee" ? 75000 : 35000;
+            const endpointUrl = target === "9router" ? `http://127.0.0.1:${values.NINE_ROUTER_PORT || 20140}/api/health` : null;
+            const timeoutMs = 35000;
             await verifyModuleDeployment({
                 root,
                 moduleId: target,
@@ -1122,7 +1104,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         if (action === "tools") {
             const targetService = args[1];
             if (!targetService) {
-                throw new Error("Usage: hetzer mcp tools <service>\nExample: hetzer mcp tools cognee");
+                throw new Error("Usage: hetzer mcp tools <service>\nExample: hetzer mcp tools 9router");
             }
             const result = await listMcpTools({ root, targetService });
             process.stdout.write("================================================================================\n");
@@ -1157,7 +1139,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             const toolName = args[2];
             const argsJson = args[3] || "{}";
             if (!targetService || !toolName) {
-                throw new Error("Usage: hetzer mcp call <service> <tool> [argsJson]\nExample: hetzer mcp call cognee search '{\"query\": \"notes\"}'");
+                throw new Error("Usage: hetzer mcp call <service> <tool> [argsJson]\nExample: hetzer mcp call 9router query '{\"prompt\": \"hello\"}'");
             }
             const ok = await runMcpToolCommand({
                 root,

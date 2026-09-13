@@ -12,8 +12,6 @@ const BINDINGS = {
     NINE_ROUTER_INITIAL_PASSWORD: ["nine-router-initial-password", "nine-router", "initial_password"],
     NINE_ROUTER_API_KEY_SECRET: ["nine-router-api-key-secret", "nine-router", "api_key_secret"],
     NINE_ROUTER_MACHINE_ID_SALT: ["nine-router-machine-id-salt", "nine-router", "machine_id_salt"],
-    COGNEE_LLM_API_KEY: ["cognee-llm-api-key", "cognee", "llm_api_key"],
-    COGNEE_EMBEDDING_API_KEY: ["cognee-embedding-api-key", "cognee", "embedding_api_key"],
 };
 
 function replaceValue(text, name, value) {

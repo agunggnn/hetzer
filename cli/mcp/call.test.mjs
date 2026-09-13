@@ -24,7 +24,7 @@ test("classifyToolNature classifies tools into OFFLINE, HYBRID, LLM REASONING, a
 test("listMcpTools retrieves and classifies tools from MCP service", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-mcp-call-test-"));
     try {
-        fs.writeFileSync(path.join(root, ".env"), "COGNEE_MCP_PORT=8001\n");
+        fs.writeFileSync(path.join(root, ".env"), "SAMPLE_MOD_MCP_PORT=8001\n");
 
         const mockFetch = async (url, opts) => {
             const body = JSON.parse(opts.body);
@@ -45,7 +45,7 @@ test("listMcpTools retrieves and classifies tools from MCP service", async () =>
 
         const result = await listMcpTools({
             root,
-            targetService: "cognee",
+            targetService: "sample-mod",
             fetchFn: mockFetch,
         });
 
@@ -62,7 +62,7 @@ test("listMcpTools retrieves and classifies tools from MCP service", async () =>
 test("callMcpTool invokes tool with JSON-RPC payload and handles response", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-mcp-call-test-"));
     try {
-        fs.writeFileSync(path.join(root, ".env"), "COGNEE_MCP_PORT=8001\n");
+        fs.writeFileSync(path.join(root, ".env"), "SAMPLE_MOD_MCP_PORT=8001\n");
 
         const mockFetch = async (url, opts) => {
             const body = JSON.parse(opts.body);
@@ -81,7 +81,7 @@ test("callMcpTool invokes tool with JSON-RPC payload and handles response", asyn
 
         const result = await callMcpTool({
             root,
-            targetService: "cognee",
+            targetService: "sample-mod",
             toolName: "search",
             args: { query: "test query" },
             fetchFn: mockFetch,
@@ -98,7 +98,7 @@ test("callMcpTool invokes tool with JSON-RPC payload and handles response", asyn
 test("runMcpToolCommand executes tool and writes output to stream", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-mcp-call-test-"));
     try {
-        fs.writeFileSync(path.join(root, ".env"), "COGNEE_MCP_PORT=8001\n");
+        fs.writeFileSync(path.join(root, ".env"), "SAMPLE_MOD_MCP_PORT=8001\n");
 
         let output = "";
         const mockOut = { write: (c) => { output += c; } };
@@ -114,7 +114,7 @@ test("runMcpToolCommand executes tool and writes output to stream", async () => 
 
         const ok = await runMcpToolCommand({
             root,
-            targetService: "cognee",
+            targetService: "sample-mod",
             toolName: "ping",
             argsJson: "{}",
             out: mockOut,
@@ -134,7 +134,7 @@ test("callMcpTool resolves secretRef in arguments and sanitizes sensitive respon
     const dataDir = path.join(root, "data");
     fs.mkdirSync(dataDir, { recursive: true });
     const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
-    fs.writeFileSync(path.join(root, ".env"), `COGNEE_MCP_PORT=8001\nHETZER_GRIMOIRE_KEY=${masterKey}\n`);
+    fs.writeFileSync(path.join(root, ".env"), `SAMPLE_MOD_MCP_PORT=8001\nHETZER_GRIMOIRE_KEY=${masterKey}\n`);
 
     const rawSecret = ["sk-ant-", "api03-secret-value-token-998877"].join("");
     const leakedReturnedSecret = ["ghp", "_", "123456789012345678901234567890123456"].join("");
@@ -144,7 +144,7 @@ test("callMcpTool resolves secretRef in arguments and sanitizes sensitive respon
         dbPath: path.join(dataDir, "hetzer-vault.db"),
         masterKey,
     });
-    vault.create({ id: "my-service-key", secret: rawSecret, projectId: "cognee" });
+    vault.create({ id: "my-service-key", secret: rawSecret, projectId: "sample-mod" });
     vault.close();
 
     try {
@@ -164,7 +164,7 @@ test("callMcpTool resolves secretRef in arguments and sanitizes sensitive respon
 
         const result = await callMcpTool({
             root,
-            targetService: "cognee",
+            targetService: "sample-mod",
             toolName: "search",
             args: { apiKey: "secretRef:my-service-key" },
             fetchFn: mockFetch,
@@ -184,7 +184,7 @@ test("callMcpTool redacts custom non-pattern credentials and multi-representatio
     const dataDir = path.join(root, "data");
     fs.mkdirSync(dataDir, { recursive: true });
     const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
-    fs.writeFileSync(path.join(root, ".env"), `COGNEE_MCP_PORT=8001\nHETZER_GRIMOIRE_KEY=${masterKey}\n`);
+    fs.writeFileSync(path.join(root, ".env"), `SAMPLE_MOD_MCP_PORT=8001\nHETZER_GRIMOIRE_KEY=${masterKey}\n`);
 
     const customSecret = 'custom_db_pwd_"quoted"\\path';
     const GrimoireModule = await import("../vault/hetzer-vault.mjs");
@@ -192,7 +192,7 @@ test("callMcpTool redacts custom non-pattern credentials and multi-representatio
         dbPath: path.join(dataDir, "hetzer-vault.db"),
         masterKey,
     });
-    vault.create({ id: "database-secret", secret: customSecret, projectId: "cognee" });
+    vault.create({ id: "database-secret", secret: customSecret, projectId: "sample-mod" });
     vault.close();
 
     try {
@@ -216,7 +216,7 @@ test("callMcpTool redacts custom non-pattern credentials and multi-representatio
 
         const result = await callMcpTool({
             root,
-            targetService: "cognee",
+            targetService: "sample-mod",
             toolName: "search",
             args: { cred: "secretRef:database-secret" },
             fetchFn: mockFetch,
@@ -238,7 +238,7 @@ test("callMcpTool rejects cross-service credential access and enforces allowedAc
     const dataDir = path.join(root, "data");
     fs.mkdirSync(dataDir, { recursive: true });
     const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
-    fs.writeFileSync(path.join(root, ".env"), `COGNEE_MCP_PORT=8001\nHETZER_GRIMOIRE_KEY=${masterKey}\n`);
+    fs.writeFileSync(path.join(root, ".env"), `SAMPLE_MOD_MCP_PORT=8001\nHETZER_GRIMOIRE_KEY=${masterKey}\n`);
 
     const GrimoireModule = await import("../vault/hetzer-vault.mjs");
     const vault = new GrimoireModule.Grimoire({
@@ -249,7 +249,7 @@ test("callMcpTool rejects cross-service credential access and enforces allowedAc
     vault.create({
         id: "subprocess-only-key",
         secret: "subprocess-secret",
-        projectId: "cognee",
+        projectId: "sample-mod",
         allowedActions: ["process.start"],
     });
     vault.close();
@@ -264,7 +264,7 @@ test("callMcpTool rejects cross-service credential access and enforces allowedAc
         await assert.rejects(
             callMcpTool({
                 root,
-                targetService: "cognee",
+                targetService: "sample-mod",
                 toolName: "search",
                 args: { cred: "secretRef:foreign-key" },
                 fetchFn: mockFetch,
@@ -276,7 +276,7 @@ test("callMcpTool rejects cross-service credential access and enforces allowedAc
         await assert.rejects(
             callMcpTool({
                 root,
-                targetService: "cognee",
+                targetService: "sample-mod",
                 toolName: "search",
                 args: { cred: "secretRef:subprocess-only-key" },
                 fetchFn: mockFetch,
@@ -293,7 +293,7 @@ test("callMcpTool safely catches transport failures and redacts exception messag
     const dataDir = path.join(root, "data");
     fs.mkdirSync(dataDir, { recursive: true });
     const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
-    fs.writeFileSync(path.join(root, ".env"), `COGNEE_MCP_PORT=8001\nHETZER_GRIMOIRE_KEY=${masterKey}\n`);
+    fs.writeFileSync(path.join(root, ".env"), `SAMPLE_MOD_MCP_PORT=8001\nHETZER_GRIMOIRE_KEY=${masterKey}\n`);
 
     const secretValue = "confidential-transport-key-7711";
     const GrimoireModule = await import("../vault/hetzer-vault.mjs");
@@ -301,7 +301,7 @@ test("callMcpTool safely catches transport failures and redacts exception messag
         dbPath: path.join(dataDir, "hetzer-vault.db"),
         masterKey,
     });
-    vault.create({ id: "transport-key", secret: secretValue, projectId: "cognee" });
+    vault.create({ id: "transport-key", secret: secretValue, projectId: "sample-mod" });
     vault.close();
 
     try {
@@ -311,7 +311,7 @@ test("callMcpTool safely catches transport failures and redacts exception messag
 
         const result = await callMcpTool({
             root,
-            targetService: "cognee",
+            targetService: "sample-mod",
             toolName: "search",
             args: { cred: "secretRef:transport-key" },
             fetchFn: mockFailingFetch,

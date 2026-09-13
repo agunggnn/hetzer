@@ -118,7 +118,7 @@ export async function analyzeContainerFailure({
             suggestion: "Change the port mapping in .env or docker-compose to another available port.",
         });
     }
-    if (logs.includes("Set COGNEE_LLM_API_KEY") || logs.includes("API key not set") || logs.includes("KeyError: 'API_KEY'")) {
+    if (logs.includes("API key not set") || logs.includes("KeyError: 'API_KEY'") || logs.includes("API_KEY is missing")) {
         staticMatches.push({
             cause: "API key or credential environment variable not configured.",
             suggestion: "Run 'hetzer creds set <id>' to store the required API key in Grimoire Vault.",
