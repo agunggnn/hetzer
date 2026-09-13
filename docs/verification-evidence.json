@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-09-13T08:11:39.805Z",
+  "timestamp": "2026-09-13T12:20:37.404Z",
   "nodeVersion": "v22.22.2",
   "platform": "win32",
   "results": [
@@ -59,7 +59,7 @@
       "input": "Small 30-byte build log line",
       "method": "Measure the median of 25 write-and-flush samples using dynamic retention and the bounded lexical scanner",
       "expected": "Median processing latency stays below 5ms and the complete line is emitted",
-      "observed": "Median processing latency: 0.024 ms. Output delivered: \"Compiling module auth.mjs...\".",
+      "observed": "Median processing latency: 0.021 ms. Output delivered: \"Compiling module auth.mjs...\".",
       "verdict": "PASS",
       "boundary": "Streams with secrets exceeding 128 chars scale buffer to 2x secret length to ensure boundary integrity."
     },
@@ -74,6 +74,18 @@
       "observed": "Tripwire triggered: true. Incident logged: true. Error code: \"ERR_CANARY_TRIPWIRE_TRIGGERED\". Exit code: 43.",
       "verdict": "PASS",
       "boundary": "Monitors guarded reference resolution and vault reveal. Arbitrary reads of OS disk outside Hetzer are not monitored."
+    },
+    {
+      "id": "VERIFY-SEC-006",
+      "name": "Sensitive Host Path & Downloader Containment Guard",
+      "target": "cli/vault/exec-policy.mjs -> isSensitivePathAccess(), assertNoSensitivePathAccess(), assertNoUntrustedDownloader()",
+      "threat": "Uncontained agent execution on host OS accessing browser cookies (%LOCALAPPDATA%), crypto wallets, or invoking fileless downloaders (certutil, powershell irm | iex)",
+      "input": "Target arguments: Chrome cookies path, AWS credentials path, Solana id.json path, certutil -urlcache, and PowerShell irm | iex cradle",
+      "method": "Evaluate arguments and commands against sensitive host path and LotL downloader containment assertions",
+      "expected": "All sensitive host paths and living-off-the-land downloaders are blocked with ERR_SENSITIVE_PATH_ACCESS or ERR_UNTRUSTED_DOWNLOADER_BLOCKED; clean developer commands pass",
+      "observed": "cookieBlocked: true. awsBlocked: true. walletBlocked: true. certutilBlocked: true. irmIexBlocked: true. cleanAllowed: true.",
+      "verdict": "PASS",
+      "boundary": "Enforced by 'hetzer exec' structured command arguments. Bare commands launched directly in host terminals outside Hetzer remain bounded by OS user privileges."
     }
   ]
 }

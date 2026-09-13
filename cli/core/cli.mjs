@@ -1179,7 +1179,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
     if (command === "exec") {
         const marker = args.indexOf("--");
         if (marker === -1 || !args[marker + 1]) {
-            throw new Error("Usage: hetzer exec [--policy <file>] [--broker-policy <file>] [--allow NAME,NAME] [--allow-raw-unmediated NAME,NAME] [--strict] [--canary] [--timeout <duration>] -- <command> [args]");
+            throw new Error("Usage: hetzer exec [--policy <file>] [--broker-policy <file>] [--allow NAME,NAME] [--allow-raw-unmediated NAME,NAME] [--strict] [--canary] [--sandbox [image]] [--sandbox-network <net>] [--sandbox-ro] [--allow-sensitive-paths] [--timeout <duration>] -- <command> [args]");
         }
         const execOptions = args.slice(0, marker);
         const passArgs = [

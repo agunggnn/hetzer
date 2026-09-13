@@ -25,6 +25,100 @@ export function assertNoShellMetacharacters(command, commandArgs = []) {
     }
 }
 
+export const SENSITIVE_HOST_PATTERNS = [
+    // Windows / Unix browser cookies, credentials, session stores
+    /(?:appdata|localappdata)[\\/](?:local|roaming)[\\/](?:google[\\/]chrome|microsoft[\\/]edge|bravesoftware[\\/]brave-browser|opera software|mozilla[\\/]firefox)[\\/].*(?:cookies|login data|web data|key4\.db|logins\.json)/i,
+    /(?:%localappdata%|%appdata%).*(?:cookies|login data|web data)/i,
+    /(?:^|[\\/])network[\\/]cookies\b/i,
+    /library[\\/]application support[\\/](?:google[\\/]chrome|bravesoftware|microsoft edge)[\\/].*(?:cookies|login data)/i,
+    /\.config[\\/](?:google-chrome|chromium|bravesoftware)[\\/].*(?:cookies|login data)/i,
+
+    // Crypto wallets and private keys
+    /(?:^|[\\/])\.config[\\/](?:solana|phantom)[\\/].*\.json/i,
+    /(?:^|[\\/])\.solana[\\/]id\.json\b/i,
+    /(?:appdata|localappdata)[\\/]roaming[\\/](?:exodus|electrum|atomic)[\\/]/i,
+    /(?:^|[\\/])\.ethereum[\\/]keystore/i,
+    /\bwallet\.dat\b/i,
+
+    // Cloud and system host credentials outside workspace
+    /(?:^|[\\/])\.aws[\\/](?:credentials|config)\b/i,
+    /(?:^|[\\/])\.azure[\\/](?:accesstokens|azureprofile)\.json/i,
+    /(?:^|[\\/])\.ssh[\\/](?:id_rsa|id_ed25519|id_ecdsa|id_dsa|authorized_keys|known_hosts)\b/i,
+    /(?:^|[\\/])\.gnupg[\\/](?:secring|pubring)\.gpg\b/i,
+    /(?:appdata|localappdata)[\\/]roaming[\\/]gcloud[\\/]/i,
+];
+
+export const UNTRUSTED_DOWNLOADER_PATTERNS = [
+    /\bcertutil(?:\.exe)?\b.*-(?:urlcache|split|decode)/i,
+    /\bbitsadmin(?:\.exe)?\b.*\/transfer/i,
+    /\bmshta(?:\.exe)?\b/i,
+    /\bcscript(?:\.exe)?\b.*(?:\.vbs|\.js|https?:)/i,
+    /\bwscript(?:\.exe)?\b.*(?:\.vbs|\.js|https?:)/i,
+    /\bregsvr32(?:\.exe)?\b.*(?:\/i:https?:|scrobj)/i,
+    /\b(?:powershell|pwsh)(?:\.exe)?\b.*(?:\birm\b|\bInvoke-RestMethod\b|\biwr\b|\bInvoke-WebRequest\b|\bDownloadString\b|\bDownloadFile\b|\biex\b|\bInvoke-Expression\b)/i,
+];
+
+export function isSensitivePathAccess(token, { denyPatterns = [] } = {}) {
+    if (typeof token !== "string") return false;
+    const normalized = token.replace(/\\/g, "/");
+    let decoded = normalized;
+    try {
+        decoded = decodeURIComponent(normalized);
+    } catch {}
+
+    for (const pattern of SENSITIVE_HOST_PATTERNS) {
+        if (pattern.test(token) || pattern.test(normalized) || pattern.test(decoded)) {
+            return true;
+        }
+    }
+    for (const pattern of denyPatterns) {
+        if (typeof pattern === "string") {
+            const patLower = pattern.toLowerCase();
+            if (token.toLowerCase().includes(patLower) || normalized.toLowerCase().includes(patLower) || decoded.toLowerCase().includes(patLower)) {
+                return true;
+            }
+        } else if (pattern instanceof RegExp) {
+            if (pattern.test(token) || pattern.test(normalized) || pattern.test(decoded)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+export function assertNoSensitivePathAccess(command, commandArgs = [], options = {}) {
+    const invoked = [command, ...(commandArgs || [])];
+    for (const token of invoked) {
+        if (typeof token === "string" && isSensitivePathAccess(token, options)) {
+            const err = new Error(
+                `Security violation: Command argument attempts to access sensitive host path: ${JSON.stringify(token)}.\n` +
+                "Access to browser cookies, crypto wallets, SSH keys, and cloud host credentials outside the workspace is denied by Hetzer containment policy."
+            );
+            err.code = "ERR_SENSITIVE_PATH_ACCESS";
+            err.exitCode = 1;
+            throw err;
+        }
+    }
+}
+
+export function isUntrustedDownloaderCommand(command, commandArgs = []) {
+    const full = [command, ...(commandArgs || [])].join(" ");
+    return UNTRUSTED_DOWNLOADER_PATTERNS.some((pattern) => pattern.test(full));
+}
+
+export function assertNoUntrustedDownloader(command, commandArgs = []) {
+    if (isUntrustedDownloaderCommand(command, commandArgs)) {
+        const full = [command, ...(commandArgs || [])].join(" ");
+        const err = new Error(
+            `Security violation: Living-off-the-land downloader or script cradle detected: '${full}'.\n` +
+            "Unsanctioned binary downloaders (certutil, bitsadmin, mshta, PowerShell download cradles) are blocked under Hetzer containment policy."
+        );
+        err.code = "ERR_UNTRUSTED_DOWNLOADER_BLOCKED";
+        err.exitCode = 1;
+        throw err;
+    }
+}
+
 export function parseArgvTokens(commandDef) {
     if (Array.isArray(commandDef)) {
         return commandDef.map((s) => String(s).trim()).filter(Boolean);
@@ -70,7 +164,20 @@ export function validateExecPolicy(policy) {
         throw new Error("Execution policy must be a JSON object.");
     }
 
-    const { version, name, allowedCommands, allowedCredentials, allowRawUnmediated, strict, canary, maxTimeout, integrity } = policy;
+    const {
+        version,
+        name,
+        allowedCommands,
+        allowedCredentials,
+        allowRawUnmediated,
+        denyPaths,
+        allowSensitivePaths,
+        allowUntrustedDownloaders,
+        strict,
+        canary,
+        maxTimeout,
+        integrity,
+    } = policy;
 
     if (version !== undefined && version !== 1 && version !== "1.0") {
         throw new Error(`Unsupported execution policy version: ${version}. Expected 1 or "1.0".`);
@@ -126,6 +233,25 @@ export function validateExecPolicy(policy) {
         }
     }
 
+    if (denyPaths !== undefined) {
+        if (!Array.isArray(denyPaths)) {
+            throw new Error("Execution policy 'denyPaths' must be an array of string path patterns when specified.");
+        }
+        for (const p of denyPaths) {
+            if (typeof p !== "string" || !p.trim()) {
+                throw new Error(`Invalid pattern in denyPaths: ${JSON.stringify(p)}.`);
+            }
+        }
+    }
+
+    if (allowSensitivePaths !== undefined && typeof allowSensitivePaths !== "boolean") {
+        throw new Error("Execution policy 'allowSensitivePaths' must be a boolean.");
+    }
+
+    if (allowUntrustedDownloaders !== undefined && typeof allowUntrustedDownloaders !== "boolean") {
+        throw new Error("Execution policy 'allowUntrustedDownloaders' must be a boolean.");
+    }
+
     if (strict !== undefined && typeof strict !== "boolean") {
         throw new Error("Execution policy 'strict' must be a boolean.");
     }
@@ -145,6 +271,9 @@ export function validateExecPolicy(policy) {
         allowedCommands: allowedCommands ? allowedCommands.map((c) => Array.isArray(c) ? c.map((t) => t.trim()) : c.trim()) : undefined,
         allowedCredentials: allowedCredentials ? allowedCredentials.map((c) => c.trim()) : undefined,
         allowRawUnmediated: allowRawUnmediated ? allowRawUnmediated.map((c) => c.trim()) : [],
+        denyPaths: denyPaths ? denyPaths.map((p) => p.trim()) : undefined,
+        allowSensitivePaths: Boolean(allowSensitivePaths),
+        allowUntrustedDownloaders: Boolean(allowUntrustedDownloaders),
         strict: Boolean(strict),
         canary: Boolean(canary),
         maxTimeout: maxTimeout || undefined,
@@ -344,6 +473,16 @@ export function applyExecPolicy(policy, options) {
 
     // Reject shell metacharacters in command or commandArgs
     assertNoShellMetacharacters(result.command, result.commandArgs);
+
+    // Reject sensitive host paths unless explicitly allowed by policy or options
+    if (!validated.allowSensitivePaths && !result.allowSensitivePaths) {
+        assertNoSensitivePathAccess(result.command, result.commandArgs, { denyPatterns: validated.denyPaths });
+    }
+
+    // Reject living-off-the-land downloaders unless explicitly allowed
+    if (!validated.allowUntrustedDownloaders && !result.allowUntrustedDownloaders) {
+        assertNoUntrustedDownloader(result.command, result.commandArgs);
+    }
 
     if (validated.allowedCommands && validated.allowedCommands.length > 0) {
         if (!matchesAllowedCommand(result.command, result.commandArgs, validated.allowedCommands)) {

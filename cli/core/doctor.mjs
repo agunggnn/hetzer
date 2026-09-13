@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { auditAgentContext } from "../skills/audit.mjs";
+import { scanText } from "../vault/sniffer.mjs";
 
 export function getOperatingSystemInfo() {
     const platform = process.platform;
@@ -247,6 +248,90 @@ export function checkAgentContextHealth(root) {
     }
 }
 
+export function checkAgentSandboxSafety(root, { homeDir = os.homedir(), fsModule = fs } = {}) {
+    const issues = [];
+    let checkedFilesCount = 0;
+    let rawTokensCount = 0;
+
+    const candidateFiles = [
+        path.join(root, ".hermes", "config.yaml"),
+        path.join(root, ".hermes", "config.yml"),
+        path.join(root, "hermes.json"),
+        path.join(root, ".cursorrules"),
+        path.join(root, ".cursor", "rules"),
+        path.join(root, "CLAUDE.md"),
+        path.join(root, ".openhands", "config.json"),
+    ];
+
+    if (homeDir && typeof homeDir === "string") {
+        candidateFiles.push(
+            path.join(homeDir, ".hermes", "config.yaml"),
+            path.join(homeDir, ".hermes", "config.yml")
+        );
+    }
+
+    let hasAgentConfig = false;
+
+    for (const filePath of candidateFiles) {
+        try {
+            if (fsModule.existsSync(filePath)) {
+                hasAgentConfig = true;
+                checkedFilesCount++;
+                const content = fsModule.readFileSync(filePath, "utf8");
+                const snifferResult = scanText(content);
+                if (snifferResult.hasSecrets) {
+                    for (const match of snifferResult.matches) {
+                        rawTokensCount++;
+                        issues.push({
+                            type: "PLAINTEXT_AGENT_SECRET",
+                            title: `Plaintext API Key In Agent Config: ${path.basename(filePath)}`,
+                            detail: `Detected unmediated ${match.label} in '${filePath}'. Raw API keys can be harvested by malicious agent scripts or infostealers.`,
+                            solution: `Replace the plaintext token with 'secretRef:${match.defaultId}' and mediate via 'hetzer exec --allow ${match.defaultId}'.`,
+                        });
+                    }
+                }
+            }
+        } catch {
+            // Non-fatal if file is unreadable
+        }
+    }
+
+    // Windows bare-metal containment boundary check
+    if (process.platform === "win32" && hasAgentConfig) {
+        const hasExecPolicy = fsModule.existsSync(path.join(root, ".hetzer", "exec-policy.json"));
+        const hasCompose = fsModule.existsSync(path.join(root, "docker-compose.yml"));
+        if (!hasExecPolicy && !hasCompose) {
+            issues.push({
+                type: "UNCONTAINED_AGENT_HOST_ACCESS",
+                title: "Agent Operating Bare-Metal Without Container Sandbox",
+                detail: "Autonomous agent execution on Windows inherits full user privileges with access to %LOCALAPPDATA% browser cookies and keystores.",
+                solution: "Run untrusted agent commands with 'hetzer exec --sandbox' or define execution boundaries in .hetzer/exec-policy.json.",
+            });
+        }
+    }
+
+    const ok = issues.length === 0;
+    let summary = "Ephemeral sandbox available, 0 raw tokens found";
+    if (!ok) {
+        if (rawTokensCount > 0) {
+            summary = `${rawTokensCount} raw secret(s) found in agent config`;
+        } else {
+            summary = "Bare-metal agent execution uncontained";
+        }
+    } else if (!hasAgentConfig) {
+        summary = "No uncontained agent configurations detected (Clean)";
+    }
+
+    return {
+        ok,
+        hasAgentConfig,
+        checkedFilesCount,
+        rawTokensCount,
+        summary,
+        issues,
+    };
+}
+
 export function runDoctor({ root, defaultHome, exec = spawnSync, out = process.stdout, fix = false }) {
     if (fix) {
         applyDoctorFixes({ root, out });
@@ -341,6 +426,11 @@ export function runDoctor({ root, defaultHome, exec = spawnSync, out = process.s
         out.write(`  Agent Guidance    : Not configured (Run 'hetzer protect' to arm agents) [INFO]\n`);
     }
 
+    // Agent Containment & Ephemeral Sandbox Status
+    const agentSandboxCheck = checkAgentSandboxSafety(root);
+    const sandboxTag = agentSandboxCheck.ok ? "[OK]" : "[WARN]";
+    out.write(`  Agent Containment : ${agentSandboxCheck.summary} ${sandboxTag}\n`);
+
     out.write("================================================================================\n");
 
     const issues = [];
@@ -390,6 +480,15 @@ export function runDoctor({ root, defaultHome, exec = spawnSync, out = process.s
                         ? "Agent Rule Breaks LLM Prompt Caching"
                         : "Agent Rule Configuration Issue"),
                 detail: issue.message,
+                solution: issue.solution,
+            });
+        }
+    }
+    if (agentSandboxCheck.issues && agentSandboxCheck.issues.length > 0) {
+        for (const issue of agentSandboxCheck.issues) {
+            issues.push({
+                title: issue.title,
+                detail: issue.detail,
                 solution: issue.solution,
             });
         }
