@@ -1,6 +1,6 @@
 # Hetzer Contributor & Agent Guidance
 
-> **Version**: v0.4.21 | **Verify**: `npm run check && npm test && npm run verify`
+> **Version**: v0.5.0 | **Verify**: `npm run check && npm test && npm run verify`
 
 ---
 
@@ -27,7 +27,8 @@
 8. **HTTP Credential Broker (`cli/vault/http-broker.mjs`)**: Short-lived loopback proxy injecting upstream secrets. Enforces bounded fixed-point path canonicalization (blocking matrix parameters `;` and directory traversal), dynamic RFC 7230 hop-by-hop connection stripping, atomic quota reservation, and multi-representation secret redaction.
 9. **Sensitive Host Path & Downloader Guard (`cli/vault/exec-policy.mjs`)**: Blocks access to host browser cookies (`%LOCALAPPDATA%`, Chrome, Edge, Brave, Opera), crypto wallets (`solana/id.json`, Exodus), SSH/cloud credentials, and Living-Off-The-Land downloaders (`certutil -urlcache`, `bitsadmin`, `mshta`, `irm | iex`).
 10. **Ephemeral Container Sandbox (`cli/vault/sandbox.mjs`)**: `hetzer exec --sandbox [image]` isolates untrusted agent executions inside transient containers (`--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--pids-limit=100`, unmounting host AppData and home directories) while bridging loopback HTTP credential broker upstream (`host.docker.internal`).
-11. **No False Claims**: Defense-in-depth security layer. Do not claim PCI-DSS 6.4.3 or "100% unbreakable". All claims verified via `npm run verify`.
+11. **Pure Armor & Ops Separation**: Hetzer focuses on single-command runtime armor, stream redaction, and container isolation. Multi-container stack orchestration is deprecated in Hetzer core and delegated to [Jagdpanzer](https://github.com/agunggnn/jagdpanzer).
+12. **No False Claims**: Defense-in-depth security layer. Do not claim PCI-DSS 6.4.3 or "100% unbreakable". All claims verified via `npm run verify`.
 
 ---
 

@@ -5,13 +5,53 @@ import path from "node:path";
 import test from "node:test";
 import { formatValidationReport, validateAllModules, validateModuleRecipe } from "./validate.mjs";
 
-test("validateModuleRecipe detects valid recipe in existing cognee module", () => {
-    const result = validateModuleRecipe({ root: ".", moduleId: "cognee" });
-    assert.equal(result.valid, true);
-    assert.equal(result.errors.length, 0);
-    assert.ok(result.passed.length >= 8);
-    const text = formatValidationReport(result);
-    assert.match(text, /Status: Module 'cognee' VALID/);
+test("validateModuleRecipe detects valid recipe in a module directory", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-val-valid-"));
+    try {
+        const modDir = path.join(tempDir, "modules", "sample-mod");
+        fs.mkdirSync(modDir, { recursive: true });
+        fs.writeFileSync(path.join(modDir, "module.json"), JSON.stringify({
+            schemaVersion: 1,
+            id: "sample-mod",
+            label: "Sample Module",
+            version: "1",
+            profile: "sample-mod",
+            lifecycle: "compose",
+            surface: "headless",
+            defaultEnabled: true,
+            requires: ["core"],
+            composeFiles: ["docker-compose.sample-mod.yml"],
+            services: [{
+                id: "sample-service",
+                label: "Sample",
+                composeService: "sample",
+                profile: "sample-mod",
+                mcpServer: { name: "sample-mcp", transport: "http", path: "/mcp" },
+            }],
+        }, null, 2));
+        fs.writeFileSync(path.join(modDir, "docker-compose.sample-mod.yml"), `services:
+  sample:
+    image: alpine:latest
+    profiles: [sample-mod]
+    ports:
+      - "127.0.0.1:8080:8080"
+    security_opt: ["no-new-privileges:true"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "true"]
+`);
+        fs.writeFileSync(path.join(modDir, "README.md"), "# Sample Module\nDocumentation.\n");
+
+        const result = validateModuleRecipe({ root: tempDir, moduleId: "sample-mod" });
+        assert.equal(result.valid, true);
+        assert.equal(result.errors.length, 0);
+        assert.ok(result.passed.length >= 8);
+        const text = formatValidationReport(result);
+        assert.match(text, /Status: Module 'sample-mod' VALID/);
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
 });
 
 test("validateModuleRecipe catches invalid JSON and missing files", () => {
@@ -72,9 +112,38 @@ test("validateModuleRecipe flags insecure 0.0.0.0 ports and missing compose prof
 });
 
 test("validateAllModules inspects all available modules", () => {
-    const results = validateAllModules({ root: "." });
-    assert.ok(results.length >= 1);
-    const cognee = results.find((r) => r.id === "cognee");
-    assert.ok(cognee);
-    assert.equal(cognee.valid, true);
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-val-all-"));
+    try {
+        const modDir = path.join(tempDir, "modules", "custom-mod");
+        fs.mkdirSync(modDir, { recursive: true });
+        fs.writeFileSync(path.join(modDir, "module.json"), JSON.stringify({
+            schemaVersion: 1,
+            id: "custom-mod",
+            label: "Custom Module",
+            version: "1",
+            profile: "custom-mod",
+            lifecycle: "compose",
+            surface: "headless",
+            defaultEnabled: true,
+            requires: ["core"],
+            composeFiles: ["docker-compose.custom-mod.yml"],
+            services: [{ id: "custom", composeService: "custom", profile: "custom-mod" }],
+        }, null, 2));
+        fs.writeFileSync(path.join(modDir, "docker-compose.custom-mod.yml"), `services:
+  custom:
+    image: alpine:latest
+    profiles: [custom-mod]
+    ports:
+      - "127.0.0.1:8080:8080"
+`);
+        fs.writeFileSync(path.join(modDir, "README.md"), "# Custom\nDocumentation.\n");
+
+        const results = validateAllModules({ root: tempDir });
+        assert.ok(results.length >= 1);
+        const mod = results.find((r) => r.id === "custom-mod");
+        assert.ok(mod);
+        assert.equal(mod.valid, true);
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
 });

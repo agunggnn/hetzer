@@ -1,19 +1,20 @@
 # Hetzer architecture
 
-Hetzer's default runtime consists of the Node CLI, Grimoire vault, secret scanner, MCP server, module resolver, and TUI. Optional services live under `modules/<id>/` and are disabled unless their profile is enabled.
+Hetzer's core runtime consists of the Node CLI, Grimoire vault, secret scanner, MCP credential proxy, and ephemeral container sandbox. Multi-container operations and stack management are delegated to [Jagdpanzer](https://github.com/agunggnn/jagdpanzer).
 
 ## Main components
 
 ```mermaid
 flowchart LR
-    User[CLI or MCP client] --> CLI[Hetzer Node CLI]
-    CLI --> Vault[(SQLite vault)]
+    User[CLI or AI Agent] --> CLI[Hetzer Node CLI]
+    CLI --> Vault[(SQLite Grimoire Vault)]
     CLI --> Scanner[Regex and entropy scanner]
     CLI --> Exec[Guarded child process]
+    CLI --> Sandbox[Ephemeral container sandbox]
     CLI --> Broker[Loopback HTTP credential broker]
-    CLI --> Modules[Module resolver]
-    Exec --> Redactor[Bounded output sanitizer]
-    Modules --> Compose[Optional Docker services]
+    CLI --> MCP[MCP virtual credential proxy]
+    Exec --> Redactor[Bounded stream sanitizer]
+    Sandbox --> Broker
 ```
 
 The package declares no third-party runtime npm dependencies. It depends on Node.js and its standard modules, including `node:sqlite`, `node:crypto`, `node:fs`, and `node:child_process`. Optional services have their own container dependency trees.
@@ -69,6 +70,8 @@ The MCP server exposes credential existence and metadata listing but no plaintex
 
 The pre-commit hook invokes Git to list staged files and obtain the added diff. It blocks staged `.env` variants and scans added text grouped by file, which allows multiline private-key detection and line reporting. Hook time includes Git process startup and varies with repository size. Local hooks can be bypassed, so enforced environments should add server-side scanning.
 
-## Containers and modules
-
-The bundled Compose files default published ports to `127.0.0.1` and pin images by digest. Environment overrides can change binding and image selection. A digest pins an image manifest but does not by itself prove provenance, vulnerability status, or multi-platform availability; review those properties for every upgrade.
+## Ephemeral container sandbox vs. multi-container stack orchestration
+ 
+Hetzer focuses on single-command, ephemeral process containment via `hetzer exec --sandbox [image]`. Untrusted agent executions are isolated inside transient containers with `--cap-drop=ALL`, `--security-opt=no-new-privileges`, and strict process limits, while bridging the host loopback HTTP broker via `host.docker.internal`.
+ 
+Multi-container full-stack operations (such as 9Router AI gateways, PostgreSQL/pgvector memory clusters, and cognitive extractors) are deprecated in the Hetzer core CLI and delegated to [Jagdpanzer](https://github.com/agunggnn/jagdpanzer), allowing Hetzer to maintain a clean, zero-dependency footprint strictly focused on credential safety and agent armor.

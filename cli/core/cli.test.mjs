@@ -136,25 +136,42 @@ test("install auto-scaffolds module directory from templates if missing in works
 });
 
 test("validate CLI command validates modules successfully", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-val-cli-"));
     let output = "";
     const originalStdout = process.stdout.write;
     process.stdout.write = (chunk) => {
         output += chunk;
         return true;
     };
-    const createdEnv = !fs.existsSync(".env");
-    if (createdEnv) {
-        fs.writeFileSync(".env", "HETZER_ENABLED_MODULES=\n");
-    }
     try {
-        await main(["validate", "cognee"], { root: "." });
-        assert.match(output, /MODULE VALIDATION: cognee/);
-        assert.match(output, /Status: Module 'cognee' VALID/);
+        const modDir = path.join(tempDir, "modules", "sample-mod");
+        fs.mkdirSync(modDir, { recursive: true });
+        fs.writeFileSync(path.join(modDir, "module.json"), JSON.stringify({
+            schemaVersion: 1,
+            id: "sample-mod",
+            label: "Sample Module",
+            version: "1",
+            profile: "sample-mod",
+            lifecycle: "compose",
+            surface: "headless",
+            requires: ["core"],
+            composeFiles: ["docker-compose.sample-mod.yml"],
+            services: [{ id: "sample", composeService: "sample", profile: "sample-mod" }],
+        }, null, 2));
+        fs.writeFileSync(path.join(modDir, "docker-compose.sample-mod.yml"), `services:
+  sample:
+    image: alpine:latest
+    profiles: [sample-mod]
+    ports:
+      - "127.0.0.1:8080:8080"
+`);
+        fs.writeFileSync(path.join(tempDir, ".env"), "HETZER_ENABLED_MODULES=\n");
+        await main(["validate", "sample-mod"], { root: tempDir });
+        assert.match(output, /MODULE VALIDATION: sample-mod/);
+        assert.match(output, /Status: Module 'sample-mod' VALID/);
     } finally {
-        if (createdEnv) {
-            try { fs.unlinkSync(".env"); } catch { /* ignore */ }
-        }
         process.stdout.write = originalStdout;
+        fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });
 
@@ -327,5 +344,26 @@ test("check-update command executes and reports update status", async () => {
         assert.match(output, /Checking for updates/);
     } finally {
         process.stdout.write = originalStdout;
+    }
+});
+
+test("orchestration commands emit deprecation notice pointing to Jagdpanzer", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-depr-test-"));
+    let stderrOutput = "";
+    const originalStderr = process.stderr.write;
+    const originalStdout = process.stdout.write;
+    process.stderr.write = (chunk) => {
+        stderrOutput += chunk;
+        return true;
+    };
+    process.stdout.write = () => true;
+    try {
+        fs.writeFileSync(path.join(tempDir, ".env"), "HETZER_ENABLED_MODULES=\n");
+        await main(["modules"], { root: tempDir });
+        assert.match(stderrOutput, /\[!\] DEPRECATED: Multi-container stack orchestration in Hetzer \('hetzer modules'\) is deprecated\. Use Jagdpanzer/);
+    } finally {
+        process.stderr.write = originalStderr;
+        process.stdout.write = originalStdout;
+        fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });
