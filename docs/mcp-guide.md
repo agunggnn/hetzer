@@ -1,6 +1,6 @@
 # Model Context Protocol (MCP) Guide & Integration
 
-> **Version**: v0.5.0  
+> **Version**: v0.5.1  
 > **Status**: Production Reference Guide  
 > **Target Audiences**: AI Engineers, Agent Developers, DevOps
 
@@ -146,7 +146,7 @@ hetzer mcp ping <service>
 [v] MCP Endpoint: http://127.0.0.1:<port>/mcp
 [v] Protocol: JSON-RPC 2.0 (SSE streaming enabled)
 [v] Latency: 12ms
-[v] Server Info: hetzer-mcp v0.5.0
+[v] Server Info: hetzer-mcp v0.5.1
 ```
 
 ### 4.2 List Discovered Tools
