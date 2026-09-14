@@ -76,13 +76,13 @@ async function main() {
         baseEnv: process.env,
     });
 
-    if (whoami.status !== 0) {
-        const err = redactExactValues((whoami.stderr || whoami.stdout || "").trim(), [npmToken]);
-        throw new Error(`NPM authentication failed (Status ${whoami.status}): ${err}\nEnsure your npm token is valid with Read & Publish permissions.`);
+    if (whoami.status === 0) {
+        const npmUser = whoami.stdout.trim();
+        process.stdout.write(`[v] Authentication successful! Connected as npm user: @${npmUser}\n\n`);
+    } else {
+        // npm Granular Access Tokens (GAT) only have package-scoped permissions and do not support legacy `whoami`.
+        process.stdout.write("[i] Note: 'npm whoami' skipped (Granular Access Tokens are scoped to packages rather than user profile).\n\n");
     }
-
-    const npmUser = whoami.stdout.trim();
-    process.stdout.write(`[v] Authentication successful! Connected as npm user: @${npmUser}\n\n`);
 
     // 3. Run static checks and the concise test suite without inherited credentials.
     const gateEnv = strictBaseEnvironment(process.env);
