@@ -75,3 +75,7 @@ The pre-commit hook invokes Git to list staged files and obtain the added diff. 
 Hetzer focuses on single-command, ephemeral process containment via `hetzer exec --sandbox [image]`. Untrusted agent executions are isolated inside transient containers with `--cap-drop=ALL`, `--security-opt=no-new-privileges`, and strict process limits, while bridging the host loopback HTTP broker via `host.docker.internal`.
  
 Multi-container full-stack operations (such as 9Router AI gateways, PostgreSQL/pgvector memory clusters, and cognitive extractors) are deprecated in the Hetzer core CLI and delegated to [Jagdpanzer](https://github.com/agunggnn/jagdpanzer), allowing Hetzer to maintain a clean, zero-dependency footprint strictly focused on credential safety and agent armor.
+
+## Future architecture & RFCs
+
+- [RFC: Native OS Pinentry & GUI Masked Prompt Bridge](rfc-native-os-pinentry-bridge.md) — Out-of-process secure GUI input modal for autonomous agents (AGY, Claude Code, Cursor) without terminal context switching.

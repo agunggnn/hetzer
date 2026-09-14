@@ -88,13 +88,21 @@ function replaceEnvValue(text, name, value) {
     return pattern.test(text) ? text.replace(pattern, line) : `${text.trimEnd()}\n${line}\n`;
 }
 
+function cleanSecretInput(val) {
+    return String(val || "")
+        .replace(/\x1b\[200~/g, "")
+        .replace(/\x1b\[201~/g, "")
+        .replace(/\r/g, "")
+        .trim();
+}
+
 export async function promptSecret(promptText = "Enter secret value: ", { input = process.stdin, output = process.stderr } = {}) {
     if (!input.isTTY || typeof input.setRawMode !== "function") {
         const chunks = [];
         for await (const chunk of input) {
             chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         }
-        return Buffer.concat(chunks).toString("utf8").trim();
+        return cleanSecretInput(Buffer.concat(chunks).toString("utf8"));
     }
     return new Promise((resolve) => {
         output.write(promptText);
@@ -110,7 +118,7 @@ export async function promptSecret(promptText = "Enter secret value: ", { input 
                 if (char === "\r" || char === "\n" || char === "\u0004") {
                     cleanup();
                     output.write("\n");
-                    resolve(secret);
+                    resolve(cleanSecretInput(secret));
                     return;
                 } else if (char === "\u0003") { // Ctrl+C
                     cleanup();
