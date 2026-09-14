@@ -81,7 +81,25 @@ async function main() {
         process.stdout.write(`[v] Authentication successful! Connected as npm user: @${npmUser}\n\n`);
     } else {
         // npm Granular Access Tokens (GAT) only have package-scoped permissions and do not support legacy `whoami`.
-        process.stdout.write("[i] Note: 'npm whoami' skipped (Granular Access Tokens are scoped to packages rather than user profile).\n\n");
+        const accessCheck = runNpmWithAuth({
+            args: ["access", "list", "collaborators", "hetzer", "--registry", npmRegistry],
+            registry: npmRegistry,
+            token: npmToken,
+            cwd: root,
+            baseEnv: process.env,
+        });
+        if (accessCheck.status === 0) {
+            process.stdout.write("[v] Granular Access Token validated for package: hetzer\n\n");
+        } else {
+            throw new Error(
+                "NPM registry authentication failed (401 Unauthorized).\n" +
+                "  The token in Grimoire Vault is invalid, expired, or lacks write access to 'hetzer'.\n" +
+                "  Please generate a new token at https://www.npmjs.com/settings/~/tokens:\n" +
+                "    - Recommended: 'Classic Token' (Type: Automation)\n" +
+                "    - Or: 'Granular Access Token' with Read & Write on package 'hetzer' and 2FA bypass\n" +
+                "  Then update the vault: node cli/bin/hetzer.js creds set npm-token"
+            );
+        }
     }
 
     // 3. Run static checks and the concise test suite without inherited credentials.
