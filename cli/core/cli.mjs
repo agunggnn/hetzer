@@ -514,7 +514,7 @@ Commands:
   publish                   Build, verify test suite, and publish package to npm
   version [--check]         Display Hetzer version (use --check to query latest release)
   check-update              Check if a newer version of Hetzer is available
-  tui                       Terminal dashboard [deprecated; use Jagdpanzer]
+  tui                       Tactical security and runtime armor HUD
 `;
 }
 
@@ -1206,8 +1206,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         return;
     }
     if (command === "tui") {
-        warnOrchestrationDeprecated(command);
-        run(process.execPath, [path.join(cliRoot, "modules", "tui.mjs"), "--root", root], { cwd: root });
+        run(process.execPath, [path.join(cliRoot, "modules", "tui.mjs"), "--root", root, ...args], { cwd: root });
         return;
     }
     const suggested = suggestCommand(command);
