@@ -330,13 +330,14 @@ All Hetzer commands are executed via the `hetzer` CLI:
 
 | Command | Description |
 |---|---|
-| `hetzer doctor [--fix]` | Validates system prerequisites, Node.js version, and Docker socket permissions |
+| `hetzer doctor [--fix]` | Validates system prerequisites, Node.js version, and container engine compatibility |
 | `hetzer init [dir]` | Initializes a new Hetzer instance, creates Grimoire Vault, and secures `.env` |
-| `hetzer up [srv\|all] [--wait]` | Launches containers with active healthcheck polling and HTTP smoke tests |
-| `hetzer down [-v]` | Stops services (`-v` removes persistent data volumes for clean teardown) |
-| `hetzer status` | Displays live container states, forwarded ports, and image digests |
-| `hetzer logs [service]` | Streams container logs through the same bounded stdout/stderr sanitizer |
-| `hetzer tui` | Opens the interactive terminal operations dashboard |
+| `hetzer up [srv\|all] [--wait]` | Launches containers [deprecated; multi-container orchestration delegated to Jagdpanzer] |
+| `hetzer update [module]` | Updates Hetzer CLI, or pulls module image digests [deprecated; use Jagdpanzer] |
+| `hetzer down [-v]` | Stops services [deprecated; multi-container orchestration delegated to Jagdpanzer] |
+| `hetzer status` | Displays container states [deprecated; multi-container orchestration delegated to Jagdpanzer] |
+| `hetzer logs [service]` | Streams container logs [deprecated; multi-container orchestration delegated to Jagdpanzer] |
+| `hetzer tui` | Tactical security radar, audit log, canary tripwires, and runtime armor HUD |
 | `hetzer creds [list|request|approve|status|reveal|set]` | Lists, requests, approves, checks, reveals, or saves Grimoire Vault credentials |
 | `hetzer creds reveal <id>` | Decrypts and prints plaintext after TTY, process-tree, and required native-modal checks |
 | `hetzer creds set <id>` | Encrypts and saves a credential via AES-256-GCM using a masked prompt; requires a direct human TTY |
@@ -345,19 +346,25 @@ All Hetzer commands are executed via the `hetzer` CLI:
 | `hetzer creds status <request-id>` | Reports only `pending`, `approved`, or `expired` |
 | `hetzer creds isolate-key` | Moves master key outside workspace to `~/.hetzer/grimoire.key` (mode 0600) |
 | `hetzer canary [setup]` | Deploys decoy canary honey-tokens to catch prompt injection & scraping |
-| `hetzer exec [--allow <ids>] [--broker-policy <file>] [--allow-raw-unmediated <ids>] [--strict] [--canary] -- <c>` | Runs with broker-mediated credentials by default; raw injection requires an audited, policy-permitted opt-out |
-| `hetzer broker --policy <file> -- <c>` | Runs a compatible HTTP client with a short-lived loopback capability instead of the long-lived credential |
+| `hetzer audit [verify\|tail [n]]` | Verifies cryptographic SHA-256 hash-chain or inspects tamper-evident audit ledger |
+| `hetzer exec [--allow <ids>] [--policy <file>] [--sandbox [image]] [--host] [--strict] [--canary] [--timeout <t>] -- <c>` | Runs with broker-mediated credentials, transient container sandbox, stream redaction, and canary tripwire |
+| `hetzer broker --policy <file> -- <c>` | Runs an HTTP client using short-lived capability instead of real credentials |
+| `hetzer protect` | Arms workspace with credential-safety guidance, Git pre-commit hook, and .env protection |
 | `hetzer sniffer [scan\|redact]` | Scans or redacts supported credential candidates from input text |
 | `hetzer skill [install\|status]`| Deploys Universal AI Agent Skills to Hermes, AGY, OpenCode, Cursor, Claude |
 | `hetzer hook [install\|uninstall\|check\|check-msg]` | Installs or tests Dual Git Guards (`pre-commit` staged diff & `commit-msg` text) |
-| `hetzer modules` | Displays available and active native extension modules |
-| `hetzer install <module>` | Enables and configures an extension module (e.g. `9router`) |
-| `hetzer remove <module>` | Disables an extension module without deleting persistent data |
-| `hetzer module create <id>` | Generates a new module recipe using 9Router AI code analysis |
+| `hetzer modules` | Displays available native extension modules [deprecated; use Jagdpanzer] |
+| `hetzer install <module>` | Enables an extension module [deprecated; use Jagdpanzer] |
+| `hetzer remove <module>` | Disables an extension module [deprecated; use Jagdpanzer] |
+| `hetzer module create <id>` | Scaffolds module recipe [deprecated; use Jagdpanzer] |
+| `hetzer validate [module]` | Validates module integrity, security, and compose recipe |
 | `hetzer mcp ping [service]` | Diagnoses JSON-RPC handshake and latency for MCP endpoints |
 | `hetzer mcp tools [service]` | Lists MCP tools and their execution classification |
 | `hetzer mcp call <srv> <tool>` | Invokes an MCP tool directly from the terminal without an AI client |
-| `hetzer publish` | Builds, verifies test suite, and publishes package to public npm |
+| `hetzer version [--check]` | Displays Hetzer version (use `--check` to query latest GitHub release) |
+| `hetzer check-update` | Checks if a newer version of Hetzer is available from GitHub Releases |
+| `hetzer upgrade [--yes\|--check]` | Automatically upgrades Hetzer CLI to the latest release |
+| `hetzer publish` | Builds, verifies test suite, and publishes package to npm |
 
 ---
 

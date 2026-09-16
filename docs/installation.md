@@ -194,8 +194,12 @@ npx hetzer creds list
 ### Method C: Global CLI via npm (Recommended)
 
 ```bash
-npm install -g hetzer
+npm install -g @agunggnn/hetzer
+# or install directly from GitHub repository:
+npm install -g git+https://github.com/agunggnn/hetzer.git
 ```
+
+> ⚠️ **Note on unscoped package**: The legacy unscoped `hetzer` package on npmjs is pinned to `v0.4.5`. Always install from `@agunggnn/hetzer` or `git+https://github.com/agunggnn/hetzer.git` to get the latest security features and fixes.
 
 Verify the binary is available:
 ```bash
@@ -309,10 +313,24 @@ For persistent cognitive memory pipelines, multi-service Docker Compose clusters
 
 ## 9. Updating & Maintenance
 
-### Update Docker Container Digests
-Hetzer pins container digests for cryptographic reproducibility. To fetch updated digests:
+### Upgrade Hetzer CLI
+Hetzer includes an integrated upgrade manager that queries GitHub Releases and updates your installation safely:
+
 ```bash
-hetzer update
+# Check if an update is available:
+hetzer check-update
+
+# View current version and check for newer releases:
+hetzer version --check
+
+# Upgrade Hetzer CLI to the latest version:
+hetzer upgrade
+```
+
+### Update Docker Container Digests (Deprecated)
+Multi-container topology orchestration is deprecated and delegated to [Jagdpanzer](https://github.com/agunggnn/jagdpanzer). To pull updated container digests for existing modules:
+```bash
+hetzer update <module>
 ```
 
 ### Backup Grimoire Vault

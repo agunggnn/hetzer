@@ -14,6 +14,8 @@ import { isCanaryCredential } from "../vault/canary.mjs";
 import { listCredentials } from "../vault/creds.mjs";
 import { getIsolatedKeyPath } from "../vault/hetzer-vault.mjs";
 import { scanText } from "../vault/sniffer.mjs";
+import { verifyAuditLedger, readAuditEvents } from "../vault/audit.mjs";
+import { detectContainerEngine } from "../vault/sandbox.mjs";
 import { loadModuleRegistry } from "./registry.mjs";
 
 const ANSI = {
@@ -191,6 +193,38 @@ export function threatSnapshot(root, vaultItems = []) {
     };
 }
 
+export function auditLedgerSnapshot(root) {
+    try {
+        const verified = verifyAuditLedger({ root });
+        const events = readAuditEvents({ root, limit: 10 });
+        let state = "CLEAN";
+        let detail = "0 events; hash-chain intact";
+        if (!verified.ok) {
+            state = "CORRUPTED";
+            detail = `tampered at #${verified.tamperedIndex}: ${verified.error}`;
+        } else if (verified.count > 0) {
+            state = "VERIFIED";
+            detail = `${verified.count} event(s); SHA-256 chain intact`;
+        }
+        return {
+            state,
+            detail,
+            count: verified.count || 0,
+            latestHash: verified.latestHash || "",
+            recentEvents: events,
+        };
+    } catch (err) {
+        return {
+            state: "ERROR",
+            detail: err.message,
+            count: 0,
+            latestHash: "",
+            recentEvents: [],
+        };
+    }
+}
+
+
 export function vaultPostureSnapshot(root, fileEnv = {}) {
     const configured = environmentValue(fileEnv, "HETZER_VAULT_PATH");
     const dbPath = configured
@@ -332,18 +366,17 @@ export function shieldSnapshot(root) {
 }
 
 export function runtimeArmorSnapshot(root) {
-    let container = { state: "offline", detail: "Docker not installed" };
+    let container = { state: "offline", detail: "Neither Docker nor Podman available" };
     try {
-        const dockerRes = spawnSync("docker", ["--version"], { encoding: "utf8", timeout: 1500, windowsHide: true });
-        if (dockerRes.status === 0 && dockerRes.stdout) {
-            const firstLine = dockerRes.stdout.trim().split(/\r?\n/)[0];
+        const engineCheck = detectContainerEngine(spawnSync);
+        if (engineCheck.ok) {
+            const versionRes = spawnSync(engineCheck.engine, ["--version"], { encoding: "utf8", timeout: 1500, windowsHide: true });
+            const firstLine = (versionRes.status === 0 && versionRes.stdout)
+                ? versionRes.stdout.trim().split(/\r?\n/)[0]
+                : engineCheck.engine;
             container = { state: "ready", detail: `${firstLine} (Ready for --sandbox)` };
         } else {
-            const podmanRes = spawnSync("podman", ["--version"], { encoding: "utf8", timeout: 1500, windowsHide: true });
-            if (podmanRes.status === 0 && podmanRes.stdout) {
-                const firstLine = podmanRes.stdout.trim().split(/\r?\n/)[0];
-                container = { state: "ready", detail: `${firstLine} (Ready for --sandbox)` };
-            }
+            container = { state: "offline", detail: engineCheck.error || "Container engine not running" };
         }
     } catch {
         // fail soft
@@ -359,7 +392,8 @@ export function runtimeArmorSnapshot(root) {
 
 export function quickSniffSnapshot(root = process.cwd()) {
     try {
-        const violations = checkStagedDiff(root);
+        const diffRes = checkStagedDiff(root);
+        const violations = Array.isArray(diffRes?.violations) ? diffRes.violations : [];
         return {
             status: violations.length === 0 ? "CLEAN" : "VIOLATIONS",
             count: violations.length,
@@ -433,6 +467,7 @@ export async function collectStatus({ root = process.env.HETZER_ROOT || process.
 
     const vaultPosture = vaultPostureSnapshot(resolvedRoot, fileEnv);
     const threat = threatSnapshot(resolvedRoot, vaultPosture.credentials);
+    const audit = auditLedgerSnapshot(resolvedRoot);
     const shield = shieldSnapshot(resolvedRoot);
     const runtime = runtimeArmorSnapshot(resolvedRoot);
     const mcp = mcpSnapshot(resolvedRoot);
@@ -443,6 +478,7 @@ export async function collectStatus({ root = process.env.HETZER_ROOT || process.
         docker: { state: docker.state, detail: docker.detail },
         vault: vaultPosture,
         threat,
+        audit,
         shield,
         runtime,
         mcp,
@@ -466,6 +502,9 @@ function renderOverview(lines, snapshot, color) {
         ? (color ? `${ANSI.red}${threat.incidentCount} CRITICAL INCIDENT(S) RECORDED${ANSI.reset}` : `${threat.incidentCount} CRITICAL INCIDENT(S) RECORDED`)
         : `0 critical triggers (data/hetzer-incidents.log)`;
     lines.push(boxLine(`  Incident Radar  ${bounded(incidentText, 53)}`));
+    const audit = snapshot.audit || auditLedgerSnapshot(snapshot.root);
+    const auditState = colorState(audit.state, color);
+    lines.push(boxLine(`  Audit Ledger    ${padColor(auditState, audit.state, 10, color)}  ${bounded(audit.detail, 41)}`));
     if (threat.incidentCount > 0) {
         lines.push(boxLine(`  ${color ? ANSI.yellow : ""}[!] Tripwire alarm active! Press [c] to inspect recent incidents.${color ? ANSI.reset : ""}`));
     }
@@ -652,6 +691,32 @@ function renderSniffView(lines, snapshot, color) {
     lines.push(boxLine("  [Tip] Press [s] to toggle back to Overview."));
 }
 
+function renderAuditView(lines, snapshot, color) {
+    lines.push(boxLine(`${color ? ANSI.bold : ""}CRYPTOGRAPHIC AUDIT LEDGER (.hetzer/audit.log)${color ? ANSI.reset : ""}`));
+    const audit = snapshot.audit || auditLedgerSnapshot(snapshot.root);
+    const auditState = colorState(audit.state, color);
+    lines.push(boxLine(`  Status     : ${auditState}  (${audit.detail})`));
+    if (audit.latestHash) {
+        lines.push(boxLine(`  Latest Hash: ${bounded(audit.latestHash, 55)}`));
+    }
+    lines.push(boxLine(""));
+    if (!audit.recentEvents || audit.recentEvents.length === 0) {
+        lines.push(boxLine("  No audit events recorded yet in this workspace."));
+    } else {
+        lines.push(boxLine(`  ${bounded("TIMESTAMP", 24)}  ${bounded("EVENT TYPE", 20)}  ${bounded("RESULT", 6)}  ${bounded("TARGET", 18)}`));
+        for (const ev of audit.recentEvents.slice(-8)) {
+            const ts = bounded(ev.timestamp || "", 24);
+            const type = bounded(ev.eventType || "", 20);
+            const res = colorState(bounded(ev.result || "", 6).trim(), color);
+            const padRes = color ? 6 + (res.length - bounded(ev.result || "", 6).trim().length) : 6;
+            const target = bounded(ev.target || "", 18);
+            lines.push(boxLine(`  ${ts}  ${type}  ${res.padEnd(padRes)}  ${target}`));
+        }
+    }
+    lines.push(boxLine(""));
+    lines.push(boxLine("  [Tip] Press [a] to toggle back to Overview."));
+}
+
 export function renderTui(snapshot, { color = process.stdout.isTTY && !process.env.NO_COLOR, view = "overview" } = {}) {
     const title = color ? `${ANSI.cyan}HETZER // TACTICAL ARMOR HUD${ANSI.reset}` : "HETZER // TACTICAL ARMOR HUD";
     const lines = [];
@@ -668,12 +733,14 @@ export function renderTui(snapshot, { color = process.stdout.isTTY && !process.e
         renderVaultView(lines, snapshot, color);
     } else if (view === "sniff") {
         renderSniffView(lines, snapshot, color);
+    } else if (view === "audit") {
+        renderAuditView(lines, snapshot, color);
     } else {
         renderOverview(lines, snapshot, color);
     }
 
     lines.push(boxDivider());
-    const hotkeys = "[r] Refresh   [c] Canary Log   [v] Vault Keys   [s] Sniff   [q] Exit";
+    const hotkeys = "[r] Refresh   [c] Canary Log   [a] Audit Log   [v] Vault Keys   [s] Sniff   [q] Exit";
     lines.push(boxLine(color ? `${ANSI.dim}${hotkeys}${ANSI.reset}` : hotkeys));
     lines.push(boxBottom());
 
@@ -720,6 +787,13 @@ if (isMain) {
                 await drawTui({ root });
             } else if (key.name === "c") {
                 currentView = currentView === "canary" ? "overview" : "canary";
+                if (lastSnapshot) {
+                    process.stdout.write(`\x1b[2J\x1b[H${renderTui(lastSnapshot, { root, view: currentView })}\n`);
+                } else {
+                    await drawTui({ root });
+                }
+            } else if (key.name === "a") {
+                currentView = currentView === "audit" ? "overview" : "audit";
                 if (lastSnapshot) {
                     process.stdout.write(`\x1b[2J\x1b[H${renderTui(lastSnapshot, { root, view: currentView })}\n`);
                 } else {

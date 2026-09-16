@@ -128,10 +128,16 @@ export function suggestCommand(input) {
         "sniffer", "install", "remove", "creds", "canary", "audit",
         "modules", "up", "update", "upgrade", "down", "status", "logs",
         "module", "validate", "mcp", "publish", "exec", "broker", "tui",
+        "version", "check-update",
     ];
     const lower = String(input || "").toLowerCase();
     for (const cmd of primaryCommands) {
-        if (cmd.startsWith(lower) || (lower.length >= 3 && lower.startsWith(cmd))) {
+        if (cmd.startsWith(lower)) {
+            return cmd;
+        }
+    }
+    for (const cmd of primaryCommands) {
+        if (lower.length >= 3 && lower.startsWith(cmd)) {
             return cmd;
         }
     }
@@ -481,7 +487,7 @@ export function printModuleHelp(moduleId, root, values) {
     process.stdout.write("================================================================================\n");
 }
 
-function help() {
+export function help() {
     const banner = getHetzerAsciiBanner({ colored: Boolean(process.stdout.isTTY) });
     return `${banner}
 
@@ -494,7 +500,7 @@ Commands:
   init [directory]          Initialize a new instance (default: ~/.hetzer or current workspace)
   doctor [--fix]            Check system & Docker compatibility (--fix to auto-repair)
   up [module|all] [--wait]  Start containers [deprecated; use Jagdpanzer]
-  update [target|all]       Pull and update module/service image digests
+  update [module]           Update Hetzer CLI or update module images [deprecated]
   down [-v]                 Stop services [deprecated; use Jagdpanzer]
   status                    View container states [deprecated; use Jagdpanzer]
   logs [service]            Stream service logs [deprecated; use Jagdpanzer]
@@ -507,7 +513,7 @@ Commands:
   creds [list|request|approve|status|reveal|set] Manage encrypted secrets in Grimoire Vault (AES-256-GCM)
   canary [setup]            Deploy decoy canary honey-token tripwire to catch prompt injections
   audit [verify|tail [n]]   Verify cryptographic hash-chain or inspect tamper-evident audit ledger
-  exec [--allow <ids>] [--broker-policy <file>] [--allow-raw-unmediated <ids>] [--strict] [--sandbox [image]] [--host] -- <c>
+  exec [--allow <ids>] [--policy <file>] [--sandbox [image]] [--host] [--strict] [--canary] [--timeout <t>] -- <c>
                               Run with mediated credentials; raw injection requires an audited opt-out
   broker --policy <file> -- <command>   Run an HTTP client using a short-lived capability instead of the real credential
   sniffer [scan|redact] <t> Detect or redact credentials supported by the scanner rules
