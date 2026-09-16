@@ -122,14 +122,12 @@ test("CONTRACT: README.md CLI cheat sheet table covers all active and deprecated
     }
 
     // Verify deprecated commands in README.md are clearly marked as deprecated
+    const tableLines = cheatSheetSection.split("\n").filter((line) => line.startsWith("| `hetzer "));
     const deprecatedCommands = ["up", "down", "status", "logs", "modules", "install", "remove", "module"];
     for (const dep of deprecatedCommands) {
-        const depPattern = new RegExp(`\`hetzer ${dep}[^\`]*\`\\s*\\|[^\\n]*deprecated`, "i");
-        assert.match(
-            cheatSheetSection,
-            depPattern,
-            `Deprecated command '${dep}' in README.md must explicitly contain 'deprecated'`
-        );
+        const row = tableLines.find((l) => l.startsWith(`| \`hetzer ${dep} `) || l.startsWith(`| \`hetzer ${dep}\``));
+        assert.ok(row, `Deprecated command '${dep}' must be in cheat sheet table`);
+        assert.ok(row.toLowerCase().includes("deprecated"), `Deprecated command '${dep}' in README.md must explicitly contain 'deprecated'`);
     }
 });
 
@@ -161,37 +159,36 @@ test("CONTRACT: Multi-file version consistency is mathematically uniform", () =>
     // 2. cli/mcp/protocol.mjs
     const protocolPath = path.join(cliRoot, "mcp", "protocol.mjs");
     const protocolContent = fs.readFileSync(protocolPath, "utf8");
-    const protocolMatches = protocolContent.match(/version:\s*"([^"]+)"/g) || [];
-    for (const m of protocolMatches) {
-        const v = m.replace(/version:\s*"/, "").replace(/"/, "");
-        assert.equal(v, expectedVersion, `cli/mcp/protocol.mjs version '${v}' does not match package.json '${expectedVersion}'`);
+    const versionPattern = /version:\s*"([^"]+)"/g;
+    let match = versionPattern.exec(protocolContent);
+    assert.ok(match, "cli/mcp/protocol.mjs must contain at least one version field");
+    while (match !== null) {
+        assert.equal(match[1], expectedVersion, `cli/mcp/protocol.mjs version '${match[1]}' does not match package.json '${expectedVersion}'`);
+        match = versionPattern.exec(protocolContent);
     }
 
     // 3. cli/mcp/ping.mjs
     const pingPath = path.join(cliRoot, "mcp", "ping.mjs");
     const pingContent = fs.readFileSync(pingPath, "utf8");
-    assert.match(
-        pingContent,
-        new RegExp(`version:\\s*"${expectedVersion.replace(/\./g, "\\.")}"`),
-        "cli/mcp/ping.mjs version does not match package.json"
+    assert.ok(
+        pingContent.includes(`version: "${expectedVersion}"`),
+        `cli/mcp/ping.mjs version does not match package.json '${expectedVersion}'`
     );
 
     // 4. cli/mcp/call.mjs
     const callPath = path.join(cliRoot, "mcp", "call.mjs");
     const callContent = fs.readFileSync(callPath, "utf8");
-    assert.match(
-        callContent,
-        new RegExp(`version:\\s*"${expectedVersion.replace(/\./g, "\\.")}"`),
-        "cli/mcp/call.mjs version does not match package.json"
+    assert.ok(
+        callContent.includes(`version: "${expectedVersion}"`),
+        `cli/mcp/call.mjs version does not match package.json '${expectedVersion}'`
     );
 
     // 5. AGENTS.md
     const agentsPath = path.join(repoRoot, "AGENTS.md");
     const agentsContent = fs.readFileSync(agentsPath, "utf8");
-    assert.match(
-        agentsContent,
-        new RegExp(`> \\*\\*Version\\*\\*:\\s*v${expectedVersion.replace(/\./g, "\\.")}`),
-        "AGENTS.md version does not match package.json"
+    assert.ok(
+        agentsContent.includes(`> **Version**: v${expectedVersion}`),
+        `AGENTS.md version does not match package.json '${expectedVersion}'`
     );
 });
 
