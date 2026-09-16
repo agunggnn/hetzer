@@ -88,13 +88,21 @@ function replaceEnvValue(text, name, value) {
     return pattern.test(text) ? text.replace(pattern, line) : `${text.trimEnd()}\n${line}\n`;
 }
 
+function cleanSecretInput(val) {
+    return String(val || "")
+        .replace(/\x1b\[200~/g, "")
+        .replace(/\x1b\[201~/g, "")
+        .replace(/\r/g, "")
+        .replace(/\n$/, "");
+}
+
 export async function promptSecret(promptText = "Enter secret value: ", { input = process.stdin, output = process.stderr } = {}) {
     if (!input.isTTY || typeof input.setRawMode !== "function") {
         const chunks = [];
         for await (const chunk of input) {
             chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         }
-        return Buffer.concat(chunks).toString("utf8").trim();
+        return cleanSecretInput(Buffer.concat(chunks).toString("utf8"));
     }
     return new Promise((resolve) => {
         output.write(promptText);
@@ -110,7 +118,7 @@ export async function promptSecret(promptText = "Enter secret value: ", { input 
                 if (char === "\r" || char === "\n" || char === "\u0004") {
                     cleanup();
                     output.write("\n");
-                    resolve(secret);
+                    resolve(cleanSecretInput(secret));
                     return;
                 } else if (char === "\u0003") { // Ctrl+C
                     cleanup();
@@ -226,10 +234,10 @@ export function promptNativeOsConfirmation(id, { timeoutMs = 20000, platform = p
     }
 }
 
-export function assertInteractiveHumanSession({ input = process.stdin, env = process.env, ancestor } = {}) {
+export function assertInteractiveHumanSession({ input = process.stdin, env = process.env, ancestor, operation = "'hetzer creds reveal'" } = {}) {
     if (!input.isTTY) {
         throw new Error(
-            "Access Denied: 'hetzer creds reveal' requires a direct human interactive TTY terminal.\n" +
+            `Access Denied: ${operation} requires a direct human interactive TTY terminal.\n` +
             "Autonomous agent / non-interactive programmatic secret revelation is blocked to prevent context window leakage."
         );
     }
@@ -245,7 +253,7 @@ export function assertInteractiveHumanSession({ input = process.stdin, env = pro
     for (const [envVar, desc] of agentIndicators) {
         if (env[envVar]) {
             throw new Error(
-                `Access Denied: 'hetzer creds reveal' blocked by the credential reveal guard.\n` +
+                `Access Denied: ${operation} blocked by the credential reveal guard.\n` +
                 `Reason: ${desc} ($${envVar} is set).\n` +
                 `Autonomous agents running in YOLO/unrestricted mode cannot extract raw secrets into context.\n` +
                 `To execute commands with injected secrets safely, use 'hetzer exec -- <command>'.`
@@ -255,7 +263,7 @@ export function assertInteractiveHumanSession({ input = process.stdin, env = pro
     const ancestry = ancestor || checkProcessAncestors();
     if (ancestry.isAgent) {
         throw new Error(
-            `Access Denied: 'hetzer creds reveal' blocked by the credential reveal guard.\n` +
+            `Access Denied: ${operation} blocked by the credential reveal guard.\n` +
             `Reason: Agent runtime '${ancestry.processName}' detected in process tree ancestry.\n` +
             `Autonomous agents running in YOLO/unrestricted mode cannot extract raw secrets into context.\n` +
             `To execute commands with injected secrets safely, use 'hetzer exec -- <command>'.`

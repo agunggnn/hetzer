@@ -15,7 +15,8 @@ import { loadModuleRegistry } from "../modules/registry.mjs";
 import { resolveModuleProfiles } from "../modules/resolve.mjs";
 import { setModuleEnabled } from "../modules/toggle.mjs";
 import { formatValidationReport, validateAllModules, validateModuleRecipe } from "../modules/validate.mjs";
-import { KNOWN_CREDENTIALS, authorizeCredentialReveal, listCredentials, promptSecret, revealCredential, setCredential } from "../vault/creds.mjs";
+import { KNOWN_CREDENTIALS, assertInteractiveHumanSession, authorizeCredentialReveal, listCredentials, promptSecret, revealCredential, setCredential } from "../vault/creds.mjs";
+import { approveCredentialRequest, createCredentialRequest, getCredentialRequest } from "../vault/credential-request.mjs";
 import { isolateMasterKey, resolveMasterKey } from "../vault/hetzer-vault.mjs";
 import { autoIngestPlaintextEnv, migrateEnvCredentials } from "../vault/migrate-env.mjs";
 import { setupCanaryTrap } from "../vault/canary.mjs";
@@ -499,7 +500,7 @@ Commands:
   module <id> [action|help] Host module actions [deprecated; use Jagdpanzer]
   module create <id> [--source <repo>] Scaffold new module recipe [deprecated]
   validate [module]         Validate module integrity, security, and compose recipe
-  creds [list|reveal|set]   Manage encrypted secrets in Grimoire Vault (AES-256-GCM)
+  creds [list|request|approve|status|reveal|set] Manage encrypted secrets in Grimoire Vault (AES-256-GCM)
   canary [setup]            Deploy decoy canary honey-token tripwire to catch prompt injections
   exec [--allow <ids>] [--broker-policy <file>] [--allow-raw-unmediated <ids>] [--strict] -- <c>
                               Run with mediated credentials; raw injection requires an audited opt-out
@@ -772,6 +773,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             const id = args[1];
             if (!id) throw new Error("Usage: hetzer creds set <id>");
             if (args[2]) throw new Error("Do not pass a secret as a command-line argument. Run 'hetzer creds set <id>' and use the masked prompt.");
+            assertInteractiveHumanSession({ operation: "'hetzer creds set'" });
             const secret = await promptSecret(`Enter secret value for '${id}': `);
             if (!secret) throw new Error("Secret value is required.");
             const result = setCredential({ root, envFile, id, secret });
@@ -793,6 +795,40 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             process.stdout.write("================================================================================\n");
             return;
         }
+        if (subCommand === "request") {
+            const id = args[1];
+            if (!id || args[2]) throw new Error("Usage: hetzer creds request <id>");
+            const request = createCredentialRequest({ root, id });
+            process.stdout.write("================================================================================\n");
+            process.stdout.write("  HETZER - HUMAN CREDENTIAL APPROVAL REQUEST\n");
+            process.stdout.write("================================================================================\n");
+            process.stdout.write(`  Request ID  : ${request.requestId}\n`);
+            process.stdout.write(`  Credential  : ${request.credentialId}\n`);
+            process.stdout.write(`  Expires     : ${new Date(request.expiresAt).toISOString()}\n`);
+            process.stdout.write("--------------------------------------------------------------------------------\n");
+            process.stdout.write(`  In a separate human terminal, run:\n  hetzer creds approve ${request.requestId}\n`);
+            process.stdout.write("  The secret is never stored in this request or returned to the requester.\n");
+            process.stdout.write("================================================================================\n");
+            return;
+        }
+        if (subCommand === "status") {
+            const requestId = args[1];
+            if (!requestId || args[2]) throw new Error("Usage: hetzer creds status <request-id>");
+            const request = getCredentialRequest({ root, requestId });
+            process.stdout.write(`${request.status}\n`);
+            return;
+        }
+        if (subCommand === "approve") {
+            const requestId = args[1];
+            if (!requestId || args[2]) throw new Error("Usage: hetzer creds approve <request-id>");
+            const result = await approveCredentialRequest({ root, envFile, requestId });
+            process.stdout.write("================================================================================\n");
+            process.stdout.write(`  [v] Credential '${result.id}' approved and saved to Vault.\n`);
+            process.stdout.write(`  [v] Request status: ${result.status}\n`);
+            process.stdout.write("  The requesting agent receives status only; the secret remains in the vault.\n");
+            process.stdout.write("================================================================================\n");
+            return;
+        }
         if (subCommand === "isolate-key" || subCommand === "key-isolate") {
             const res = isolateMasterKey({ root, envFile });
             process.stdout.write("================================================================================\n");
@@ -806,7 +842,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             process.stdout.write("================================================================================\n");
             return;
         }
-        throw new Error(`Unknown creds subcommand: '${subCommand}'. Use 'list', 'reveal', 'set', or 'isolate-key'.`);
+        throw new Error(`Unknown creds subcommand: '${subCommand}'. Use 'list', 'request', 'approve', 'status', 'reveal', 'set', or 'isolate-key'.`);
     }
     if (["sniffer", "sniff"].includes(command)) {
         const sub = args[0] || "scan";
