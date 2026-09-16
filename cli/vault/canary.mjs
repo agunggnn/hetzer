@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { Grimoire, resolveVaultPath } from "./hetzer-vault.mjs";
 import { setCredential } from "./creds.mjs";
+import { recordAuditEvent } from "./audit.mjs";
 
 export const CANARY_DEFAULT_ID = "canary-token";
 export const CANARY_TOKEN_PATTERN = /\bcanary_trap_[0-9a-f]{16,64}\b/i;
@@ -51,6 +52,19 @@ export function triggerCanaryAlert({
         fs.appendFileSync(incidentsFile, `[${timestamp}] CRITICAL: Canary '${id}' triggered by ${actor} during ${action}\n`);
     } catch {
         // Fail soft on disk error
+    }
+
+    try {
+        recordAuditEvent({
+            eventType: "CANARY_TRIGGER",
+            target: id,
+            result: "TRIGGERED",
+            actor: { actor, action },
+            details: { threatVector, timestamp },
+            root,
+        });
+    } catch {
+        // Fail soft
     }
 
     try {

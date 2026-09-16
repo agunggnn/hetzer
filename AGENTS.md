@@ -1,6 +1,6 @@
 # Hetzer Contributor & Agent Guidance
 
-> **Version**: v0.5.5 | **Verify**: `npm run check && npm test && npm run verify`
+> **Version**: v0.5.6 | **Verify**: `npm run check && npm test && npm run verify`
 
 ---
 
@@ -29,6 +29,9 @@
 10. **Ephemeral Container Sandbox (`cli/vault/sandbox.mjs`)**: `hetzer exec --sandbox [image]` isolates untrusted agent executions inside transient containers (`--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--pids-limit=100`, unmounting host AppData and home directories) while bridging loopback HTTP credential broker upstream (`host.docker.internal`).
 11. **Pure Armor & Ops Separation**: Hetzer focuses on single-command runtime armor, stream redaction, and container isolation. Multi-container stack orchestration is deprecated in Hetzer core and delegated to [Jagdpanzer](https://github.com/agunggnn/jagdpanzer).
 12. **No False Claims**: Defense-in-depth security layer. Do not claim PCI-DSS 6.4.3 or "100% unbreakable". All claims verified via `npm run verify`.
+13. **Cryptographic Audit Ledger (`cli/vault/audit.mjs`)**: Append-only JSONL event log with SHA-256 hash chaining (`prevHash`) recording execution, canary trips, sensitive path denials, SSRF blocks, and credential approvals. Tamper verification via `hetzer audit verify`.
+14. **Anti-SSRF & Reserved IP Containment (`cli/vault/http-broker.mjs`)**: Enforces DNS and IP boundaries rejecting loopback (`127.0.0.0/8`), private RFC 1918 subnets, and cloud instance metadata services (`169.254.169.254`).
+15. **Universal OCI Container Engine (`cli/vault/sandbox.mjs`)**: Auto-probes Docker and Podman with Linux SELinux `:Z` mounts and loopback bridge mapping (`host.docker.internal` / `host.containers.internal`).
 
 ---
 

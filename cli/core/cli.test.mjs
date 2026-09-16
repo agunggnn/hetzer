@@ -403,3 +403,36 @@ test("orchestration commands emit deprecation notice pointing to Jagdpanzer", as
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });
+
+test("audit verify and tail commands inspect workspace audit ledger", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-audit-cli-"));
+    let stdoutOutput = "";
+    const originalStdout = process.stdout.write;
+    process.stdout.write = (chunk) => {
+        stdoutOutput += chunk;
+        return true;
+    };
+    try {
+        const { recordAuditEvent } = await import("../vault/audit.mjs");
+        recordAuditEvent({
+            eventType: "TEST_CLI_EVENT",
+            target: "unit-test",
+            result: "ALLOW",
+            root: tempDir,
+        });
+
+        stdoutOutput = "";
+        await main(["audit", "verify"], { root: tempDir });
+        assert.match(stdoutOutput, /Status\s+:\s+\[v\] VERIFIED/);
+        assert.match(stdoutOutput, /Total Events\s+:\s+1/);
+
+        stdoutOutput = "";
+        await main(["audit", "tail", "5"], { root: tempDir });
+        assert.match(stdoutOutput, /TEST_CLI_EVENT/);
+        assert.match(stdoutOutput, /unit-test/);
+    } finally {
+        process.stdout.write = originalStdout;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+

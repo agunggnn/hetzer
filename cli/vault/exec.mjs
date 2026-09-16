@@ -14,6 +14,7 @@ import { Grimoire, resolveMasterKey, resolveVaultPath } from "./hetzer-vault.mjs
 import { executeSandboxedProcess } from "./sandbox.mjs";
 import { resolveSecretEnvironment } from "./secret-env.mjs";
 import { scanText } from "./sniffer.mjs";
+import { recordAuditEvent } from "./audit.mjs";
 
 const FORMAT_CONTROL = /\p{Cf}/u;
 const LEXICAL_CHARACTER = /[A-Za-z0-9+/_=.-]/;
@@ -583,7 +584,7 @@ export function parseArguments(argv) {
     const rawTimeout = value("--timeout");
     const rawPolicy = value("--policy");
     const rawPolicyHash = value("--policy-hash");
-    const isSandbox = options.includes("--sandbox") || Boolean(value("--sandbox-image"));
+    const isSandbox = (options.includes("--sandbox") || Boolean(value("--sandbox-image"))) && !options.includes("--no-sandbox") && !options.includes("--host");
     const rawSandboxVal = value("--sandbox");
     const sandboxImage = value("--sandbox-image") || (rawSandboxVal && !rawSandboxVal.startsWith("-") ? rawSandboxVal : undefined);
     const sandboxNetwork = value("--sandbox-network") || undefined;
@@ -597,6 +598,7 @@ export function parseArguments(argv) {
         allowRawUnmediated: names(values("--allow-raw-unmediated")),
         allowSensitivePaths: options.includes("--allow-sensitive-paths"),
         allowUntrustedDownloaders: options.includes("--allow-untrusted-downloaders"),
+        hostMode: options.includes("--host") || options.includes("--no-sandbox"),
         sandbox: isSandbox,
         sandboxImage: sandboxImage || undefined,
         sandboxNetwork,
@@ -825,14 +827,49 @@ export async function executeProcess(options, {
     assertNoShellMetacharacters(effectiveOptions.command, effectiveOptions.commandArgs);
 
     if (!effectiveOptions.allowSensitivePaths) {
-        assertNoSensitivePathAccess(effectiveOptions.command, effectiveOptions.commandArgs);
+        try {
+            assertNoSensitivePathAccess(effectiveOptions.command, effectiveOptions.commandArgs);
+        } catch (err) {
+            try {
+                recordAuditEvent({
+                    eventType: "SENSITIVE_PATH_BLOCKED",
+                    target: path.basename(effectiveOptions.command || "unknown"),
+                    result: "BLOCK",
+                    details: { command: effectiveOptions.command, error: err.message },
+                    root: effectiveOptions.root,
+                });
+            } catch {}
+            throw err;
+        }
     }
     if (!effectiveOptions.allowUntrustedDownloaders) {
-        assertNoUntrustedDownloader(effectiveOptions.command, effectiveOptions.commandArgs);
+        try {
+            assertNoUntrustedDownloader(effectiveOptions.command, effectiveOptions.commandArgs);
+        } catch (err) {
+            try {
+                recordAuditEvent({
+                    eventType: "DOWNLOADER_BLOCKED",
+                    target: path.basename(effectiveOptions.command || "unknown"),
+                    result: "BLOCK",
+                    details: { command: effectiveOptions.command, error: err.message },
+                    root: effectiveOptions.root,
+                });
+            } catch {}
+            throw err;
+        }
     }
 
     if (isReflectionCommand(effectiveOptions.command, effectiveOptions.commandArgs)) {
         const fullCmd = [effectiveOptions.command, ...effectiveOptions.commandArgs].join(" ");
+        try {
+            recordAuditEvent({
+                eventType: "REFLECTION_BLOCKED",
+                target: path.basename(effectiveOptions.command || "unknown"),
+                result: "BLOCK",
+                details: { command: effectiveOptions.command },
+                root: effectiveOptions.root,
+            });
+        } catch {}
         const err = new Error(
             `Security violation: Command '${fullCmd}' is blocked by the credential-safety policy.\n` +
             "Environment reflection commands (printenv, env, export, inline dumps) are forbidden in 'hetzer exec' to prevent secret leakage into agent context or terminal logs."
@@ -846,6 +883,23 @@ export async function executeProcess(options, {
             + "You must explicitly specify which credentials may be resolved via '--allow <id|env-var>'.\n"
             + "No ungranted secrets are accessible in strict mode."
         );
+    }
+
+    try {
+        recordAuditEvent({
+            eventType: "EXEC",
+            target: path.basename(effectiveOptions.command || "unknown"),
+            result: "ALLOW",
+            details: {
+                command: effectiveOptions.command,
+                strict: Boolean(effectiveOptions.strict),
+                canary: Boolean(effectiveOptions.canary),
+                sandbox: Boolean(effectiveOptions.sandbox),
+            },
+            root: effectiveOptions.root,
+        });
+    } catch {
+        // Fail soft
     }
 
     if (effectiveOptions.sandbox) {

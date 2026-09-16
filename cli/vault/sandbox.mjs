@@ -3,22 +3,41 @@
 import "../core/suppress-warnings.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
+import { recordAuditEvent } from "./audit.mjs";
 import { parseDuration, pipeSanitizedChild, prepareExecutionEnvironment } from "./exec.mjs";
 
-export function checkDockerAvailable(exec = spawnSync) {
-    try {
-        const cliResult = exec("docker", ["--version"], { encoding: "utf8", windowsHide: true, stdio: "pipe" });
-        if (cliResult.status !== 0) {
-            return { ok: false, error: "Docker CLI is not installed or not in PATH." };
+export function detectContainerEngine(exec = spawnSync) {
+    const preferred = process.env.HETZER_CONTAINER_ENGINE?.trim();
+    const candidates = preferred ? [preferred] : ["docker", "podman"];
+
+    for (const engine of candidates) {
+        try {
+            const cliResult = exec(engine, ["--version"], { encoding: "utf8", windowsHide: true, stdio: "pipe" });
+            if (cliResult.status !== 0) continue;
+
+            const daemonResult = exec(engine, ["info"], { encoding: "utf8", windowsHide: true, stdio: "pipe" });
+            if (daemonResult.status === 0) {
+                return {
+                    ok: true,
+                    engine,
+                    type: engine.toLowerCase().includes("podman") ? "podman" : "docker",
+                };
+            }
+        } catch {
+            // continue probe
         }
-        const daemonResult = exec("docker", ["info"], { encoding: "utf8", windowsHide: true, stdio: "pipe" });
-        if (daemonResult.status !== 0) {
-            return { ok: false, error: "Docker daemon is not running. Start Docker Desktop / daemon service." };
-        }
-        return { ok: true };
-    } catch (err) {
-        return { ok: false, error: err.message };
     }
+
+    return {
+        ok: false,
+        error: "Neither Docker nor Podman is installed and running.",
+    };
+}
+
+export function checkDockerAvailable(exec = spawnSync) {
+    const res = detectContainerEngine(exec);
+    if (res.ok) return { ok: true, engine: res.engine };
+    return { ok: false, error: res.error };
 }
 
 export function buildSandboxDockerArgs({
@@ -30,6 +49,8 @@ export function buildSandboxDockerArgs({
     containerName,
     command,
     commandArgs = [],
+    engine = "docker",
+    platform = process.platform,
 } = {}) {
     const resolvedRoot = path.resolve(root);
     const args = ["run", "--rm", "-i"];
@@ -50,13 +71,19 @@ export function buildSandboxDockerArgs({
     }
 
     // Host mapping on Linux for loopback HTTP credential broker access
-    if (process.platform === "linux") {
+    if (platform === "linux") {
         args.push("--add-host=host.docker.internal:host-gateway");
+        if (engine.toLowerCase().includes("podman")) {
+            args.push("--add-host=host.containers.internal:host-gateway");
+        }
     }
 
     // Strictly mount project workspace; host AppData/home directory is unmounted
+    // For rootless Podman on Linux, add :Z to grant container SELinux context
+    const isPodmanLinux = engine.toLowerCase().includes("podman") && platform === "linux";
+    const mountSuffix = isPodmanLinux ? (readOnly ? ":ro,Z" : ":rw,Z") : (readOnly ? ":ro" : ":rw");
     args.push(
-        "-v", `${resolvedRoot}:/workspace${readOnly ? ":ro" : ":rw"}`,
+        "-v", `${resolvedRoot}:/workspace${mountSuffix}`,
         "-w", "/workspace",
     );
 
@@ -98,11 +125,11 @@ export async function executeSandboxedProcess(options, {
     execSyncFn = spawnSync,
     spawnFn = spawn,
 } = {}) {
-    const dockerCheck = checkDockerAvailable(execSyncFn);
-    if (!dockerCheck.ok) {
+    const engineCheck = detectContainerEngine(execSyncFn);
+    if (!engineCheck.ok) {
         const err = new Error(
-            `Docker sandbox unavailable: ${dockerCheck.error}\n` +
-            "To run untrusted agent processes in an isolated container, start Docker Desktop or Docker service, or run without '--sandbox'."
+            `Container sandbox unavailable: ${engineCheck.error}\n` +
+            "To run untrusted agent processes in an isolated container, install and start Docker or Podman, or run without '--sandbox'."
         );
         err.code = "ERR_DOCKER_SANDBOX_UNAVAILABLE";
         err.exitCode = 1;
@@ -124,9 +151,26 @@ export async function executeSandboxedProcess(options, {
             readOnly: Boolean(effectiveOptions.sandboxRo),
             command: effectiveOptions.command,
             commandArgs: effectiveOptions.commandArgs,
+            engine: engineCheck.engine,
         });
 
-        const child = spawnFn("docker", dockerArgs, {
+        try {
+            recordAuditEvent({
+                eventType: "SANDBOX_EXEC",
+                target: path.basename(effectiveOptions.command || "unknown"),
+                result: "ALLOW",
+                details: {
+                    engine: engineCheck.engine,
+                    image: effectiveOptions.sandboxImage || "node:22-alpine",
+                    command: effectiveOptions.command,
+                },
+                root: effectiveOptions.root,
+            });
+        } catch {
+            // Fail soft on audit write
+        }
+
+        const child = spawnFn(engineCheck.engine, dockerArgs, {
             stdio: ["inherit", "pipe", "pipe"],
             windowsHide: true,
             shell: false,

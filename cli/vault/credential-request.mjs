@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { assertInteractiveHumanSession, promptSecret, setCredential } from "./creds.mjs";
+import { recordAuditEvent } from "./audit.mjs";
 
 const REQUEST_TTL_MS = 15 * 60 * 1000;
 const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -76,6 +77,17 @@ export function createCredentialRequest({ root, id, ttlMs = REQUEST_TTL_MS, now 
         expiresAt: now + ttlMs,
     };
     atomicWrite(path.join(directory, `${requestId}.json`), request);
+    try {
+        recordAuditEvent({
+            eventType: "CRED_REQUEST",
+            target: credentialId,
+            result: "ALLOW",
+            details: { requestId, ttlMs },
+            root,
+        });
+    } catch {
+        // Fail soft on audit
+    }
     return request;
 }
 
@@ -114,6 +126,17 @@ export async function approveCredentialRequest({
         approvedAt: now,
     };
     atomicWrite(file, approved);
+    try {
+        recordAuditEvent({
+            eventType: "CRED_APPROVE",
+            target: request.credentialId,
+            result: "ALLOW",
+            details: { requestId },
+            root,
+        });
+    } catch {
+        // Fail soft on audit
+    }
     return { ...result, requestId, status: approved.status };
 }
 

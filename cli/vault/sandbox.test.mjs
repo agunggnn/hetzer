@@ -7,6 +7,7 @@ import test from "node:test";
 import {
     buildSandboxDockerArgs,
     checkDockerAvailable,
+    detectContainerEngine,
     executeSandboxedProcess,
 } from "./sandbox.mjs";
 
@@ -71,28 +72,64 @@ test("checkDockerAvailable inspects Docker CLI and daemon connectivity", () => {
     const successRes = checkDockerAvailable(mockSuccessExec);
     assert.equal(successRes.ok, true);
 
-    // 2. Missing CLI
-    const mockMissingCli = (cmd, args) => {
-        if (args.includes("--version")) return { status: 127, stderr: "docker: not found\n" };
-        return { status: 0 };
-    };
+    // 2. Missing CLI and daemon
+    const mockMissingCli = () => ({ status: 127, stderr: "not found\n" });
     const missingRes = checkDockerAvailable(mockMissingCli);
     assert.equal(missingRes.ok, false);
-    assert.match(missingRes.error, /Docker CLI is not installed/);
-
-    // 3. Stopped daemon
-    const mockStoppedDaemon = (cmd, args) => {
-        if (args.includes("--version")) return { status: 0, stdout: "Docker version 27.2.0\n" };
-        if (args.includes("info")) return { status: 1, stderr: "Is the docker daemon running?\n" };
-        return { status: 0 };
-    };
-    const stoppedRes = checkDockerAvailable(mockStoppedDaemon);
-    assert.equal(stoppedRes.ok, false);
-    assert.match(stoppedRes.error, /Docker daemon is not running/);
+    assert.match(missingRes.error, /Neither Docker nor Podman is installed/i);
 });
 
-test("executeSandboxedProcess fails closed when Docker is unavailable", async () => {
-    const mockMissingExec = () => ({ status: 1, stderr: "Cannot connect to Docker daemon\n" });
+test("detectContainerEngine detects Podman when Docker is missing", () => {
+    const mockExec = (cmd, args) => {
+        if (cmd === "docker") return { status: 127, stderr: "docker: not found" };
+        if (cmd === "podman" && args.includes("--version")) return { status: 0, stdout: "podman version 5.0.0\n" };
+        if (cmd === "podman" && args.includes("info")) return { status: 0, stdout: "host: ...\n" };
+        return { status: 1 };
+    };
+
+    const res = detectContainerEngine(mockExec);
+    assert.equal(res.ok, true);
+    assert.equal(res.engine, "podman");
+    assert.equal(res.type, "podman");
+});
+
+test("detectContainerEngine respects HETZER_CONTAINER_ENGINE override", () => {
+    const orig = process.env.HETZER_CONTAINER_ENGINE;
+    try {
+        process.env.HETZER_CONTAINER_ENGINE = "podman";
+        let invoked = [];
+        const mockExec = (cmd, args) => {
+            invoked.push(cmd);
+            return { status: 0, stdout: "ok" };
+        };
+        const res = detectContainerEngine(mockExec);
+        assert.equal(res.ok, true);
+        assert.equal(res.engine, "podman");
+        assert.equal(invoked.includes("docker"), false);
+    } finally {
+        if (orig !== undefined) process.env.HETZER_CONTAINER_ENGINE = orig;
+        else delete process.env.HETZER_CONTAINER_ENGINE;
+    }
+});
+
+test("buildSandboxDockerArgs adds :Z mount and host.containers.internal for Podman on Linux", () => {
+    const root = path.resolve("/tmp/test-project");
+    const args = buildSandboxDockerArgs({
+        root,
+        engine: "podman",
+        platform: "linux",
+        command: "node",
+    });
+
+    assert.ok(args.includes("--add-host=host.docker.internal:host-gateway"));
+    assert.ok(args.includes("--add-host=host.containers.internal:host-gateway"));
+    const mountIndex = args.indexOf("-v");
+    assert.ok(mountIndex >= 0);
+    assert.equal(args[mountIndex + 1], `${root}:/workspace:rw,Z`);
+});
+
+test("executeSandboxedProcess fails closed when Docker and Podman are unavailable", async () => {
+    const mockMissingExec = () => ({ status: 1, stderr: "Cannot connect to container daemon\n" });
 
     await assert.rejects(
         () => executeSandboxedProcess({
@@ -105,8 +142,9 @@ test("executeSandboxedProcess fails closed when Docker is unavailable", async ()
         (err) => {
             assert.equal(err.code, "ERR_DOCKER_SANDBOX_UNAVAILABLE");
             assert.equal(err.exitCode, 1);
-            assert.match(err.message, /Docker sandbox unavailable/);
+            assert.match(err.message, /sandbox unavailable/i);
             return true;
         }
     );
 });
+

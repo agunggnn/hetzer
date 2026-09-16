@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 
 import crypto from "node:crypto";
+import dns from "node:dns";
 import fs from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { parseEnv } from "../core/env.mjs";
+import { recordAuditEvent } from "./audit.mjs";
 import { isCanaryCredential, triggerCanaryAlert } from "./canary.mjs";
 import { assertNoShellMetacharacters } from "./exec-policy.mjs";
 import { isReflectionCommand, pipeSanitizedChild, resolveCommandForSpawn } from "./exec.mjs";
@@ -60,6 +63,79 @@ function validateHeader(value, label) {
         throw new Error(`${label} is not an allowed HTTP header name.`);
     }
     return header;
+}
+
+export function isPrivateOrReservedIp(rawIp) {
+    const ip = String(rawIp || "").trim();
+    if (!ip) return false;
+
+    if (ip.toLowerCase().startsWith("::ffff:")) {
+        const v4 = ip.slice(7);
+        if (net.isIPv4(v4)) return isPrivateOrReservedIp(v4);
+    }
+
+    if (net.isIPv4(ip)) {
+        const parts = ip.split(".").map(Number);
+        if (parts.length !== 4 || parts.some((n) => isNaN(n) || n < 0 || n > 255)) return true;
+        const [a, b] = parts;
+
+        if (a === 0) return true;
+        if (a === 127) return true;
+        if (a === 10) return true;
+        if (a === 172 && b >= 16 && b <= 31) return true;
+        if (a === 192 && b === 168) return true;
+        if (a === 169 && b === 254) return true;
+        if (a === 100 && b >= 64 && b <= 127) return true;
+        if (a >= 224) return true;
+
+        return false;
+    }
+
+    if (net.isIPv6(ip)) {
+        const lower = ip.toLowerCase();
+        if (lower === "::1" || lower === "0:0:0:0:0:0:0:1") return true;
+        if (lower === "::" || lower === "0:0:0:0:0:0:0:0") return true;
+        if (/^[fF][cCdD]/.test(lower)) return true;
+        if (/^[fF][eE][89aAbB]/.test(lower)) return true;
+        return false;
+    }
+
+    return false;
+}
+
+export async function assertSafeUpstreamHost(hostname, {
+    allowPrivate = false,
+    lookupFn = dns.promises.lookup,
+} = {}) {
+    if (allowPrivate) return;
+    const host = String(hostname || "").trim().toLowerCase();
+    if (!host) throw new Error("Upstream host is required.");
+
+    if (host === "localhost" || host.endsWith(".localhost") || host === "127.0.0.1" || host === "::1") {
+        const err = new Error(`SSRF blocked: Target host '${hostname}' points to local loopback.`);
+        err.code = "ERR_SSRF_TARGET_BLOCKED";
+        throw err;
+    }
+
+    if (isPrivateOrReservedIp(host)) {
+        const err = new Error(`SSRF blocked: Target host '${hostname}' is a private, loopback, or metadata address.`);
+        err.code = "ERR_SSRF_TARGET_BLOCKED";
+        throw err;
+    }
+
+    try {
+        const results = await lookupFn(host, { all: true });
+        const addresses = Array.isArray(results) ? results : [results];
+        for (const { address } of addresses) {
+            if (isPrivateOrReservedIp(address)) {
+                const err = new Error(`SSRF blocked: Host '${hostname}' resolved to private/metadata IP '${address}'.`);
+                err.code = "ERR_SSRF_TARGET_BLOCKED";
+                throw err;
+            }
+        }
+    } catch (err) {
+        if (err.code === "ERR_SSRF_TARGET_BLOCKED") throw err;
+    }
 }
 
 export function decodePathToFixedPoint(input, maxPasses = 3) {
@@ -154,6 +230,14 @@ export function validateBrokerPolicy(input) {
     ) {
         throw new Error("Broker target must be an HTTPS origin without credentials, path, query, or fragment.");
     }
+    if (!input.allowPrivateUpstream) {
+        if (isPrivateOrReservedIp(target.hostname)) {
+            throw new Error("Broker target must not point to a private, loopback, or cloud metadata IP address (SSRF guard).");
+        }
+        if (target.hostname === "localhost" || target.hostname.endsWith(".localhost")) {
+            throw new Error("Broker target must not point to localhost (SSRF guard).");
+        }
+    }
 
     const credentialId = parseSecretRef(input.credential);
     const methods = [...new Set((input.allowedMethods || ["GET", "POST"]).map((item) => String(item).toUpperCase()))];
@@ -190,6 +274,7 @@ export function validateBrokerPolicy(input) {
         [VALIDATED_POLICY]: true,
         version: 1,
         targetOrigin: target.origin,
+        allowPrivateUpstream: Boolean(input.allowPrivateUpstream),
         credentialId,
         baseUrlEnv,
         tokenEnv,
@@ -449,6 +534,22 @@ export async function startHttpCredentialBroker({
             slotReserved = true;
 
             const target = upstreamUrl(policy, request.url);
+            try {
+                await assertSafeUpstreamHost(target.hostname, { allowPrivate: policy.allowPrivateUpstream });
+            } catch (err) {
+                if (err.code === "ERR_SSRF_TARGET_BLOCKED") {
+                    try {
+                        recordAuditEvent({
+                            eventType: "SSRF_BLOCKED",
+                            target: target.hostname,
+                            result: "DENY",
+                            details: { error: err.message, url: request.url },
+                        });
+                    } catch { /* fail soft */ }
+                    return sendJson(response, 403, err.message);
+                }
+                throw err;
+            }
             const body = await readNodeStream(request, policy.maxRequestBytes);
 
             const connectionTokens = extractConnectionTokens(request.headers.connection);

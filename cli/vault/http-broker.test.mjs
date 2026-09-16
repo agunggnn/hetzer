@@ -8,9 +8,11 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import {
+    assertSafeUpstreamHost,
     canonicalizePath,
     decodePathToFixedPoint,
     executeBrokeredProcess,
+    isPrivateOrReservedIp,
     parseBrokerArguments,
     startHttpCredentialBroker,
     validateBrokerPolicy,
@@ -595,5 +597,74 @@ test("fuzz and property tests: decodePathToFixedPoint & canonicalizePath resist 
             assert.ok(err instanceof Error);
         }
     }
+});
+
+test("isPrivateOrReservedIp correctly identifies private, loopback, and metadata IPs", () => {
+    // Loopback
+    assert.equal(isPrivateOrReservedIp("127.0.0.1"), true);
+    assert.equal(isPrivateOrReservedIp("127.255.255.254"), true);
+    assert.equal(isPrivateOrReservedIp("::1"), true);
+
+    // Private RFC 1918
+    assert.equal(isPrivateOrReservedIp("10.0.0.1"), true);
+    assert.equal(isPrivateOrReservedIp("10.254.1.1"), true);
+    assert.equal(isPrivateOrReservedIp("172.16.0.1"), true);
+    assert.equal(isPrivateOrReservedIp("172.31.255.254"), true);
+    assert.equal(isPrivateOrReservedIp("192.168.1.1"), true);
+    assert.equal(isPrivateOrReservedIp("192.168.0.254"), true);
+
+    // Cloud Metadata & Link-Local
+    assert.equal(isPrivateOrReservedIp("169.254.169.254"), true);
+    assert.equal(isPrivateOrReservedIp("169.254.1.1"), true);
+
+    // IPv6 Private & Link-Local
+    assert.equal(isPrivateOrReservedIp("fc00::1"), true);
+    assert.equal(isPrivateOrReservedIp("fe80::1"), true);
+
+    // IPv4-mapped IPv6
+    assert.equal(isPrivateOrReservedIp("::ffff:192.168.1.1"), true);
+    assert.equal(isPrivateOrReservedIp("::ffff:127.0.0.1"), true);
+
+    // Public Internet IPs
+    assert.equal(isPrivateOrReservedIp("8.8.8.8"), false);
+    assert.equal(isPrivateOrReservedIp("1.1.1.1"), false);
+    assert.equal(isPrivateOrReservedIp("140.82.121.4"), false); // GitHub
+    assert.equal(isPrivateOrReservedIp("104.18.0.1"), false);
+});
+
+test("validateBrokerPolicy blocks target origins pointing to private or metadata IPs", () => {
+    assert.throws(
+        () => validateBrokerPolicy(policy({ target: "https://127.0.0.1" })),
+        /SSRF guard|private, loopback, or cloud metadata IP/i
+    );
+    assert.throws(
+        () => validateBrokerPolicy(policy({ target: "https://10.0.0.1" })),
+        /SSRF guard|private, loopback, or cloud metadata IP/i
+    );
+    assert.throws(
+        () => validateBrokerPolicy(policy({ target: "https://169.254.169.254" })),
+        /SSRF guard|private, loopback, or cloud metadata IP/i
+    );
+    assert.throws(
+        () => validateBrokerPolicy(policy({ target: "https://localhost" })),
+        /SSRF guard|localhost/i
+    );
+});
+
+test("assertSafeUpstreamHost throws ERR_SSRF_TARGET_BLOCKED for localhost and private IP resolution", async () => {
+    await assert.rejects(
+        () => assertSafeUpstreamHost("localhost"),
+        { code: "ERR_SSRF_TARGET_BLOCKED" }
+    );
+    await assert.rejects(
+        () => assertSafeUpstreamHost("169.254.169.254"),
+        { code: "ERR_SSRF_TARGET_BLOCKED" }
+    );
+    await assert.rejects(
+        () => assertSafeUpstreamHost("internal.corp.local", {
+            lookupFn: async () => [{ address: "192.168.1.50", family: 4 }],
+        }),
+        { code: "ERR_SSRF_TARGET_BLOCKED" }
+    );
 });
 
