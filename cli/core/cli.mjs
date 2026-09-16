@@ -39,6 +39,7 @@ import {
     isNewerVersion,
     readUpdateCache,
 } from "./version-check.mjs";
+import { runCliUpgrade } from "./upgrade.mjs";
 import { verifyModuleDeployment } from "./verifier.mjs";
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -125,7 +126,7 @@ export function suggestCommand(input) {
     const primaryCommands = [
         "help", "doctor", "init", "protect", "skill", "hook",
         "sniffer", "install", "remove", "creds", "canary", "audit",
-        "modules", "up", "update", "down", "status", "logs",
+        "modules", "up", "update", "upgrade", "down", "status", "logs",
         "module", "validate", "mcp", "publish", "exec", "broker", "tui",
     ];
     const lower = String(input || "").toLowerCase();
@@ -164,6 +165,7 @@ export const KNOWN_COMMANDS = new Set([
     "modules",
     "up",
     "update",
+    "upgrade",
     "down",
     "status",
     "logs",
@@ -518,6 +520,7 @@ Commands:
   publish                   Build, verify test suite, and publish package to npm
   version [--check]         Display Hetzer version (use --check to query latest release)
   check-update              Check if a newer version of Hetzer is available
+  upgrade [--yes|--check]   Upgrade Hetzer CLI to latest release
   tui                       Tactical security and runtime armor HUD
 `;
 }
@@ -581,6 +584,13 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         } else {
             process.stdout.write(`Hetzer is up to date (v${manifest.version}).\n`);
         }
+        return;
+    }
+    if (command === "upgrade" || (command === "update" && (!args[0] || args[0] === "--cli" || args[0] === "cli" || args[0].startsWith("-")))) {
+        const manifest = JSON.parse(fs.readFileSync(path.join(cliRoot, "..", "package.json"), "utf8"));
+        const cleanArgs = args.filter((a) => a !== "--cli" && a !== "cli");
+        const res = await runCliUpgrade(cleanArgs, { cliRoot, manifest });
+        if (!res.ok) process.exitCode = 1;
         return;
     }
     if (command === "doctor") {
