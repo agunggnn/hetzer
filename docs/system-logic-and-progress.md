@@ -30,7 +30,7 @@ sequenceDiagram
 | Process runner | `cli/vault/exec.mjs` | Broker-by-default selection, audited raw opt-out, strict base environment, reflection guard, stream sanitizer, subprocess canary stream tripwire, execution timeout guard |
 | Execution policy | `cli/vault/exec-policy.mjs` | Declarative capability policies: command whitelisting, credential boundaries, raw-opt-out boundaries, strict isolation, and timeout limits |
 | Compose runner | `cli/vault/compose-runner.mjs` | Scoped Compose environment and sanitized Docker/containers output pipes |
-| Credential CLI | `cli/vault/creds.mjs` | Set/list/reveal, TTY and agent heuristics, required native UI confirmation |
+| Credential CLI | `cli/vault/creds.mjs` and `cli/vault/credential-request.mjs` | Set/list/reveal plus metadata-only request/approve/status handoff; direct secret entry requires a human TTY and reveal retains native confirmation |
 | Canary | `cli/vault/canary.mjs` | Decoy token injection, aborts guarded reveal/resolution/stream leak with exit code 43, terminates child process tree |
 | Git hooks | `cli/core/git-hook.mjs` | Dual Git hooks (`pre-commit` & `commit-msg`), scans staged `.env` names, diff additions, and commit message text |
 | HTTP broker | `cli/vault/http-broker.mjs` | Loopback proxy injecting upstream credentials via ephemeral capabilities without exposing secrets to child environments |
@@ -58,6 +58,7 @@ sequenceDiagram
 - HTTP broker path canonicalization prevents multi-layer percent-encoding, matrix parameter (`;`), and directory traversal bypasses;
 - HTTP broker capabilities authenticate scoped requests and reject unpermitted paths;
 - installer tests redirect user-level paths to a temporary home.
+- credential approval requests contain no secret material, expire, and expose status only to the requesting workflow;
 
 ## Known boundaries
 

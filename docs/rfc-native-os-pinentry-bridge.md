@@ -1,8 +1,13 @@
 # RFC: Native OS Pinentry & GUI Masked Prompt Bridge for Autonomous Agent Runtimes
 
-> **Document Status**: Approved Proposal / Architecture RFC (Targeting Hetzer v0.6.0+)  
-> **Author**: Antigravity & Agung Gunawan  
+> **Document Status**: Closed — Will Not Do (2026-09-16)
+> **Author**: Antigravity & Agung Gunawan
 > **Classification**: Agentic UX & Credential Safety Architecture (Defense-in-Depth)
+
+> **Decision**: This RFC is closed and will not be implemented. The current non-TTY
+> fail-closed behavior remains in force. Any future human-assisted credential-entry
+> design would require a new RFC with an explicit same-user threat model and verified
+> IPC, UI, and audit boundaries.
 
 ---
 
@@ -12,7 +17,7 @@
 Autonomous AI agents (such as Google Antigravity/AGY, Claude Code, Cursor, OpenCode, and Hermes Agent) operate in continuous automated loops. When an agent determines that an integration requires a missing secret (e.g., `TELEGRAM_BOT_TOKEN`, `NPM_TOKEN`, or a private API key), current security constraints create significant workflow friction:
 
 1. **Non-TTY Subprocess Execution**: Agent tool runners execute shell commands via piped subprocesses where `process.stdin.isTTY === false`.
-2. **Intentional Agent Blocker**: Hetzer's core credential manager ([`cli/vault/creds.mjs`](file:///C:/Users/agung/AppData/Roaming/npm/node_modules/hetzer/cli/vault/creds.mjs)) strictly rejects non-interactive execution and actively detects agent runtimes (`ANTIGRAVITY_AGENT`, `CLAUDE_CODE`, `CURSOR_PROJECT_DIR`, `HERMES_AGENT`), blocking automated extraction or script injection.
+2. **Intentional Agent Blocker**: Hetzer's core credential manager ([`cli/vault/creds.mjs`](../cli/vault/creds.mjs)) strictly rejects non-interactive execution and actively detects agent runtimes (`ANTIGRAVITY_AGENT`, `CLAUDE_CODE`, `CURSOR_PROJECT_DIR`, `HERMES_AGENT`), blocking automated extraction or script injection.
 3. **Strict Prohibition on CLI Arguments**: Passing raw secrets as command-line arguments (e.g., `hetzer creds set <id> <value>`) is intentionally forbidden to prevent token leakage into:
    - Shell history files (`.bash_history`, `ConsoleHost_history.txt`)
    - Host process tables (`ps aux`, Task Manager)
@@ -21,9 +26,11 @@ Autonomous AI agents (such as Google Antigravity/AGY, Claude Code, Cursor, OpenC
 
 ---
 
-## 2. The Proposed Solution: Native OS Pinentry Bridge
+## 2. Rejected Proposal: Native OS Pinentry Bridge
 
-Instead of requiring an interactive terminal TTY or weakening Hetzer's defense-in-depth boundaries, Hetzer will incorporate an **Out-of-Process Native OS Pinentry Bridge**.
+The proposal was rejected because an agent-triggered GUI or loopback handoff does not create a trustworthy boundary from the invoking agent. It would also weaken the existing fail-closed behavior for non-interactive credential entry.
+
+The flow below is retained for historical context only; no part of it exists in the current implementation.
 
 When `hetzer creds set <id>` is triggered inside an agent subprocess or headless harness:
 1. Hetzer detects that `process.stdin.isTTY` is false and/or an agent environment variable is present.
@@ -94,9 +101,9 @@ When Hetzer detects that no graphical display is available (`DISPLAY` and `WAYLA
 
 ---
 
-## 4. Security Invariants & Guarantees
+## 4. Rejected Security Assumptions
 
-This architecture preserves Hetzer's core security invariants:
+The proposal cannot support the following guarantees:
 
 1. **Zero Context Leakage (Invariant ZCL)**:
    - Keystrokes typed into the Pinentry modal dialog **never** traverse the stdout or stderr streams of the AI agent runner.
@@ -111,17 +118,16 @@ This architecture preserves Hetzer's core security invariants:
 
 ---
 
-## 5. Implementation Roadmap (Target: Hetzer v0.6.0)
+## 5. Closure Decision
 
-| Phase | Deliverable | Description |
+| Decision | Outcome | Detail |
 | :--- | :--- | :--- |
-| **Phase 1** | `cli/vault/pinentry.mjs` | Core cross-platform dispatcher probing OS GUI capabilities (`win32`, `darwin`, `linux`). |
-| **Phase 2** | `cli/vault/creds.mjs` Update | Modify `setCredential` action: if `!input.isTTY`, automatically invoke Pinentry dispatcher before falling back to error. |
-| **Phase 3** | Headless Loopback Broker | Add ephemeral loopback web prompt for remote VPS/SSH developers without X11 forwarding. |
-| **Phase 4** | Verification Suite | Unit and end-to-end tests validating subprocess spawning, zero plaintext leakage, and AES-256-GCM vault persistence. |
+| **Status** | **Will not do** | No implementation, automatic agent invocation, or headless loopback receiver will be added from this RFC. |
+| **Reason** | **Security boundary is insufficient** | The invoking agent can observe or influence the parent/child process, and a loopback bearer token printed to agent-controlled output can be replayed. |
+| **Follow-up** | **Bounded request/approve flow** | The separate metadata-only `creds request` / human-TTY `creds approve` flow is implemented outside this rejected GUI/loopback proposal; future changes still require explicit consent, expiry, audit behavior, and same-user limitations. |
 
 ---
 
 ## 6. Conclusion
 
-By implementing the Native OS Pinentry Bridge, Hetzer bridges the gap between **uncompromised credential security** and **frictionless vibe coding**. Developers can instruct their AI agents to integrate new services, approve the native prompt with a single keystroke, and maintain absolute assurance that their plaintext secrets never enter model training sets or agent trajectory logs.
+This RFC is closed as **Will Not Do**. Hetzer retains its requirement that raw credential entry happen through an explicitly interactive, masked prompt outside the agent workflow. The separate request/approve handoff exposes only metadata and status to the requester; it does not revive the rejected GUI or loopback receiver. The proposal's claims of zero context leakage and absolute assurance are withdrawn; this document remains the design record and security rationale for rejecting that approach.

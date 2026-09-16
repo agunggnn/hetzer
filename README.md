@@ -337,9 +337,12 @@ All Hetzer commands are executed via the `hetzer` CLI:
 | `hetzer status` | Displays live container states, forwarded ports, and image digests |
 | `hetzer logs [service]` | Streams container logs through the same bounded stdout/stderr sanitizer |
 | `hetzer tui` | Opens the interactive terminal operations dashboard |
-| `hetzer creds [list]` | Lists all stored credential references in Grimoire Vault |
+| `hetzer creds [list|request|approve|status|reveal|set]` | Lists, requests, approves, checks, reveals, or saves Grimoire Vault credentials |
 | `hetzer creds reveal <id>` | Decrypts and prints plaintext after TTY, process-tree, and required native-modal checks |
-| `hetzer creds set <id>` | Encrypts and saves a credential via AES-256-GCM using a masked prompt |
+| `hetzer creds set <id>` | Encrypts and saves a credential via AES-256-GCM using a masked prompt; requires a direct human TTY |
+| `hetzer creds request <id>` | Creates a short-lived metadata-only request an agent can hand off to a human |
+| `hetzer creds approve <request-id>` | Human-only masked approval that stores the requested credential without returning its value |
+| `hetzer creds status <request-id>` | Reports only `pending`, `approved`, or `expired` |
 | `hetzer creds isolate-key` | Moves master key outside workspace to `~/.hetzer/grimoire.key` (mode 0600) |
 | `hetzer canary [setup]` | Deploys decoy canary honey-tokens to catch prompt injection & scraping |
 | `hetzer exec [--allow <ids>] [--broker-policy <file>] [--allow-raw-unmediated <ids>] [--strict] [--canary] -- <c>` | Runs with broker-mediated credentials by default; raw injection requires an audited, policy-permitted opt-out |

@@ -69,6 +69,12 @@ test("promptSecret reads from non-TTY input stream cleanly", async () => {
     assert.equal(secret, "my-streamed-secret");
 });
 
+test("promptSecret preserves intentional leading and trailing secret whitespace", async () => {
+    const input = Readable.from(["  spaced-secret  \n"]);
+    const secret = await promptSecret("Prompt: ", { input, output: { write: () => {} } });
+    assert.equal(secret, "  spaced-secret  ");
+});
+
 test("assertInteractiveHumanSession blocks non-TTY or agent environments", () => {
     assert.throws(() => assertInteractiveHumanSession({
         input: { isTTY: false }, env: {}, ancestor: { isAgent: false },

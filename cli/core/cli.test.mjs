@@ -216,6 +216,42 @@ test("creds set rejects positional values that would remain in shell history", a
     }
 });
 
+test("credential request flow exposes only request metadata and status", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-creds-request-cli-"));
+    fs.writeFileSync(path.join(tempDir, ".env"), "HETZER_ENABLED_MODULES=\n");
+    let output = "";
+    const originalStdout = process.stdout.write;
+    process.stdout.write = (chunk) => {
+        output += String(chunk);
+        return true;
+    };
+    try {
+        await main(["creds", "request", "github-token"], { root: tempDir });
+        const requestId = /Request ID\s+: ([0-9a-f-]{36})/i.exec(output)?.[1];
+        assert.ok(requestId);
+        assert.doesNotMatch(output, /secret value|human-entered-secret/i);
+        output = "";
+        await main(["creds", "status", requestId], { root: tempDir });
+        assert.equal(output.trim(), "pending");
+    } finally {
+        process.stdout.write = originalStdout;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test("creds set fails closed when invoked without a human TTY", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-creds-set-tty-"));
+    fs.writeFileSync(path.join(tempDir, ".env"), "HETZER_ENABLED_MODULES=\n");
+    try {
+        await assert.rejects(
+            () => main(["creds", "set", "github-token"], { root: tempDir }),
+            /requires a direct human interactive TTY/
+        );
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
 test("suggestCommand suggests closest command for typos", () => {
     assert.equal(suggestCommand("protectt"), "protect");
     assert.equal(suggestCommand("initz"), "init");

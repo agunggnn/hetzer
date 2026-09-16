@@ -93,7 +93,7 @@ function cleanSecretInput(val) {
         .replace(/\x1b\[200~/g, "")
         .replace(/\x1b\[201~/g, "")
         .replace(/\r/g, "")
-        .trim();
+        .replace(/\n$/, "");
 }
 
 export async function promptSecret(promptText = "Enter secret value: ", { input = process.stdin, output = process.stderr } = {}) {
@@ -234,10 +234,10 @@ export function promptNativeOsConfirmation(id, { timeoutMs = 20000, platform = p
     }
 }
 
-export function assertInteractiveHumanSession({ input = process.stdin, env = process.env, ancestor } = {}) {
+export function assertInteractiveHumanSession({ input = process.stdin, env = process.env, ancestor, operation = "'hetzer creds reveal'" } = {}) {
     if (!input.isTTY) {
         throw new Error(
-            "Access Denied: 'hetzer creds reveal' requires a direct human interactive TTY terminal.\n" +
+            `Access Denied: ${operation} requires a direct human interactive TTY terminal.\n` +
             "Autonomous agent / non-interactive programmatic secret revelation is blocked to prevent context window leakage."
         );
     }
@@ -253,7 +253,7 @@ export function assertInteractiveHumanSession({ input = process.stdin, env = pro
     for (const [envVar, desc] of agentIndicators) {
         if (env[envVar]) {
             throw new Error(
-                `Access Denied: 'hetzer creds reveal' blocked by the credential reveal guard.\n` +
+                `Access Denied: ${operation} blocked by the credential reveal guard.\n` +
                 `Reason: ${desc} ($${envVar} is set).\n` +
                 `Autonomous agents running in YOLO/unrestricted mode cannot extract raw secrets into context.\n` +
                 `To execute commands with injected secrets safely, use 'hetzer exec -- <command>'.`
@@ -263,7 +263,7 @@ export function assertInteractiveHumanSession({ input = process.stdin, env = pro
     const ancestry = ancestor || checkProcessAncestors();
     if (ancestry.isAgent) {
         throw new Error(
-            `Access Denied: 'hetzer creds reveal' blocked by the credential reveal guard.\n` +
+            `Access Denied: ${operation} blocked by the credential reveal guard.\n` +
             `Reason: Agent runtime '${ancestry.processName}' detected in process tree ancestry.\n` +
             `Autonomous agents running in YOLO/unrestricted mode cannot extract raw secrets into context.\n` +
             `To execute commands with injected secrets safely, use 'hetzer exec -- <command>'.`
