@@ -268,7 +268,7 @@ export function createToolCatalog({ root = process.env.HETZER_ROOT || process.cw
 
     return {
         definitions: tools.map(({ execute, ...definition }) => definition),
-        async call(name, args = {}) {
+        async call(name, args = {}, requestContext = {}) {
             const tool = tools.find((candidate) => candidate.name === name);
             if (!tool) throw new Error(`Unknown tool '${name}'.`);
             if (!allowToolCall(name)) throw new Error(`Tool '${name}' rate limit exceeded (100/min).`);
@@ -279,8 +279,15 @@ export function createToolCatalog({ root = process.env.HETZER_ROOT || process.cw
                 throw new Error(`Tool '${name}' does not accept arguments.`);
             }
             let finalArgs = normalizedArgs;
-            if (!["hetzer_vault_has", "hetzer_sniffer_scan", "hetzer_sniffer_redact"].includes(name)) {
-                finalArgs = resolveSecretRefsInPayload(normalizedArgs, (id) => getVault().resolve(id));
+            const collectedSecrets = [];
+            try {
+                if (!["hetzer_vault_has", "hetzer_sniffer_scan", "hetzer_sniffer_redact"].includes(name)) {
+                    finalArgs = resolveSecretRefsInPayload(normalizedArgs, (id) => getVault().resolve(id), collectedSecrets);
+                }
+            } finally {
+                if (requestContext && typeof requestContext === "object") {
+                    requestContext.secretsToRedact = collectedSecrets;
+                }
             }
             return tool.execute(finalArgs);
         },

@@ -40,6 +40,8 @@ export function checkDockerAvailable(exec = spawnSync) {
     return { ok: false, error: res.error };
 }
 
+export const OCI_IMAGE_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.:-]*(?:\/[a-zA-Z0-9_.:-]+)*(?:@[a-zA-Z0-9_.-]+:[a-fA-F0-9]+)?$/;
+
 export function buildSandboxDockerArgs({
     root = process.cwd(),
     env = {},
@@ -52,6 +54,11 @@ export function buildSandboxDockerArgs({
     engine = "docker",
     platform = process.platform,
 } = {}) {
+    const rawImage = String(image || "").trim();
+    if (!rawImage || rawImage.startsWith("-") || !OCI_IMAGE_PATTERN.test(rawImage)) {
+        throw new Error(`Invalid sandbox image: '${image}'. Image name must be a valid OCI reference and cannot start with '-'.`);
+    }
+
     const resolvedRoot = path.resolve(root);
     const args = ["run", "--rm", "-i"];
 

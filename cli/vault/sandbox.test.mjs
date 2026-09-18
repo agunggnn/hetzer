@@ -148,3 +148,39 @@ test("executeSandboxedProcess fails closed when Docker and Podman are unavailabl
     );
 });
 
+test("buildSandboxDockerArgs rejects CLI option injection and malformed image names", () => {
+    const dangerousImages = [
+        "--privileged",
+        "--cap-add=ALL",
+        "-it",
+        "--volume /:/host",
+        "alpine; rm -rf /",
+        "node:22 --entrypoint /bin/sh",
+        "   ",
+        "",
+        "-invalid",
+    ];
+
+    for (const badImage of dangerousImages) {
+        assert.throws(
+            () => buildSandboxDockerArgs({ image: badImage, command: "node" }),
+            /Invalid sandbox image/i,
+            `Expected '${badImage}' to be rejected`
+        );
+    }
+
+    // Valid OCI images must pass
+    const validImages = [
+        "node:22-alpine",
+        "alpine",
+        "ubuntu:24.04",
+        "ghcr.io/agunggnn/hetzer:latest",
+        "docker.io/library/node:20",
+        "registry.corp.internal:5000/sec/agent-box:v1.2.3",
+    ];
+
+    for (const validImage of validImages) {
+        const args = buildSandboxDockerArgs({ image: validImage, command: "node" });
+        assert.ok(args.includes(validImage));
+    }
+});

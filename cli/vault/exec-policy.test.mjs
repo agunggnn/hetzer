@@ -509,6 +509,14 @@ test("isSensitivePathAccess identifies browser cookies, wallets, and host creden
     assert.equal(isSensitivePathAccess("~/.ssh/id_ed25519"), true);
     assert.equal(isSensitivePathAccess("~/.azure/accessTokens.json"), true);
 
+    // Path normalization traversal & obfuscation (/./, redundant slashes, ..)
+    assert.equal(isSensitivePathAccess("~/.aws/./credentials"), true);
+    assert.equal(isSensitivePathAccess("~/.aws//config"), true);
+    assert.equal(isSensitivePathAccess("~/.ssh/./id_rsa"), true);
+    assert.equal(isSensitivePathAccess("foo/bar/../../.ssh/id_rsa"), true);
+    assert.equal(isSensitivePathAccess("~/.config/solana/./id.json"), true);
+    assert.equal(isSensitivePathAccess("%LOCALAPPDATA%/Google/Chrome/User Data/Default/./Network/Cookies"), true);
+
     // Clean workspace paths do NOT trigger
     assert.equal(isSensitivePathAccess("src/index.js"), false);
     assert.equal(isSensitivePathAccess("package.json"), false);

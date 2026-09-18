@@ -61,24 +61,36 @@ export const UNTRUSTED_DOWNLOADER_PATTERNS = [
 export function isSensitivePathAccess(token, { denyPatterns = [] } = {}) {
     if (typeof token !== "string") return false;
     const normalized = token.replace(/\\/g, "/");
+    let canonical = normalized;
+    try {
+        canonical = path.posix.normalize(normalized);
+    } catch {}
+
     let decoded = normalized;
     try {
         decoded = decodeURIComponent(normalized);
     } catch {}
 
+    let canonicalDecoded = decoded;
+    try {
+        canonicalDecoded = path.posix.normalize(decoded);
+    } catch {}
+
+    const candidates = [token, normalized, canonical, decoded, canonicalDecoded];
+
     for (const pattern of SENSITIVE_HOST_PATTERNS) {
-        if (pattern.test(token) || pattern.test(normalized) || pattern.test(decoded)) {
+        if (candidates.some((c) => pattern.test(c))) {
             return true;
         }
     }
     for (const pattern of denyPatterns) {
         if (typeof pattern === "string") {
             const patLower = pattern.toLowerCase();
-            if (token.toLowerCase().includes(patLower) || normalized.toLowerCase().includes(patLower) || decoded.toLowerCase().includes(patLower)) {
+            if (candidates.some((c) => c.toLowerCase().includes(patLower))) {
                 return true;
             }
         } else if (pattern instanceof RegExp) {
-            if (pattern.test(token) || pattern.test(normalized) || pattern.test(decoded)) {
+            if (candidates.some((c) => pattern.test(c))) {
                 return true;
             }
         }

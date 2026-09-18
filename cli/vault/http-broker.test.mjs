@@ -606,31 +606,50 @@ test("isPrivateOrReservedIp correctly identifies private, loopback, and metadata
     assert.equal(isPrivateOrReservedIp("127.255.255.254"), true);
     assert.equal(isPrivateOrReservedIp("::1"), true);
 
-    // Private RFC 1918
+    // IPv6 Loopback compressions & bracketed
+    assert.equal(isPrivateOrReservedIp("0::1"), true);
+    assert.equal(isPrivateOrReservedIp("::0001"), true);
+    assert.equal(isPrivateOrReservedIp("0:0:0:0:0:0:0:1"), true);
+    assert.equal(isPrivateOrReservedIp("[::1]"), true);
+    assert.equal(isPrivateOrReservedIp("[0::1]"), true);
+    assert.equal(isPrivateOrReservedIp("::"), true);
+
+    // Private RFC 1918 & reserved benchmark/test ranges
     assert.equal(isPrivateOrReservedIp("10.0.0.1"), true);
     assert.equal(isPrivateOrReservedIp("10.254.1.1"), true);
     assert.equal(isPrivateOrReservedIp("172.16.0.1"), true);
     assert.equal(isPrivateOrReservedIp("172.31.255.254"), true);
     assert.equal(isPrivateOrReservedIp("192.168.1.1"), true);
     assert.equal(isPrivateOrReservedIp("192.168.0.254"), true);
+    assert.equal(isPrivateOrReservedIp("192.0.2.1"), true);
+    assert.equal(isPrivateOrReservedIp("198.51.100.1"), true);
+    assert.equal(isPrivateOrReservedIp("203.0.113.1"), true);
+    assert.equal(isPrivateOrReservedIp("198.18.0.1"), true);
 
     // Cloud Metadata & Link-Local
     assert.equal(isPrivateOrReservedIp("169.254.169.254"), true);
     assert.equal(isPrivateOrReservedIp("169.254.1.1"), true);
 
-    // IPv6 Private & Link-Local
+    // IPv6 Private, Link-Local & Documentation
     assert.equal(isPrivateOrReservedIp("fc00::1"), true);
     assert.equal(isPrivateOrReservedIp("fe80::1"), true);
+    assert.equal(isPrivateOrReservedIp("2001:db8::1"), true);
 
-    // IPv4-mapped IPv6
+    // IPv4-mapped & compatible IPv6 (dotted and hex-mapped)
     assert.equal(isPrivateOrReservedIp("::ffff:192.168.1.1"), true);
     assert.equal(isPrivateOrReservedIp("::ffff:127.0.0.1"), true);
+    assert.equal(isPrivateOrReservedIp("::ffff:7f00:1"), true);
+    assert.equal(isPrivateOrReservedIp("::ffff:a9fe:a9fe"), true);
+    assert.equal(isPrivateOrReservedIp("0:0:0:0:0:ffff:127.0.0.1"), true);
+    assert.equal(isPrivateOrReservedIp("::127.0.0.1"), true);
+    assert.equal(isPrivateOrReservedIp("64:ff9b::127.0.0.1"), true);
 
     // Public Internet IPs
     assert.equal(isPrivateOrReservedIp("8.8.8.8"), false);
     assert.equal(isPrivateOrReservedIp("1.1.1.1"), false);
     assert.equal(isPrivateOrReservedIp("140.82.121.4"), false); // GitHub
     assert.equal(isPrivateOrReservedIp("104.18.0.1"), false);
+    assert.equal(isPrivateOrReservedIp("2606:4700:4700::1111"), false); // Cloudflare DNS IPv6
 });
 
 test("validateBrokerPolicy blocks target origins pointing to private or metadata IPs", () => {
@@ -644,6 +663,14 @@ test("validateBrokerPolicy blocks target origins pointing to private or metadata
     );
     assert.throws(
         () => validateBrokerPolicy(policy({ target: "https://169.254.169.254" })),
+        /SSRF guard|private, loopback, or cloud metadata IP/i
+    );
+    assert.throws(
+        () => validateBrokerPolicy(policy({ target: "https://[::1]" })),
+        /SSRF guard|private, loopback, or cloud metadata IP/i
+    );
+    assert.throws(
+        () => validateBrokerPolicy(policy({ target: "https://[0::1]" })),
         /SSRF guard|private, loopback, or cloud metadata IP/i
     );
     assert.throws(

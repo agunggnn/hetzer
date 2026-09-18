@@ -163,11 +163,13 @@ export async function handleMcpRequest(request, catalog) {
     if (request.method === "tools/call") {
         const name = request.params?.name;
         if (typeof name !== "string") return error(request.id, -32602, "Tool name is required.");
+        const requestContext = { secretsToRedact: [] };
         try {
-            const value = await catalog.call(name, request.params?.arguments || {});
+            const value = await catalog.call(name, request.params?.arguments || {}, requestContext);
+            const secretsToRedact = Array.isArray(requestContext.secretsToRedact) ? requestContext.secretsToRedact : [];
             const rawJson = JSON.stringify(value);
             if (rawJson === undefined) throw new Error("Tool returned a non-serializable value.");
-            const sanitizedStructured = sanitizeMcpValue(JSON.parse(rawJson));
+            const sanitizedStructured = sanitizeMcpValue(JSON.parse(rawJson), secretsToRedact);
             const sanitizedText = JSON.stringify(sanitizedStructured);
             return result(request.id, {
                 ...(modern ? { resultType: "complete" } : {}),
@@ -177,7 +179,8 @@ export async function handleMcpRequest(request, catalog) {
             });
         } catch (cause) {
             if (String(cause.message).startsWith("Unknown tool")) return error(request.id, -32602, cause.message);
-            const sanitizedMessage = sanitizeStreamOutput(cause.message || "Tool execution error");
+            const secretsToRedact = Array.isArray(requestContext.secretsToRedact) ? requestContext.secretsToRedact : [];
+            const sanitizedMessage = sanitizeStreamOutput(cause.message || "Tool execution error", secretsToRedact);
             return result(request.id, {
                 ...(modern ? { resultType: "complete" } : {}),
                 content: [{ type: "text", text: sanitizedMessage }],

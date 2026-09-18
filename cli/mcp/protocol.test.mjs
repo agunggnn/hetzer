@@ -64,6 +64,75 @@ test("MCP bridge sanitizes structured values without parsing redacted JSON text"
     assert.equal(response.result.content[0].text.includes(databaseUrl), false);
 });
 
+test("MCP bridge redacts custom vault secrets reflected in tool results or errors", async () => {
+    const customPass = "CustomSuperSecretPassword!#123";
+    const leakingCatalog = {
+        definitions: [{ name: "vault_tool", description: "Vault tool", inputSchema: { type: "object" } }],
+        async call(name, args, requestContext) {
+            requestContext.secretsToRedact = [{ id: "db-password", secret: customPass }];
+            if (args.fail) throw new Error(`Connection failed with password: ${customPass}`);
+            return { connected: true, reflected: `Using password: ${customPass}` };
+        },
+    };
+
+    // Output reflection
+    const successRes = await handleMcpRequest({
+        jsonrpc: "2.0",
+        id: 10,
+        method: "tools/call",
+        params: { name: "vault_tool", arguments: {} },
+    }, leakingCatalog);
+    assert.equal(successRes.result.isError, false);
+    assert.ok(!successRes.result.content[0].text.includes(customPass));
+    assert.ok(successRes.result.content[0].text.includes("secretRef:db-password"));
+    assert.equal(successRes.result.structuredContent.reflected, "Using password: secretRef:db-password");
+
+    // Error reflection
+    const failRes = await handleMcpRequest({
+        jsonrpc: "2.0",
+        id: 11,
+        method: "tools/call",
+        params: { name: "vault_tool", arguments: { fail: true } },
+    }, leakingCatalog);
+    assert.equal(failRes.result.isError, true);
+    assert.ok(!failRes.result.content[0].text.includes(customPass));
+    assert.ok(failRes.result.content[0].text.includes("secretRef:db-password"));
+});
+
+test("MCP bridge keeps custom-secret redaction request-local during concurrent calls", async () => {
+    const secretA = "ConcurrentCustomSecretA!123";
+    const secretB = "ConcurrentCustomSecretB!456";
+    const concurrentCatalog = {
+        definitions: [{ name: "race_tool", description: "Race tool", inputSchema: { type: "object" } }],
+        async call(name, args, requestContext) {
+            const secret = args.which === "a" ? secretA : secretB;
+            const id = args.which === "a" ? "credential-a" : "credential-b";
+            requestContext.secretsToRedact = [{ id, secret }];
+            return new Promise((resolve) => setTimeout(() => resolve({ reflected: secret }), args.which === "a" ? 40 : 5));
+        },
+    };
+
+    const [responseA, responseB] = await Promise.all([
+        handleMcpRequest({
+            jsonrpc: "2.0",
+            id: 12,
+            method: "tools/call",
+            params: { name: "race_tool", arguments: { which: "a" } },
+        }, concurrentCatalog),
+        handleMcpRequest({
+            jsonrpc: "2.0",
+            id: 13,
+            method: "tools/call",
+            params: { name: "race_tool", arguments: { which: "b" } },
+        }, concurrentCatalog),
+    ]);
+
+    assert.equal(responseA.result.structuredContent.reflected, "secretRef:credential-a");
+    assert.equal(responseB.result.structuredContent.reflected, "secretRef:credential-b");
+    assert.ok(!responseA.result.content[0].text.includes(secretA));
+    assert.ok(!responseB.result.content[0].text.includes(secretB));
+});
+
 test("resolveSecretRefsInPayload resolves exact, inline, and nested secretRef references", () => {
     const syntheticKey = ["sk-ant-", "api03-sample-mcp-key-12345"].join("");
     const syntheticDb = "postgresql://user:pass@localhost:5432/mcp";

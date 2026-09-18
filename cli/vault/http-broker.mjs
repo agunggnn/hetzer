@@ -67,19 +67,59 @@ function validateHeader(value, label) {
     return header;
 }
 
-export function isPrivateOrReservedIp(rawIp) {
-    const ip = String(rawIp || "").trim();
-    if (!ip) return false;
-
-    if (ip.toLowerCase().startsWith("::ffff:")) {
-        const v4 = ip.slice(7);
-        if (net.isIPv4(v4)) return isPrivateOrReservedIp(v4);
+function parseIpv6Hextets(ipStr) {
+    let str = ipStr.toLowerCase();
+    const lastColon = str.lastIndexOf(":");
+    if (lastColon >= 0) {
+        const potentialIpv4 = str.slice(lastColon + 1);
+        if (potentialIpv4.includes(".")) {
+            const v4Parts = potentialIpv4.split(".").map(Number);
+            if (v4Parts.length === 4 && v4Parts.every((n) => !isNaN(n) && n >= 0 && n <= 255)) {
+                const hex1 = (((v4Parts[0] << 8) | v4Parts[1]) >>> 0).toString(16);
+                const hex2 = (((v4Parts[2] << 8) | v4Parts[3]) >>> 0).toString(16);
+                str = `${str.slice(0, lastColon)}:${hex1}:${hex2}`;
+            } else {
+                return null;
+            }
+        }
     }
+
+    const doubleColonCount = (str.match(/::/g) || []).length;
+    if (doubleColonCount > 1) return null;
+
+    let parts = [];
+    if (doubleColonCount === 1) {
+        const [left, right] = str.split("::");
+        const leftParts = left ? left.split(":") : [];
+        const rightParts = right ? right.split(":") : [];
+        const missingCount = 8 - (leftParts.length + rightParts.length);
+        if (missingCount < 1) return null;
+        const middle = Array(missingCount).fill("0");
+        parts = [...leftParts, ...middle, ...rightParts];
+    } else {
+        parts = str.split(":");
+    }
+
+    if (parts.length !== 8) return null;
+    const hextets = [];
+    for (const p of parts) {
+        if (!/^[0-9a-f]{1,4}$/i.test(p)) return null;
+        hextets.push(parseInt(p, 16));
+    }
+    return hextets;
+}
+
+export function isPrivateOrReservedIp(rawIp) {
+    let ip = String(rawIp || "").trim();
+    if (ip.startsWith("[") && ip.endsWith("]")) {
+        ip = ip.slice(1, -1).trim();
+    }
+    if (!ip) return false;
 
     if (net.isIPv4(ip)) {
         const parts = ip.split(".").map(Number);
         if (parts.length !== 4 || parts.some((n) => isNaN(n) || n < 0 || n > 255)) return true;
-        const [a, b] = parts;
+        const [a, b, c] = parts;
 
         if (a === 0) return true;
         if (a === 127) return true;
@@ -88,17 +128,59 @@ export function isPrivateOrReservedIp(rawIp) {
         if (a === 192 && b === 168) return true;
         if (a === 169 && b === 254) return true;
         if (a === 100 && b >= 64 && b <= 127) return true;
+        if (a === 192 && b === 0 && c === 0) return true;
+        if (a === 192 && b === 0 && c === 2) return true;
+        if (a === 198 && b === 51 && c === 100) return true;
+        if (a === 203 && b === 0 && c === 113) return true;
+        if (a === 198 && (b === 18 || b === 19)) return true;
         if (a >= 224) return true;
 
         return false;
     }
 
-    if (net.isIPv6(ip)) {
-        const lower = ip.toLowerCase();
-        if (lower === "::1" || lower === "0:0:0:0:0:0:0:1") return true;
-        if (lower === "::" || lower === "0:0:0:0:0:0:0:0") return true;
-        if (/^[fF][cCdD]/.test(lower)) return true;
-        if (/^[fF][eE][89aAbB]/.test(lower)) return true;
+    if (net.isIPv6(ip) || ip.includes(":")) {
+        const h = parseIpv6Hextets(ip);
+        if (!h) return net.isIPv6(ip);
+
+        // 1. ::1 (Loopback) - handles ::1, 0::1, 0:0:0:0:0:0:0:1, etc.
+        if (h[0] === 0 && h[1] === 0 && h[2] === 0 && h[3] === 0 && h[4] === 0 && h[5] === 0 && h[6] === 0 && h[7] === 1) return true;
+
+        // 2. :: (Unspecified)
+        if (h.every((x) => x === 0)) return true;
+
+        // 3. IPv4-mapped (::ffff:0:0/96) - handles ::ffff:127.0.0.1, ::ffff:7f00:1, ::ffff:a9fe:a9fe
+        if (h[0] === 0 && h[1] === 0 && h[2] === 0 && h[3] === 0 && h[4] === 0 && h[5] === 0xffff) {
+            const v4 = `${h[6] >> 8}.${h[6] & 0xff}.${h[7] >> 8}.${h[7] & 0xff}`;
+            return isPrivateOrReservedIp(v4);
+        }
+
+        // 4. IPv4-compatible (::/96)
+        if (h[0] === 0 && h[1] === 0 && h[2] === 0 && h[3] === 0 && h[4] === 0 && h[5] === 0) {
+            const v4 = `${h[6] >> 8}.${h[6] & 0xff}.${h[7] >> 8}.${h[7] & 0xff}`;
+            return isPrivateOrReservedIp(v4);
+        }
+
+        // 5. NAT64 Well-Known Prefix (64:ff9b::/96)
+        if (h[0] === 0x0064 && h[1] === 0xff9b && h[2] === 0 && h[3] === 0 && h[4] === 0 && h[5] === 0) {
+            const v4 = `${h[6] >> 8}.${h[6] & 0xff}.${h[7] >> 8}.${h[7] & 0xff}`;
+            return isPrivateOrReservedIp(v4);
+        }
+
+        // 6. Unique Local Address (fc00::/7)
+        if ((h[0] & 0xfe00) === 0xfc00) return true;
+
+        // 7. Link-Local (fe80::/10)
+        if ((h[0] & 0xffc0) === 0xfe80) return true;
+
+        // 8. Documentation (2001:db8::/32)
+        if (h[0] === 0x2001 && h[1] === 0x0db8) return true;
+
+        // 9. Discard prefix (100::/64)
+        if (h[0] === 0x0100 && h[1] === 0 && h[2] === 0 && h[3] === 0) return true;
+
+        // 10. Multicast (ff00::/8)
+        if ((h[0] & 0xff00) === 0xff00) return true;
+
         return false;
     }
 
@@ -110,7 +192,7 @@ export async function assertSafeUpstreamHost(hostname, {
     lookupFn = dns.promises.lookup,
 } = {}) {
     if (allowPrivate) return [];
-    const host = String(hostname || "").trim().toLowerCase();
+    const host = String(hostname || "").trim().toLowerCase().replace(/^\[|\]$/g, "");
     if (!host) throw new Error("Upstream host is required.");
 
     if (host === "localhost" || host.endsWith(".localhost") || host === "127.0.0.1" || host === "::1") {
