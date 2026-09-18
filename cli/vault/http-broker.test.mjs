@@ -47,6 +47,13 @@ test("parseBrokerArguments requires a policy and a child command", () => {
     assert.match(parsed.policyFile, /policy\.json$/);
 });
 
+test("parseBrokerArguments handles omitted optional arguments without directory path confusion", () => {
+    const parsed = parseBrokerArguments(["--policy", "policy.json", "--", "node", "client.mjs"]);
+    assert.equal(parsed.envFile, undefined);
+    assert.equal(parsed.command, "node");
+    assert.deepEqual(parsed.commandArgs, ["client.mjs"]);
+});
+
 test("validateBrokerPolicy rejects unsafe targets and over-broad path configuration", async () => {
     assert.throws(() => validateBrokerPolicy(policy({ target: "http://api.example.test" })), /HTTPS origin/);
     assert.throws(() => validateBrokerPolicy(policy({ target: "https://api.example.test/v1" })), /without credentials, path/);
@@ -481,7 +488,8 @@ test("broker redacts multi-representation secrets from upstream error responses"
             const jsonEsc = JSON.stringify(complexSecret).slice(1, -1);
             const urlEsc = encodeURIComponent(complexSecret);
             const uniEsc = complexSecret.replace(/["\\/<>&\x00-\x1f]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
-            const rawBody = `{"error":"Unauthorized","raw":"${complexSecret}","jsonEscaped":"${jsonEsc}","urlEncoded":"${urlEsc}","unicodeEscaped":"${uniEsc}"}`;
+            const b64Esc = Buffer.from(complexSecret).toString("base64");
+            const rawBody = `{"error":"Unauthorized","raw":"${complexSecret}","jsonEscaped":"${jsonEsc}","urlEncoded":"${urlEsc}","unicodeEscaped":"${uniEsc}","base64":"${b64Esc}"}`;
             return new Response(rawBody, {
                 status: 401,
                 headers: {
@@ -502,12 +510,48 @@ test("broker redacts multi-representation secrets from upstream error responses"
         assert.doesNotMatch(text, /sk-prod-/);
         assert.doesNotMatch(text, /\\u0022secret/);
         assert.doesNotMatch(text, /%22secret/);
+        assert.doesNotMatch(text, new RegExp(Buffer.from(complexSecret).toString("base64")));
         assert.match(text, /secretRef:service-api-key/);
         const headerValue = response.headers.get("x-request-id");
         assert.doesNotMatch(headerValue, /sk-prod-/);
         assert.match(headerValue, /secretRef:service-api-key/);
     } finally {
         await broker.close();
+    }
+});
+
+test("broker does not consume quota slot on early SSRF or DNS block", async () => {
+    let lookupCalls = 0;
+    let requestsReachedUpstream = 0;
+    const testBroker = await startHttpCredentialBroker({
+        policy: policy({ maxRequests: 1 }),
+        secret: "synthetic-service-secret",
+        lookupFn: async () => {
+            lookupCalls += 1;
+            if (lookupCalls === 1) {
+                return [{ address: "169.254.169.254", family: 4 }];
+            }
+            return [{ address: "93.184.216.34", family: 4 }];
+        },
+        fetchFn: async () => {
+            requestsReachedUpstream += 1;
+            return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } });
+        },
+    });
+
+    try {
+        const blocked = await fetch(`${testBroker.url}/v1/items`, {
+            headers: { authorization: `Bearer ${testBroker.capability}` },
+        });
+        assert.equal(blocked.status, 403);
+
+        const success = await fetch(`${testBroker.url}/v1/items`, {
+            headers: { authorization: `Bearer ${testBroker.capability}` },
+        });
+        assert.equal(success.status, 200);
+        assert.equal(requestsReachedUpstream, 1);
+    } finally {
+        await testBroker.close();
     }
 });
 

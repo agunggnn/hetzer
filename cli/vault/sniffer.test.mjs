@@ -38,6 +38,18 @@ test("sniffer detects PKCS8 private keys, credentialed database URLs, and high-e
         scanText("postgresql://audit-user:synthetic-password@localhost/audit").matches.some((item) => item.type === "database_url"),
         true
     );
+    assert.equal(
+        scanText("rediss://admin:tls-redis-pass@cluster.redis.cache:6380/0").matches.some((item) => item.type === "database_url"),
+        true
+    );
+    assert.equal(
+        scanText("amqps://broker-user:rabbit-pass@queue.corp.internal:5671/vhost").matches.some((item) => item.type === "database_url"),
+        true
+    );
+    assert.equal(
+        scanText("POSTGRESQL://cap-user:cap-pass@localhost/db").matches.some((item) => item.type === "database_url"),
+        true
+    );
     const candidate = "A7fK2mQ9xR4vN8pL3sT6yW1cD5hJ0uBz";
     assert.ok(shannonEntropy(candidate) >= 4.3);
     assert.equal(scanText(candidate).matches.some((item) => item.type === "high_entropy"), true);

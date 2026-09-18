@@ -20,6 +20,22 @@ test("findGitDir locates current git root directory", () => {
     assert.ok(fs.existsSync(gitDir));
 });
 
+test("findGitDir supports git worktree with .git file pointing to gitdir", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-worktree-test-"));
+    const mainGitDir = path.join(tempDir, "main-repo", ".git", "worktrees", "wt-branch");
+    fs.mkdirSync(mainGitDir, { recursive: true });
+    const worktreeDir = path.join(tempDir, "wt-checkout");
+    fs.mkdirSync(worktreeDir, { recursive: true });
+    fs.writeFileSync(path.join(worktreeDir, ".git"), `gitdir: ${mainGitDir}\n`);
+
+    try {
+        const found = findGitDir(worktreeDir);
+        assert.equal(found, mainGitDir);
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
 test("scanAddedLines detects a multiline PKCS8 key and reports its opening line", () => {
     const violations = scanAddedLines([
         { file: "fixture.pem", line: 8, text: "-----BEGIN PRIVATE KEY-----" },
@@ -91,6 +107,37 @@ test("installGitHook and uninstallGitHook manage pre-commit and commit-msg files
         assert.ok(uninstallRes.uninstalled);
         assert.ok(!fs.existsSync(installRes.preCommitPath));
         assert.ok(!fs.existsSync(installRes.commitMsgPath));
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test("installGitHook and uninstallGitHook manage hooks in common directory when called inside a worktree", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-wt-hook-test-"));
+    try {
+        const mainGitDir = path.join(tempDir, "main-repo", ".git");
+        const wtGitDir = path.join(mainGitDir, "worktrees", "wt-branch");
+        fs.mkdirSync(wtGitDir, { recursive: true });
+        fs.writeFileSync(path.join(wtGitDir, "commondir"), "../..\n");
+
+        const worktreeDir = path.join(tempDir, "wt-checkout");
+        fs.mkdirSync(worktreeDir, { recursive: true });
+        fs.writeFileSync(path.join(worktreeDir, ".git"), `gitdir: ${wtGitDir}\n`);
+
+        const installRes = installGitHook(worktreeDir);
+        assert.ok(installRes.installed);
+        const expectedPreCommit = path.join(mainGitDir, "hooks", "pre-commit");
+        const expectedCommitMsg = path.join(mainGitDir, "hooks", "commit-msg");
+        assert.equal(installRes.preCommitPath, expectedPreCommit);
+        assert.equal(installRes.commitMsgPath, expectedCommitMsg);
+        assert.ok(fs.existsSync(expectedPreCommit));
+        assert.ok(fs.existsSync(expectedCommitMsg));
+        assert.ok(!fs.existsSync(path.join(wtGitDir, "hooks")));
+
+        const uninstallRes = uninstallGitHook(worktreeDir);
+        assert.ok(uninstallRes.uninstalled);
+        assert.ok(!fs.existsSync(expectedPreCommit));
+        assert.ok(!fs.existsSync(expectedCommitMsg));
     } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });
     }

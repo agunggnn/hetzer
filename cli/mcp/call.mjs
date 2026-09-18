@@ -243,7 +243,19 @@ export async function callMcpTool({
 
     const { endpointUrl, service } = resolveServiceEndpoint(root, targetService);
 
-    let resolvedArgs = typeof args === "string" ? JSON.parse(args || "{}") : (args || {});
+    let resolvedArgs = {};
+    if (typeof args === "string") {
+        try {
+            resolvedArgs = args.trim() ? JSON.parse(args) : {};
+        } catch (e) {
+            throw new Error(`Invalid JSON arguments for tool '${toolName}': ${e.message}`);
+        }
+    } else if (args && typeof args === "object") {
+        resolvedArgs = args;
+    }
+    if (!resolvedArgs || typeof resolvedArgs !== "object" || Array.isArray(resolvedArgs)) {
+        throw new Error(`Arguments for tool '${toolName}' must be a JSON object.`);
+    }
     const resolvedSecrets = [];
     const envFile = path.join(root, ".env");
     const fileEnv = fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, "utf8")) : {};

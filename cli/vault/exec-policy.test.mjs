@@ -507,7 +507,11 @@ test("isSensitivePathAccess identifies browser cookies, wallets, and host creden
     assert.equal(isSensitivePathAccess("~/.aws/credentials"), true);
     assert.equal(isSensitivePathAccess("~/.ssh/id_rsa"), true);
     assert.equal(isSensitivePathAccess("~/.ssh/id_ed25519"), true);
+    assert.equal(isSensitivePathAccess("~/.ssh/config"), true);
     assert.equal(isSensitivePathAccess("~/.azure/accessTokens.json"), true);
+    assert.equal(isSensitivePathAccess("~/.kube/config"), true);
+    assert.equal(isSensitivePathAccess("~/.docker/config.json"), true);
+    assert.equal(isSensitivePathAccess("%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Local State"), true);
 
     // Path normalization traversal & obfuscation (/./, redundant slashes, ..)
     assert.equal(isSensitivePathAccess("~/.aws/./credentials"), true);
@@ -516,6 +520,8 @@ test("isSensitivePathAccess identifies browser cookies, wallets, and host creden
     assert.equal(isSensitivePathAccess("foo/bar/../../.ssh/id_rsa"), true);
     assert.equal(isSensitivePathAccess("~/.config/solana/./id.json"), true);
     assert.equal(isSensitivePathAccess("%LOCALAPPDATA%/Google/Chrome/User Data/Default/./Network/Cookies"), true);
+    assert.equal(isSensitivePathAccess("~/.kube/./config"), true);
+    assert.equal(isSensitivePathAccess("~/.docker/./config.json"), true);
 
     // Clean workspace paths do NOT trigger
     assert.equal(isSensitivePathAccess("src/index.js"), false);

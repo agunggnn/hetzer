@@ -645,6 +645,13 @@ function getSecretRepresentations(secret) {
         }
     } catch { /* ignore */ }
 
+    try {
+        if (secret.length >= 4) {
+            const b64 = Buffer.from(secret, "utf8").toString("base64");
+            if (b64.length >= 8) representations.add(b64);
+        }
+    } catch { /* ignore */ }
+
     return [...representations].filter(Boolean).sort((a, b) => b.length - a.length);
 }
 
@@ -709,6 +716,10 @@ export async function startHttpCredentialBroker({
                 });
             } catch (err) {
                 if (err.code === "ERR_SSRF_TARGET_BLOCKED" || err.code === "ERR_SSRF_LOOKUP_FAILED") {
+                    if (slotReserved && !requestDispatched) {
+                        forwardedRequests = Math.max(0, forwardedRequests - 1);
+                        slotReserved = false;
+                    }
                     try {
                         recordAuditEvent({
                             eventType: "SSRF_BLOCKED",
@@ -873,7 +884,7 @@ export function parseBrokerArguments(argv) {
     };
     return {
         root: path.resolve(value("--root") || process.cwd()),
-        envFile: path.resolve(value("--env-file")),
+        envFile: value("--env-file") ? path.resolve(value("--env-file")) : undefined,
         policyFile: path.resolve(options[policyIndex + 1]),
         command: argv[marker + 1],
         commandArgs: argv.slice(marker + 2),

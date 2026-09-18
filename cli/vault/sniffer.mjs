@@ -70,20 +70,22 @@ export const DETECTION_RULES = [
         id: "database-url",
         type: "database_url",
         label: "Database URL with embedded credentials",
-        pattern: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis):\/\/[^\s:@/]{1,256}:[^\s@/]{1,512}@[^\s]{1,1024}/gi,
+        pattern: /\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?|amqps?):\/\/[^\s:@/]{1,256}:[^\s@/]{1,512}@[^\s]{1,1024}/gi,
     },
 ];
 
 const FAST_PREFIXES = [
     "npm_", "sk-", "AIza", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "xox",
     "AKIA", "eyJ", "-----BEGIN", "postgres://", "postgresql://", "mysql://",
-    "mongodb://", "mongodb+srv://", "redis://",
+    "mariadb://", "mongodb://", "mongodb+srv://", "redis://", "rediss://",
+    "amqp://", "amqps://",
 ];
 
 function quickBailout(text) {
     if (!text || typeof text !== "string" || text.length < 16) return true;
+    const lower = text.toLowerCase();
     for (let i = 0; i < FAST_PREFIXES.length; i++) {
-        if (text.includes(FAST_PREFIXES[i])) return false;
+        if (text.includes(FAST_PREFIXES[i]) || lower.includes(FAST_PREFIXES[i])) return false;
     }
     return !/[A-Za-z0-9+/_=-]{24}/.test(text);
 }

@@ -51,6 +51,13 @@ export function expandSecretVariants(secretsToRedact = []) {
             }
         } catch { /* ignore */ }
 
+        try {
+            if (secret.length >= 4) {
+                const b64 = Buffer.from(secret, "utf8").toString("base64");
+                if (b64.length >= 8) reps.add(b64);
+            }
+        } catch { /* ignore */ }
+
         for (const rep of reps) {
             if (rep) variants.push({ id, secret: rep });
         }

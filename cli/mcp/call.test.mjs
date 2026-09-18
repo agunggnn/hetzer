@@ -325,3 +325,18 @@ test("callMcpTool safely catches transport failures and redacts exception messag
         fs.rmSync(root, { recursive: true, force: true });
     }
 });
+
+test("callMcpTool rejects malformed JSON and non-object arguments gracefully", async () => {
+    await assert.rejects(
+        () => callMcpTool({ targetService: "sample-mod", toolName: "search", args: "{malformed-json" }),
+        /Invalid JSON arguments for tool 'search'/
+    );
+    await assert.rejects(
+        () => callMcpTool({ targetService: "sample-mod", toolName: "search", args: "[1, 2, 3]" }),
+        /Arguments for tool 'search' must be a JSON object/
+    );
+    await assert.rejects(
+        () => callMcpTool({ targetService: "sample-mod", toolName: "search", args: "123" }),
+        /Arguments for tool 'search' must be a JSON object/
+    );
+});

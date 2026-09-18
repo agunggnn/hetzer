@@ -27,11 +27,11 @@ export function assertNoShellMetacharacters(command, commandArgs = []) {
 
 export const SENSITIVE_HOST_PATTERNS = [
     // Windows / Unix browser cookies, credentials, session stores
-    /(?:appdata|localappdata)[\\/](?:local|roaming)[\\/](?:google[\\/]chrome|microsoft[\\/]edge|bravesoftware[\\/]brave-browser|opera software|mozilla[\\/]firefox)[\\/].*(?:cookies|login data|web data|key4\.db|logins\.json)/i,
-    /(?:%localappdata%|%appdata%).*(?:cookies|login data|web data)/i,
+    /(?:appdata|localappdata)[\\/](?:local|roaming)[\\/](?:google[\\/]chrome|microsoft[\\/]edge|bravesoftware[\\/]brave-browser|opera software|mozilla[\\/]firefox)[\\/].*(?:cookies|login data|web data|key4\.db|logins\.json|local state)/i,
+    /(?:%localappdata%|%appdata%).*(?:cookies|login data|web data|local state)/i,
     /(?:^|[\\/])network[\\/]cookies\b/i,
-    /library[\\/]application support[\\/](?:google[\\/]chrome|bravesoftware|microsoft edge)[\\/].*(?:cookies|login data)/i,
-    /\.config[\\/](?:google-chrome|chromium|bravesoftware)[\\/].*(?:cookies|login data)/i,
+    /library[\\/]application support[\\/](?:google[\\/]chrome|bravesoftware|microsoft edge)[\\/].*(?:cookies|login data|local state)/i,
+    /\.config[\\/](?:google-chrome|chromium|bravesoftware)[\\/].*(?:cookies|login data|local state)/i,
 
     // Crypto wallets and private keys
     /(?:^|[\\/])\.config[\\/](?:solana|phantom)[\\/].*\.json/i,
@@ -43,7 +43,9 @@ export const SENSITIVE_HOST_PATTERNS = [
     // Cloud and system host credentials outside workspace
     /(?:^|[\\/])\.aws[\\/](?:credentials|config)\b/i,
     /(?:^|[\\/])\.azure[\\/](?:accesstokens|azureprofile)\.json/i,
-    /(?:^|[\\/])\.ssh[\\/](?:id_rsa|id_ed25519|id_ecdsa|id_dsa|authorized_keys|known_hosts)\b/i,
+    /(?:^|[\\/])\.kube[\\/]config\b/i,
+    /(?:^|[\\/])\.docker[\\/]config\.json\b/i,
+    /(?:^|[\\/])\.ssh[\\/](?:id_rsa|id_ed25519|id_ecdsa|id_dsa|authorized_keys|known_hosts|config)\b/i,
     /(?:^|[\\/])\.gnupg[\\/](?:secring|pubring)\.gpg\b/i,
     /(?:appdata|localappdata)[\\/]roaming[\\/]gcloud[\\/]/i,
 ];

@@ -15,7 +15,16 @@ export function findGitDir(startDir = process.cwd()) {
         const gitPath = path.join(current, ".git");
         if (fs.existsSync(gitPath)) {
             const stat = fs.statSync(gitPath);
-            return stat.isDirectory() ? gitPath : null;
+            if (stat.isDirectory()) return gitPath;
+            if (stat.isFile()) {
+                const content = fs.readFileSync(gitPath, "utf8").trim();
+                const match = /^gitdir:\s*(.+)$/m.exec(content);
+                if (match) {
+                    const resolvedGitDir = path.resolve(current, match[1].trim());
+                    if (fs.existsSync(resolvedGitDir)) return resolvedGitDir;
+                }
+            }
+            return null;
         }
         const parent = path.dirname(current);
         if (parent === current) break;
@@ -201,13 +210,28 @@ export function checkCommitMessageFile(filePath) {
     return checkCommitMessage(text);
 }
 
+export function resolveGitCommonDir(gitDir) {
+    if (!gitDir) return null;
+    const commonDirFile = path.join(gitDir, "commondir");
+    if (fs.existsSync(commonDirFile)) {
+        try {
+            const rel = fs.readFileSync(commonDirFile, "utf8").trim();
+            if (rel) {
+                return path.resolve(gitDir, rel);
+            }
+        } catch {}
+    }
+    return gitDir;
+}
+
 export function installGitHook(root = process.cwd()) {
     const gitDir = findGitDir(root);
     if (!gitDir) {
         throw new Error(`.git directory not found in '${root}'. Ensure you are inside a Git repository.`);
     }
 
-    const hooksDir = path.join(gitDir, "hooks");
+    const commonDir = resolveGitCommonDir(gitDir);
+    const hooksDir = path.join(commonDir, "hooks");
     fs.mkdirSync(hooksDir, { recursive: true });
 
     const preCommitFile = path.join(hooksDir, "pre-commit");
@@ -264,7 +288,8 @@ export function uninstallGitHook(root = process.cwd()) {
     if (!gitDir) return { uninstalled: false };
 
     let uninstalled = false;
-    const hooksDir = path.join(gitDir, "hooks");
+    const commonDir = resolveGitCommonDir(gitDir);
+    const hooksDir = path.join(commonDir, "hooks");
     const preCommitFile = path.join(hooksDir, "pre-commit");
     const commitMsgFile = path.join(hooksDir, "commit-msg");
 
