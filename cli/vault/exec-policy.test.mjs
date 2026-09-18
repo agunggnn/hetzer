@@ -527,6 +527,7 @@ test("isSensitivePathAccess identifies browser cookies, wallets, and host creden
     assert.equal(isSensitivePathAccess("%252e%252e%252f.ssh%252fid_rsa"), true);
     assert.equal(isSensitivePathAccess("%2e%2e/%2e%2e/.aws/credentials"), true);
     assert.equal(isSensitivePathAccess("foo/%252e%252e/.ssh/id_ed25519"), true);
+    assert.equal(isSensitivePathAccess("%25252525252e%25252525252e%25252525252f.ssh%252525252fid_rsa"), true);
 
     // Clean workspace paths do NOT trigger
     assert.equal(isSensitivePathAccess("src/index.js"), false);
@@ -626,4 +627,3 @@ test("applyExecPolicy enforces sensitive path blocking and custom denyPaths", ()
     });
     assert.equal(result.command, "cat");
 });
-

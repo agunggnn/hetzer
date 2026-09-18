@@ -63,9 +63,10 @@ export const UNTRUSTED_DOWNLOADER_PATTERNS = [
 export function isSensitivePathAccess(token, { denyPatterns = [] } = {}) {
     if (typeof token !== "string") return false;
     const candidates = new Set([token]);
+    const MAX_PATH_DECODE_PASSES = 5;
 
     let current = token;
-    for (let pass = 0; pass < 5; pass++) {
+    for (let pass = 0; pass < MAX_PATH_DECODE_PASSES; pass++) {
         const normalized = current.replace(/\\/g, "/");
         candidates.add(normalized);
         try {
@@ -81,6 +82,10 @@ export function isSensitivePathAccess(token, { denyPatterns = [] } = {}) {
             break;
         }
     }
+
+    // Fail closed when bounded decoding leaves a valid encoded byte behind.
+    // A later URL/path consumer could decode it and turn it into traversal.
+    if (/%[0-9a-fA-F]{2}/.test(current)) return true;
 
     const finalNormalized = current.replace(/\\/g, "/");
     candidates.add(finalNormalized);
