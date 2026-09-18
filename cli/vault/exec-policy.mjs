@@ -27,11 +27,11 @@ export function assertNoShellMetacharacters(command, commandArgs = []) {
 
 export const SENSITIVE_HOST_PATTERNS = [
     // Windows / Unix browser cookies, credentials, session stores
-    /(?:appdata|localappdata)[\\/](?:local|roaming)[\\/](?:google[\\/]chrome|microsoft[\\/]edge|bravesoftware[\\/]brave-browser|opera software|mozilla[\\/]firefox)[\\/].*(?:cookies|login data|web data|key4\.db|logins\.json)/i,
-    /(?:%localappdata%|%appdata%).*(?:cookies|login data|web data)/i,
+    /(?:appdata|localappdata)[\\/](?:local|roaming)[\\/](?:google[\\/]chrome|microsoft[\\/]edge|bravesoftware[\\/]brave-browser|opera software|mozilla[\\/]firefox)[\\/].*(?:cookies|login data|web data|key4\.db|logins\.json|local state)/i,
+    /(?:%localappdata%|%appdata%).*(?:cookies|login data|web data|local state)/i,
     /(?:^|[\\/])network[\\/]cookies\b/i,
-    /library[\\/]application support[\\/](?:google[\\/]chrome|bravesoftware|microsoft edge)[\\/].*(?:cookies|login data)/i,
-    /\.config[\\/](?:google-chrome|chromium|bravesoftware)[\\/].*(?:cookies|login data)/i,
+    /library[\\/]application support[\\/](?:google[\\/]chrome|bravesoftware|microsoft edge)[\\/].*(?:cookies|login data|local state)/i,
+    /\.config[\\/](?:google-chrome|chromium|bravesoftware)[\\/].*(?:cookies|login data|local state)/i,
 
     // Crypto wallets and private keys
     /(?:^|[\\/])\.config[\\/](?:solana|phantom)[\\/].*\.json/i,
@@ -43,7 +43,9 @@ export const SENSITIVE_HOST_PATTERNS = [
     // Cloud and system host credentials outside workspace
     /(?:^|[\\/])\.aws[\\/](?:credentials|config)\b/i,
     /(?:^|[\\/])\.azure[\\/](?:accesstokens|azureprofile)\.json/i,
-    /(?:^|[\\/])\.ssh[\\/](?:id_rsa|id_ed25519|id_ecdsa|id_dsa|authorized_keys|known_hosts)\b/i,
+    /(?:^|[\\/])\.kube[\\/]config\b/i,
+    /(?:^|[\\/])\.docker[\\/]config\.json\b/i,
+    /(?:^|[\\/])\.ssh[\\/](?:id_rsa|id_ed25519|id_ecdsa|id_dsa|authorized_keys|known_hosts|config)\b/i,
     /(?:^|[\\/])\.gnupg[\\/](?:secring|pubring)\.gpg\b/i,
     /(?:appdata|localappdata)[\\/]roaming[\\/]gcloud[\\/]/i,
 ];
@@ -60,25 +62,51 @@ export const UNTRUSTED_DOWNLOADER_PATTERNS = [
 
 export function isSensitivePathAccess(token, { denyPatterns = [] } = {}) {
     if (typeof token !== "string") return false;
-    const normalized = token.replace(/\\/g, "/");
-    let decoded = normalized;
+    const candidates = new Set([token]);
+    const MAX_PATH_DECODE_PASSES = 5;
+
+    let current = token;
+    for (let pass = 0; pass < MAX_PATH_DECODE_PASSES; pass++) {
+        const normalized = current.replace(/\\/g, "/");
+        candidates.add(normalized);
+        try {
+            candidates.add(path.posix.normalize(normalized));
+        } catch {}
+
+        try {
+            const next = decodeURIComponent(current);
+            if (next === current) break;
+            current = next;
+            candidates.add(current);
+        } catch {
+            break;
+        }
+    }
+
+    // Fail closed when bounded decoding leaves a valid encoded byte behind.
+    // A later URL/path consumer could decode it and turn it into traversal.
+    if (/%[0-9a-fA-F]{2}/.test(current)) return true;
+
+    const finalNormalized = current.replace(/\\/g, "/");
+    candidates.add(finalNormalized);
     try {
-        decoded = decodeURIComponent(normalized);
+        candidates.add(path.posix.normalize(finalNormalized));
     } catch {}
 
+    const candidateList = [...candidates];
     for (const pattern of SENSITIVE_HOST_PATTERNS) {
-        if (pattern.test(token) || pattern.test(normalized) || pattern.test(decoded)) {
+        if (candidateList.some((c) => pattern.test(c))) {
             return true;
         }
     }
     for (const pattern of denyPatterns) {
         if (typeof pattern === "string") {
             const patLower = pattern.toLowerCase();
-            if (token.toLowerCase().includes(patLower) || normalized.toLowerCase().includes(patLower) || decoded.toLowerCase().includes(patLower)) {
+            if (candidateList.some((c) => c.toLowerCase().includes(patLower))) {
                 return true;
             }
         } else if (pattern instanceof RegExp) {
-            if (pattern.test(token) || pattern.test(normalized) || pattern.test(decoded)) {
+            if (candidateList.some((c) => pattern.test(c))) {
                 return true;
             }
         }

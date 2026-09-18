@@ -2,16 +2,36 @@
 // Grimoire is the product surface; this SQLite store is the only persistence
 // backend used by CLI services and MCP callers.
 
+import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+export function secureFilePermissions(filePath, { run = spawnSync } = {}) {
+    if (!filePath || filePath === ":memory:") return;
+    try {
+        fs.chmodSync(filePath, 0o600);
+    } catch { /* Windows or unsupported filesystem */ }
+    if (process.platform === "win32") {
+        try {
+            const username = process.env.USERNAME || process.env.USER;
+            if (username && fs.existsSync(filePath)) {
+                run("icacls", [filePath, "/inheritance:r", "/grant:r", `${username}:(R,W)`], {
+                    windowsHide: true,
+                    stdio: "ignore",
+                    timeout: 3000,
+                });
+            }
+        } catch { /* best effort on Windows */ }
+    }
+}
+
 const MAX_ENTRIES = 500;
 const MAX_SECRET_LENGTH = 8192;
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const ALLOWED_ACTION_PATTERN = /^[a-z0-9]+(?:[.:_-][a-z0-9]+)*$/;
+const ALLOWED_ACTION_PATTERN = /^[a-z0-9]+(?:[.:_/-][a-z0-9]+)*$/;
 
 export const SCOPES = new Set(["header", "query", "env", "basic"]);
 export const REALMS = new Set(["core", "data", "memory", "social", "command", "frontier"]);
@@ -115,7 +135,7 @@ export function isolateMasterKey({ root = process.cwd(), envFile } = {}) {
 
     fs.mkdirSync(path.dirname(isolatedFile), { recursive: true });
     fs.writeFileSync(isolatedFile, currentKey + "\n", { encoding: "utf8", mode: 0o600 });
-    try { fs.chmodSync(isolatedFile, 0o600); } catch { /* Windows */ }
+    secureFilePermissions(isolatedFile);
 
     // Strip HETZER_GRIMOIRE_KEY from .env
     if (fs.existsSync(targetEnv)) {
@@ -124,7 +144,7 @@ export function isolateMasterKey({ root = process.cwd(), envFile } = {}) {
             .filter((line) => !line.startsWith("HETZER_GRIMOIRE_KEY=") && !line.startsWith("SHADOW_GRIMOIRE_KEY="))
             .join("\n");
         fs.writeFileSync(targetEnv, cleanedEnv, { encoding: "utf8", mode: 0o600 });
-        try { fs.chmodSync(targetEnv, 0o600); } catch { /* Windows */ }
+        secureFilePermissions(targetEnv);
     }
 
     return {
@@ -208,7 +228,7 @@ export class Grimoire {
         this._initSchema();
         this.migration = this._migrateLegacy();
         if (this.dbPath !== ":memory:") {
-            try { fs.chmodSync(this.dbPath, 0o600); } catch { /* best effort on Windows */ }
+            secureFilePermissions(this.dbPath);
         }
     }
 
@@ -667,8 +687,8 @@ export class Grimoire {
         `).run(
             String(event.actor || "unknown").slice(0, 120),
             String(event.action || "unknown").slice(0, 120),
-            event.targetId || null,
-            event.credentialId || null,
+            event.targetId || event.target_id || null,
+            event.credentialId || event.credential_id || null,
             String(event.reason || "").slice(0, 500) || null,
             String(event.outcome || "unknown").slice(0, 40),
             JSON.stringify(metadata).slice(0, 4000),
@@ -717,6 +737,13 @@ export class Grimoire {
     }
 
     close() {
-        this.db.close();
+        if (!this._closed) {
+            this._closed = true;
+            try {
+                this.db?.close();
+            } catch {
+                // Fail soft if already closed
+            }
+        }
     }
 }

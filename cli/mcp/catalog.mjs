@@ -132,11 +132,22 @@ export function createToolCatalog({ root = process.env.HETZER_ROOT || process.cw
 
     const addServiceTool = (service, definition) => {
         const hasSchemaProps = Boolean(definition.inputSchema?.properties && Object.keys(definition.inputSchema.properties).length > 0);
+        const permittedTargets = new Set([
+            service.id,
+            service.moduleId,
+            service.mcpServer?.name,
+            service.composeService,
+            "global",
+            "shared",
+        ].filter(Boolean));
+
         tools.push({
             name: definition.name,
             title: definition.title,
             description: definition.description,
             inputSchema: definition.inputSchema || EMPTY_SCHEMA,
+            serviceId: service.id,
+            permittedTargets,
             annotations: {
                 readOnlyHint: definition.annotations?.readOnlyHint ?? !hasSchemaProps,
                 destructiveHint: definition.annotations?.destructiveHint ?? false,
@@ -146,13 +157,20 @@ export function createToolCatalog({ root = process.env.HETZER_ROOT || process.cw
             execute: async (args = {}) => {
                 const base = serviceUrl(service, fileEnv);
                 if (!base) throw new Error(`${service.label} has no configured local URL.`);
-                const headers = { accept: "application/json" };
+                const authHeaders = {};
                 if (service.auth) {
                     const injected = getVault().portalHeaders(service.auth.secretRef, {
                         targetId: service.auth.targetId || service.id,
                         action: service.auth.action,
                     });
-                    if (injected) Object.assign(headers, injected);
+                    if (injected) Object.assign(authHeaders, injected);
+                }
+                const headers = { accept: "application/json" };
+                const protectedHeaders = new Set(["authorization", "x-api-key"]);
+                for (const [key, val] of Object.entries(authHeaders)) {
+                    const lowerKey = key.trim().toLowerCase();
+                    headers[lowerKey] = String(val);
+                    protectedHeaders.add(lowerKey);
                 }
 
                 let targetPath = definition.path;
@@ -165,16 +183,63 @@ export function createToolCatalog({ root = process.env.HETZER_ROOT || process.cw
                 }
 
                 if (definition.argumentMode !== "json-body" && args.path) {
-                    const subPath = String(args.path).replace(/^\/+/, "");
-                    targetPath = subPath.startsWith("webhook/") || subPath.startsWith("webhook-test/")
-                        ? `/${subPath}`
-                        : `${definition.path.replace(/\/+$/, "")}/${subPath}`;
+                    let rawPath = String(args.path).trim().replace(/\\/g, "/");
+                    if (/%2[fF]|%5[cC]|%00/i.test(rawPath)) {
+                        throw new Error(`Invalid service tool path: '${args.path}'. Encoded delimiters are forbidden.`);
+                    }
+                    let currentPath = rawPath;
+                    const MAX_DECODE_PASSES = 5;
+                    let passes = 0;
+                    while (currentPath.includes("%")) {
+                        passes += 1;
+                        if (passes > MAX_DECODE_PASSES) {
+                            throw new Error(`Invalid service tool path: '${args.path}'. Excessive percent-encoding layers.`);
+                        }
+                        let nextPath;
+                        try {
+                            nextPath = decodeURIComponent(currentPath);
+                        } catch {
+                            throw new Error(`Invalid service tool path: '${args.path}'. Malformed percent-encoding.`);
+                        }
+                        if (nextPath === currentPath) break;
+                        currentPath = nextPath.replace(/\\/g, "/");
+                        if (/%2[fF]|%5[cC]|%00/i.test(currentPath)) {
+                            throw new Error(`Invalid service tool path: '${args.path}'. Nested encoded delimiters are forbidden.`);
+                        }
+                    }
+                    if (/%[0-9a-fA-F]{2}|%/i.test(currentPath)) {
+                        throw new Error(`Invalid service tool path: '${args.path}'. Residual percent-encoding detected.`);
+                    }
+                    if (currentPath.includes("\0") || currentPath.includes("?") || currentPath.includes("#")) {
+                        throw new Error(`Invalid service tool path: '${args.path}'. Unsafe characters in path.`);
+                    }
+
+                    const cleanSubPath = currentPath.replace(/^\/+/, "");
+                    const fullPath = cleanSubPath.startsWith("webhook/") || cleanSubPath.startsWith("webhook-test/")
+                        ? `/${cleanSubPath}`
+                        : `${definition.path.replace(/\/+$/, "")}/${cleanSubPath}`;
+                    const normalized = path.posix.normalize(fullPath);
+                    const allowedPrefixes = ["/webhook", "/webhook-test", definition.path.replace(/\/+$/, "")].filter(Boolean);
+                    if (!allowedPrefixes.some((pfx) => normalized === pfx || normalized.startsWith(`${pfx}/`))) {
+                        throw new Error(`Invalid service tool path: '${args.path}'. Path traversal outside route prefix is forbidden.`);
+                    }
+                    targetPath = normalized;
                 }
                 if (definition.argumentMode !== "json-body" && args.method) {
                     method = String(args.method).toUpperCase();
                 }
                 if (definition.argumentMode !== "json-body" && args.headers && typeof args.headers === "object") {
-                    Object.assign(headers, args.headers);
+                    const FORBIDDEN_HEADERS = new Set([
+                        "host", "connection", "keep-alive", "transfer-encoding", "te", "upgrade",
+                        "content-length", "cookie"
+                    ]);
+                    for (const [key, val] of Object.entries(args.headers)) {
+                        const lower = String(key).trim().toLowerCase();
+                        if (FORBIDDEN_HEADERS.has(lower) || lower.startsWith("proxy-") || protectedHeaders.has(lower)) {
+                            continue;
+                        }
+                        headers[lower] = String(val);
+                    }
                 }
                 if (definition.argumentMode !== "json-body" && args.payload !== undefined) {
                     if (!args.method) method = "POST";
@@ -268,7 +333,7 @@ export function createToolCatalog({ root = process.env.HETZER_ROOT || process.cw
 
     return {
         definitions: tools.map(({ execute, ...definition }) => definition),
-        async call(name, args = {}) {
+        async call(name, args = {}, requestContext = {}) {
             const tool = tools.find((candidate) => candidate.name === name);
             if (!tool) throw new Error(`Unknown tool '${name}'.`);
             if (!allowToolCall(name)) throw new Error(`Tool '${name}' rate limit exceeded (100/min).`);
@@ -279,11 +344,36 @@ export function createToolCatalog({ root = process.env.HETZER_ROOT || process.cw
                 throw new Error(`Tool '${name}' does not accept arguments.`);
             }
             let finalArgs = normalizedArgs;
-            if (!["hetzer_vault_has", "hetzer_sniffer_scan", "hetzer_sniffer_redact"].includes(name)) {
-                finalArgs = resolveSecretRefsInPayload(normalizedArgs, (id) => getVault().resolve(id));
+            const collectedSecrets = [];
+            try {
+                if (!["hetzer_vault_has", "hetzer_sniffer_scan", "hetzer_sniffer_redact"].includes(name)) {
+                    finalArgs = resolveSecretRefsInPayload(normalizedArgs, (id) => {
+                        const v = getVault();
+                        const entry = v.find(id);
+                        if (!entry) throw new Error(`Credential 'secretRef:${id}' not found in Grimoire Vault.`);
+                        const permittedTargets = tool.permittedTargets || new Set(["global", "shared"]);
+                        if (!permittedTargets.has(entry.projectId)) {
+                            throw new Error(`Credential 'secretRef:${id}' (target '${entry.projectId}') is not permitted for service '${tool.serviceId || name}'.`);
+                        }
+                        const secret = v.resolve(id, { targetId: entry.projectId, action: "mcp.tools/call" });
+                        if (secret === null) {
+                            throw new Error(`Credential 'secretRef:${id}' is not permitted for MCP tool execution.`);
+                        }
+                        return secret;
+                    }, collectedSecrets);
+                }
+            } finally {
+                if (requestContext && typeof requestContext === "object") {
+                    requestContext.secretsToRedact = collectedSecrets;
+                }
             }
             return tool.execute(finalArgs);
         },
-        close() { vault?.close(); },
+        close() {
+            if (vault) {
+                vault.close();
+                vault = null;
+            }
+        },
     };
 }

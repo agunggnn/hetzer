@@ -51,6 +51,13 @@ export function expandSecretVariants(secretsToRedact = []) {
             }
         } catch { /* ignore */ }
 
+        try {
+            if (secret.length >= 4) {
+                const b64 = Buffer.from(secret, "utf8").toString("base64");
+                if (b64.length >= 8) reps.add(b64);
+            }
+        } catch { /* ignore */ }
+
         for (const rep of reps) {
             if (rep) variants.push({ id, secret: rep });
         }
@@ -139,7 +146,7 @@ export async function handleMcpRequest(request, catalog) {
             resultType: "complete",
             supportedVersions: [MODERN_VERSION, LEGACY_VERSION],
             capabilities: { tools: {} },
-            _meta: { "io.modelcontextprotocol/serverInfo": { name: "hetzer-fastmcp", version: "0.5.5" } },
+            _meta: { "io.modelcontextprotocol/serverInfo": { name: "hetzer-fastmcp", version: "0.5.6" } },
             instructions: "Read-only tools expose enabled Hetzer modules and approved local service telemetry.",
             ttlMs: 300000,
             cacheScope: "private",
@@ -150,7 +157,7 @@ export async function handleMcpRequest(request, catalog) {
         return result(request.id, {
             protocolVersion: requested === LEGACY_VERSION ? requested : LEGACY_VERSION,
             capabilities: { tools: { listChanged: false } },
-            serverInfo: { name: "hetzer-fastmcp", version: "0.5.5" },
+            serverInfo: { name: "hetzer-fastmcp", version: "0.5.6" },
             instructions: "Read-only tools expose enabled Hetzer modules and approved local service telemetry.",
         });
     }
@@ -163,11 +170,13 @@ export async function handleMcpRequest(request, catalog) {
     if (request.method === "tools/call") {
         const name = request.params?.name;
         if (typeof name !== "string") return error(request.id, -32602, "Tool name is required.");
+        const requestContext = { secretsToRedact: [] };
         try {
-            const value = await catalog.call(name, request.params?.arguments || {});
+            const value = await catalog.call(name, request.params?.arguments || {}, requestContext);
+            const secretsToRedact = Array.isArray(requestContext.secretsToRedact) ? requestContext.secretsToRedact : [];
             const rawJson = JSON.stringify(value);
             if (rawJson === undefined) throw new Error("Tool returned a non-serializable value.");
-            const sanitizedStructured = sanitizeMcpValue(JSON.parse(rawJson));
+            const sanitizedStructured = sanitizeMcpValue(JSON.parse(rawJson), secretsToRedact);
             const sanitizedText = JSON.stringify(sanitizedStructured);
             return result(request.id, {
                 ...(modern ? { resultType: "complete" } : {}),
@@ -176,8 +185,10 @@ export async function handleMcpRequest(request, catalog) {
                 isError: false,
             });
         } catch (cause) {
+            if (cause?.code === "ERR_CANARY_TRIPWIRE_TRIGGERED") throw cause;
             if (String(cause.message).startsWith("Unknown tool")) return error(request.id, -32602, cause.message);
-            const sanitizedMessage = sanitizeStreamOutput(cause.message || "Tool execution error");
+            const secretsToRedact = Array.isArray(requestContext.secretsToRedact) ? requestContext.secretsToRedact : [];
+            const sanitizedMessage = sanitizeStreamOutput(cause.message || "Tool execution error", secretsToRedact);
             return result(request.id, {
                 ...(modern ? { resultType: "complete" } : {}),
                 content: [{ type: "text", text: sanitizedMessage }],

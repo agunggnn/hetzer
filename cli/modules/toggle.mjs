@@ -17,9 +17,25 @@ function setEnvValue(text, name, value) {
     return pattern.test(text) ? text.replace(pattern, line) : `${text.trimEnd()}\n${line}\n`;
 }
 
+export const MODULE_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+export function assertValidModuleId(id) {
+    if (typeof id !== "string" || !MODULE_ID_PATTERN.test(id)) {
+        const err = new Error(`Invalid module ID: ${JSON.stringify(id)}. Must be lowercase alphanumeric with hyphens.`);
+        err.code = "ERR_INVALID_MODULE_ID";
+        throw err;
+    }
+}
+
 export function setModuleEnabled({ root, envFile, moduleId, enabled, builtinFile }) {
+    assertValidModuleId(moduleId);
     if (moduleId === "core" && !enabled) throw new Error("Hetzer core cannot be removed.");
-    let text = fs.readFileSync(envFile, "utf8");
+    let text = "";
+    if (envFile && fs.existsSync(envFile)) {
+        text = fs.readFileSync(envFile, "utf8");
+    } else if (envFile) {
+        fs.mkdirSync(path.dirname(envFile), { recursive: true });
+    }
     const values = parseEnv(text);
     const registry = loadModuleRegistry({ builtinFile, root, enabledModules: moduleId });
     if (!registry.modules.some((module) => module.id === moduleId)) {

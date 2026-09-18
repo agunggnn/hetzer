@@ -8,10 +8,14 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import {
+    assertSafeUpstreamHost,
     canonicalizePath,
     decodePathToFixedPoint,
     executeBrokeredProcess,
+    isContainerBridgeOrLoopback,
+    isPrivateOrReservedIp,
     parseBrokerArguments,
+    safePinnedFetch,
     startHttpCredentialBroker,
     validateBrokerPolicy,
 } from "./http-broker.mjs";
@@ -42,6 +46,13 @@ test("parseBrokerArguments requires a policy and a child command", () => {
     assert.equal(parsed.command, "node");
     assert.deepEqual(parsed.commandArgs, ["client.mjs"]);
     assert.match(parsed.policyFile, /policy\.json$/);
+});
+
+test("parseBrokerArguments handles omitted optional arguments without directory path confusion", () => {
+    const parsed = parseBrokerArguments(["--policy", "policy.json", "--", "node", "client.mjs"]);
+    assert.equal(parsed.envFile, undefined);
+    assert.equal(parsed.command, "node");
+    assert.deepEqual(parsed.commandArgs, ["client.mjs"]);
 });
 
 test("validateBrokerPolicy rejects unsafe targets and over-broad path configuration", async () => {
@@ -478,7 +489,8 @@ test("broker redacts multi-representation secrets from upstream error responses"
             const jsonEsc = JSON.stringify(complexSecret).slice(1, -1);
             const urlEsc = encodeURIComponent(complexSecret);
             const uniEsc = complexSecret.replace(/["\\/<>&\x00-\x1f]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
-            const rawBody = `{"error":"Unauthorized","raw":"${complexSecret}","jsonEscaped":"${jsonEsc}","urlEncoded":"${urlEsc}","unicodeEscaped":"${uniEsc}"}`;
+            const b64Esc = Buffer.from(complexSecret).toString("base64");
+            const rawBody = `{"error":"Unauthorized","raw":"${complexSecret}","jsonEscaped":"${jsonEsc}","urlEncoded":"${urlEsc}","unicodeEscaped":"${uniEsc}","base64":"${b64Esc}"}`;
             return new Response(rawBody, {
                 status: 401,
                 headers: {
@@ -499,12 +511,48 @@ test("broker redacts multi-representation secrets from upstream error responses"
         assert.doesNotMatch(text, /sk-prod-/);
         assert.doesNotMatch(text, /\\u0022secret/);
         assert.doesNotMatch(text, /%22secret/);
+        assert.doesNotMatch(text, new RegExp(Buffer.from(complexSecret).toString("base64")));
         assert.match(text, /secretRef:service-api-key/);
         const headerValue = response.headers.get("x-request-id");
         assert.doesNotMatch(headerValue, /sk-prod-/);
         assert.match(headerValue, /secretRef:service-api-key/);
     } finally {
         await broker.close();
+    }
+});
+
+test("broker does not consume quota slot on early SSRF or DNS block", async () => {
+    let lookupCalls = 0;
+    let requestsReachedUpstream = 0;
+    const testBroker = await startHttpCredentialBroker({
+        policy: policy({ maxRequests: 1 }),
+        secret: "synthetic-service-secret",
+        lookupFn: async () => {
+            lookupCalls += 1;
+            if (lookupCalls === 1) {
+                return [{ address: "169.254.169.254", family: 4 }];
+            }
+            return [{ address: "93.184.216.34", family: 4 }];
+        },
+        fetchFn: async () => {
+            requestsReachedUpstream += 1;
+            return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } });
+        },
+    });
+
+    try {
+        const blocked = await fetch(`${testBroker.url}/v1/items`, {
+            headers: { authorization: `Bearer ${testBroker.capability}` },
+        });
+        assert.equal(blocked.status, 403);
+
+        const success = await fetch(`${testBroker.url}/v1/items`, {
+            headers: { authorization: `Bearer ${testBroker.capability}` },
+        });
+        assert.equal(success.status, 200);
+        assert.equal(requestsReachedUpstream, 1);
+    } finally {
+        await testBroker.close();
     }
 });
 
@@ -597,3 +645,275 @@ test("fuzz and property tests: decodePathToFixedPoint & canonicalizePath resist 
     }
 });
 
+test("isPrivateOrReservedIp correctly identifies private, loopback, and metadata IPs", () => {
+    // Loopback
+    assert.equal(isPrivateOrReservedIp("127.0.0.1"), true);
+    assert.equal(isPrivateOrReservedIp("127.255.255.254"), true);
+    assert.equal(isPrivateOrReservedIp("::1"), true);
+
+    // IPv6 Loopback compressions & bracketed
+    assert.equal(isPrivateOrReservedIp("0::1"), true);
+    assert.equal(isPrivateOrReservedIp("::0001"), true);
+    assert.equal(isPrivateOrReservedIp("0:0:0:0:0:0:0:1"), true);
+    assert.equal(isPrivateOrReservedIp("[::1]"), true);
+    assert.equal(isPrivateOrReservedIp("[0::1]"), true);
+    assert.equal(isPrivateOrReservedIp("::"), true);
+
+    // Private RFC 1918 & reserved benchmark/test ranges
+    assert.equal(isPrivateOrReservedIp("10.0.0.1"), true);
+    assert.equal(isPrivateOrReservedIp("10.254.1.1"), true);
+    assert.equal(isPrivateOrReservedIp("172.16.0.1"), true);
+    assert.equal(isPrivateOrReservedIp("172.31.255.254"), true);
+    assert.equal(isPrivateOrReservedIp("192.168.1.1"), true);
+    assert.equal(isPrivateOrReservedIp("192.168.0.254"), true);
+    assert.equal(isPrivateOrReservedIp("192.0.2.1"), true);
+    assert.equal(isPrivateOrReservedIp("198.51.100.1"), true);
+    assert.equal(isPrivateOrReservedIp("203.0.113.1"), true);
+    assert.equal(isPrivateOrReservedIp("198.18.0.1"), true);
+
+    // Cloud Metadata & Link-Local
+    assert.equal(isPrivateOrReservedIp("169.254.169.254"), true);
+    assert.equal(isPrivateOrReservedIp("169.254.1.1"), true);
+
+    // IPv6 Private, Link-Local & Documentation
+    assert.equal(isPrivateOrReservedIp("fc00::1"), true);
+    assert.equal(isPrivateOrReservedIp("fe80::1"), true);
+    assert.equal(isPrivateOrReservedIp("2001:db8::1"), true);
+
+    // IPv4-mapped & compatible IPv6 (dotted and hex-mapped)
+    assert.equal(isPrivateOrReservedIp("::ffff:192.168.1.1"), true);
+    assert.equal(isPrivateOrReservedIp("::ffff:127.0.0.1"), true);
+    assert.equal(isPrivateOrReservedIp("::ffff:7f00:1"), true);
+    assert.equal(isPrivateOrReservedIp("::ffff:a9fe:a9fe"), true);
+    assert.equal(isPrivateOrReservedIp("0:0:0:0:0:ffff:127.0.0.1"), true);
+    assert.equal(isPrivateOrReservedIp("::127.0.0.1"), true);
+    assert.equal(isPrivateOrReservedIp("64:ff9b::127.0.0.1"), true);
+
+    // Public Internet IPs
+    assert.equal(isPrivateOrReservedIp("8.8.8.8"), false);
+    assert.equal(isPrivateOrReservedIp("1.1.1.1"), false);
+    assert.equal(isPrivateOrReservedIp("140.82.121.4"), false); // GitHub
+    assert.equal(isPrivateOrReservedIp("104.18.0.1"), false);
+    assert.equal(isPrivateOrReservedIp("2606:4700:4700::1111"), false); // Cloudflare DNS IPv6
+});
+
+test("validateBrokerPolicy blocks target origins pointing to private or metadata IPs", () => {
+    assert.throws(
+        () => validateBrokerPolicy(policy({ target: "https://127.0.0.1" })),
+        /SSRF guard|private, loopback, or cloud metadata IP/i
+    );
+    assert.throws(
+        () => validateBrokerPolicy(policy({ target: "https://10.0.0.1" })),
+        /SSRF guard|private, loopback, or cloud metadata IP/i
+    );
+    assert.throws(
+        () => validateBrokerPolicy(policy({ target: "https://169.254.169.254" })),
+        /SSRF guard|private, loopback, or cloud metadata IP/i
+    );
+    assert.throws(
+        () => validateBrokerPolicy(policy({ target: "https://[::1]" })),
+        /SSRF guard|private, loopback, or cloud metadata IP/i
+    );
+    assert.throws(
+        () => validateBrokerPolicy(policy({ target: "https://[0::1]" })),
+        /SSRF guard|private, loopback, or cloud metadata IP/i
+    );
+    assert.throws(
+        () => validateBrokerPolicy(policy({ target: "https://localhost" })),
+        /SSRF guard|localhost/i
+    );
+});
+
+test("assertSafeUpstreamHost throws ERR_SSRF_TARGET_BLOCKED for localhost and private IP resolution", async () => {
+    await assert.rejects(
+        () => assertSafeUpstreamHost("localhost"),
+        { code: "ERR_SSRF_TARGET_BLOCKED" }
+    );
+    await assert.rejects(
+        () => assertSafeUpstreamHost("169.254.169.254"),
+        { code: "ERR_SSRF_TARGET_BLOCKED" }
+    );
+    await assert.rejects(
+        () => assertSafeUpstreamHost("internal.corp.local", {
+            lookupFn: async () => [{ address: "192.168.1.50", family: 4 }],
+        }),
+        { code: "ERR_SSRF_TARGET_BLOCKED" }
+    );
+});
+
+test("assertSafeUpstreamHost fails closed on DNS lookup errors (ERR_SSRF_LOOKUP_FAILED)", async () => {
+    await assert.rejects(
+        () => assertSafeUpstreamHost("unresolvable.domain.invalid", {
+            lookupFn: async () => {
+                const err = new Error("getaddrinfo ENOTFOUND unresolvable.domain.invalid");
+                err.code = "ENOTFOUND";
+                throw err;
+            },
+        }),
+        { code: "ERR_SSRF_LOOKUP_FAILED" }
+    );
+
+    await assert.rejects(
+        () => assertSafeUpstreamHost("empty.domain.test", {
+            lookupFn: async () => [],
+        }),
+        { code: "ERR_SSRF_LOOKUP_FAILED" }
+    );
+});
+
+test("assertSafeUpstreamHost returns resolved public IP addresses", async () => {
+    const addresses = await assertSafeUpstreamHost("api.example.test", {
+        lookupFn: async () => [
+            { address: "93.184.216.34", family: 4 },
+            { address: "93.184.216.35", family: 4 },
+        ],
+    });
+    assert.deepEqual(addresses, ["93.184.216.34", "93.184.216.35"]);
+});
+
+test("safePinnedFetch connects to pinned IP directly with synthetic Host header (real socket test)", async () => {
+    let capturedReq = null;
+    const server = http.createServer((req, res) => {
+        let body = "";
+        req.on("data", (chunk) => { body += chunk; });
+        req.on("end", () => {
+            capturedReq = {
+                host: req.headers.host,
+                url: req.url,
+                method: req.method,
+                remoteAddress: req.socket.remoteAddress,
+                body,
+            };
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(JSON.stringify({ status: "pinned-ok" }));
+        });
+    });
+
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = server.address().port;
+
+    try {
+        // Target URL uses non-existent unresolvable hostname, but pinned to 127.0.0.1
+        const targetUrl = `http://unresolvable-domain-for-testing.internal:${port}/api/endpoint?query=1`;
+        const res = await safePinnedFetch(targetUrl, {
+            method: "POST",
+            headers: { "content-type": "text/plain" },
+            body: "hello-pinned-socket",
+        }, "127.0.0.1");
+
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.deepEqual(data, { status: "pinned-ok" });
+
+        assert.ok(capturedReq);
+        assert.equal(capturedReq.host, `unresolvable-domain-for-testing.internal:${port}`);
+        assert.equal(capturedReq.url, "/api/endpoint?query=1");
+        assert.equal(capturedReq.method, "POST");
+        assert.equal(capturedReq.body, "hello-pinned-socket");
+    } finally {
+        await new Promise((resolve) => server.close(resolve));
+    }
+});
+
+test("isContainerBridgeOrLoopback correctly classifies loopback, container bridge, and public addresses", () => {
+    // Loopback
+    assert.equal(isContainerBridgeOrLoopback("127.0.0.1"), true);
+    assert.equal(isContainerBridgeOrLoopback("::1"), true);
+    assert.equal(isContainerBridgeOrLoopback("::ffff:127.0.0.1"), true);
+
+    // Docker / Podman RFC 1918 bridge subnets
+    assert.equal(isContainerBridgeOrLoopback("172.17.0.2"), true);
+    assert.equal(isContainerBridgeOrLoopback("172.16.0.1"), true);
+    assert.equal(isContainerBridgeOrLoopback("172.31.255.254"), true);
+    assert.equal(isContainerBridgeOrLoopback("10.0.2.15"), true);
+    assert.equal(isContainerBridgeOrLoopback("192.168.1.100"), true);
+    assert.equal(isContainerBridgeOrLoopback("::ffff:172.17.0.3"), true);
+
+    // Public / Non-bridge addresses
+    assert.equal(isContainerBridgeOrLoopback("93.184.216.34"), false);
+    assert.equal(isContainerBridgeOrLoopback("8.8.8.8"), false);
+    assert.equal(isContainerBridgeOrLoopback("172.32.0.1"), false);
+    assert.equal(isContainerBridgeOrLoopback("169.254.169.254"), false);
+    assert.equal(isContainerBridgeOrLoopback("invalid-ip"), false);
+});
+
+test("startHttpCredentialBroker with allowSandbox binds to 0.0.0.0 and returns 127.0.0.1 url", async () => {
+    const broker = await startHttpCredentialBroker({
+        policy: policy({ target: "https://api.example.test" }),
+        secret: "super-secret-service-token",
+        allowSandbox: true,
+        fetchFn: async () => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } }),
+    });
+
+    try {
+        assert.ok(broker.url.startsWith("http://127.0.0.1:"));
+        assert.ok(typeof broker.capability === "string");
+
+        // Verify request with capability succeeds
+        const res = await fetch(`${broker.url}/v1/status`, {
+            headers: { authorization: `Bearer ${broker.capability}` },
+        });
+        assert.equal(res.status, 200);
+    } finally {
+        await broker.close();
+    }
+});
+
+test("parseBrokerArguments parses --timeout and forwards timeoutMs", () => {
+    const parsed = parseBrokerArguments([
+        "--policy", "policy.json",
+        "--timeout", "15s",
+        "--", "node", "app.mjs"
+    ]);
+    assert.equal(parsed.timeout, "15s");
+    assert.equal(parsed.timeoutMs, 15000);
+});
+
+test("executeBrokeredProcess enforces timeout and terminates runaway child process", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-broker-timeout-test-"));
+    const masterKey = "33445566778899001122aabbccddeeff33445566778899001122aabbccddeeff";
+    const envFile = path.join(tempDir, ".env");
+    fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${masterKey}\n`);
+    const policyFile = path.join(tempDir, "policy.json");
+    fs.writeFileSync(policyFile, JSON.stringify(policy({ credential: "secretRef:timeout-svc" })));
+
+    const vault = new Grimoire({
+        dbPath: path.join(tempDir, "data", "hetzer-vault.db"),
+        masterKey,
+    });
+    try {
+        vault.upsertTarget({ id: "default", name: "default" });
+        vault.create({
+            id: "timeout-svc",
+            projectId: "default",
+            keyName: "key",
+            authType: "api-key",
+            allowedActions: ["process.start"],
+            secret: "synthetic-secret-value",
+        });
+    } finally {
+        vault.close();
+    }
+
+    const childFile = path.join(tempDir, "sleep.mjs");
+    fs.writeFileSync(childFile, "setTimeout(() => {}, 10000);\n");
+
+    try {
+        await assert.rejects(
+            () => executeBrokeredProcess({
+                root: tempDir,
+                envFile,
+                policyFile,
+                command: process.execPath,
+                commandArgs: [childFile],
+                timeoutMs: 300,
+            }, {
+                outStream: { write() { return true; } },
+                errStream: { write() { return true; } },
+            }),
+            (err) => err.code === "ERR_SUBPROCESS_TIMEOUT" && err.exitCode === 124
+        );
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});

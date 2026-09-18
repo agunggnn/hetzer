@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+    auditLedgerSnapshot,
     boxBottom,
     boxDivider,
     boxLine,
@@ -224,9 +225,43 @@ test("collectStatus gathers empirical snapshot from workspace", async () => {
     assert.equal(typeof status.root, "string");
     assert.equal(typeof status.generatedAt, "string");
     assert.ok(status.threat);
+    assert.ok(status.audit);
     assert.ok(status.vault);
     assert.ok(status.shield);
     assert.ok(status.runtime);
     assert.ok(status.mcp);
     assert.ok(Array.isArray(status.services));
 });
+
+test("audit view displays cryptographic ledger status and events", () => {
+    const output = renderTui({
+        root: "/test/project",
+        generatedAt: "2026-09-14T00:00:00.000Z",
+        audit: {
+            state: "VERIFIED",
+            detail: "2 event(s); SHA-256 chain intact",
+            count: 2,
+            latestHash: "abcdef1234567890abcdef1234567890",
+            recentEvents: [
+                { timestamp: "2026-09-14T00:00:00.000Z", eventType: "EXEC", result: "ALLOW", target: "node" },
+            ],
+        },
+    }, { color: false, view: "audit" });
+
+    assert.match(output, /CRYPTOGRAPHIC AUDIT LEDGER/);
+    assert.match(output, /VERIFIED/);
+    assert.match(output, /EXEC/);
+    assert.match(output, /\[a\] to toggle back to Overview/);
+});
+
+test("auditLedgerSnapshot gathers audit ledger verification status", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-tui-audit-"));
+    try {
+        const initial = auditLedgerSnapshot(tempDir);
+        assert.equal(initial.state, "CLEAN");
+        assert.equal(initial.count, 0);
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+

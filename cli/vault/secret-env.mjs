@@ -26,7 +26,9 @@ export function resolveSecretEnvironment({
     strict = false,
     canary = false,
 }) {
-    const values = fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, "utf8")) : {};
+    const values = envFile && fs.existsSync(envFile) && fs.statSync(envFile).isFile()
+        ? parseEnv(fs.readFileSync(envFile, "utf8"))
+        : {};
     const allow = allowNames === undefined ? null : new Set(allowNames.map((n) => n.toLowerCase()));
 
     if (strict && allow === null) {

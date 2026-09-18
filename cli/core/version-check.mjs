@@ -202,7 +202,7 @@ export async function checkForUpdates({
 export function formatUpdateBanner({ currentVersion, latestVersion, url }) {
     const line1 = `  Update available: v${currentVersion} -> v${latestVersion}`;
     const line2 = `  Changelog: ${url}`;
-    const line3 = "  Run `npm i -g @agunggnn/hetzer` or git pull to update";
+    const line3 = "  Run `hetzer upgrade` or git pull to update";
     const maxLen = Math.max(line1.length, line2.length, line3.length) + 2;
 
     const top = `╭${"─".repeat(maxLen)}╮`;

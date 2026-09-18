@@ -164,7 +164,7 @@ test("formatUpdateBanner renders expected box framing", () => {
 
     assert.match(banner, /Update available: v0\.4\.17 -> v0\.4\.18/);
     assert.match(banner, /Changelog: https:\/\/github\.com\/agunggnn\/hetzer\/releases/);
-    assert.match(banner, /Run `npm i -g @agunggnn\/hetzer` or git pull to update/);
+    assert.match(banner, /Run `hetzer upgrade` or git pull to update/);
     assert.match(banner, /^╭─+╮/m);
     assert.match(banner, /^╰─+╯/m);
 });

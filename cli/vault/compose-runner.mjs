@@ -18,7 +18,10 @@ function parseArguments(argv) {
         const index = options.indexOf(name);
         return index >= 0 ? options[index + 1] : "";
     };
-    return { root: path.resolve(value("--root") || process.cwd()), envFile: path.resolve(value("--env-file")), composeArgs };
+    const root = path.resolve(value("--root") || process.cwd());
+    const rawEnvFile = value("--env-file");
+    const envFile = rawEnvFile ? path.resolve(rawEnvFile) : path.join(root, ".env");
+    return { root, envFile, composeArgs };
 }
 
 export function composeInvocation({ root, envFile, composeArgs }) {

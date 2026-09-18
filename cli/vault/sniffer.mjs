@@ -70,20 +70,22 @@ export const DETECTION_RULES = [
         id: "database-url",
         type: "database_url",
         label: "Database URL with embedded credentials",
-        pattern: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis):\/\/[^\s:@/]{1,256}:[^\s@/]{1,512}@[^\s]{1,1024}/gi,
+        pattern: /\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?|amqps?):\/\/[^\s:@/]{1,256}:[^\s@/]{1,512}@[^\s]{1,1024}/gi,
     },
 ];
 
 const FAST_PREFIXES = [
     "npm_", "sk-", "AIza", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "xox",
     "AKIA", "eyJ", "-----BEGIN", "postgres://", "postgresql://", "mysql://",
-    "mongodb://", "mongodb+srv://", "redis://",
+    "mariadb://", "mongodb://", "mongodb+srv://", "redis://", "rediss://",
+    "amqp://", "amqps://",
 ];
 
 function quickBailout(text) {
     if (!text || typeof text !== "string" || text.length < 16) return true;
+    const lower = text.toLowerCase();
     for (let i = 0; i < FAST_PREFIXES.length; i++) {
-        if (text.includes(FAST_PREFIXES[i])) return false;
+        if (text.includes(FAST_PREFIXES[i]) || lower.includes(FAST_PREFIXES[i])) return false;
     }
     return !/[A-Za-z0-9+/_=-]{24}/.test(text);
 }
@@ -133,7 +135,7 @@ export function scanText(text) {
 
     const candidatePattern = /\b[A-Za-z0-9][A-Za-z0-9+/_=-]{23,511}\b/g;
     const NON_SECRET_PREFIXES = [
-        "call_", "tool_", "chunk_", "resp_", "turn_", "session_",
+        "call_", "tool_", "toolu_", "chunk_", "resp_", "turn_", "session_",
         "msg_", "exec-", "item-", "ctc_", "ctco_", "node_modules"
     ];
     let candidate;
@@ -224,7 +226,7 @@ export function redactAndVault(text, { root, envFile, masterKey, autoVault = tru
                         }
                     }
 
-                    const allowedActions = ["compose.start", "process.start"];
+                    const allowedActions = ["compose.start", "process.start", "mcp.tools/call", "mcp.tools.call"];
                     vaultInstance.upsertTarget({ id: "sniffed-secrets", name: "sniffed-secrets", target_type: "hetzer-module" });
                     if (!existing) {
                         vaultInstance.create({

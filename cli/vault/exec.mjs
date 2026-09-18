@@ -14,12 +14,13 @@ import { Grimoire, resolveMasterKey, resolveVaultPath } from "./hetzer-vault.mjs
 import { executeSandboxedProcess } from "./sandbox.mjs";
 import { resolveSecretEnvironment } from "./secret-env.mjs";
 import { scanText } from "./sniffer.mjs";
+import { recordAuditEvent } from "./audit.mjs";
 
 const FORMAT_CONTROL = /\p{Cf}/u;
 const LEXICAL_CHARACTER = /[A-Za-z0-9+/_=.-]/;
 const PRIVATE_KEY_BEGIN = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/;
 const PRIVATE_KEY_END = /-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----/;
-const DATABASE_SCHEME = /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis):\/\//i;
+const DATABASE_SCHEME = /\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?|amqps?):\/\//i;
 const STRUCTURED_MARKER_TAIL = 128;
 const LEXICAL_SCAN_LIMIT = 512;
 
@@ -71,7 +72,7 @@ export function collectResolvedSecrets(envFile, env) {
             }
         }
     }
-    if (envFile && fs.existsSync(envFile)) {
+    if (envFile && fs.existsSync(envFile) && fs.statSync(envFile).isFile()) {
         const rawValues = parseEnv(fs.readFileSync(envFile, "utf8"));
         for (const [name, rawValue] of Object.entries(rawValues)) {
             if (!String(rawValue).startsWith("secretRef:")) continue;
@@ -583,13 +584,16 @@ export function parseArguments(argv) {
     const rawTimeout = value("--timeout");
     const rawPolicy = value("--policy");
     const rawPolicyHash = value("--policy-hash");
-    const isSandbox = options.includes("--sandbox") || Boolean(value("--sandbox-image"));
+    const isSandbox = (options.includes("--sandbox") || Boolean(value("--sandbox-image"))) && !options.includes("--no-sandbox") && !options.includes("--host");
     const rawSandboxVal = value("--sandbox");
     const sandboxImage = value("--sandbox-image") || (rawSandboxVal && !rawSandboxVal.startsWith("-") ? rawSandboxVal : undefined);
     const sandboxNetwork = value("--sandbox-network") || undefined;
+    const root = path.resolve(value("--root") || process.cwd());
+    const rawEnvFile = value("--env-file");
+    const envFile = rawEnvFile ? path.resolve(rawEnvFile) : path.join(root, ".env");
     return {
-        root: path.resolve(value("--root") || process.cwd()),
-        envFile: path.resolve(value("--env-file")),
+        root,
+        envFile,
         policyFile: rawPolicy ? path.resolve(rawPolicy) : undefined,
         policyHash: rawPolicyHash || undefined,
         brokerPolicyFiles: values("--broker-policy").map((file) => path.resolve(file)),
@@ -597,6 +601,7 @@ export function parseArguments(argv) {
         allowRawUnmediated: names(values("--allow-raw-unmediated")),
         allowSensitivePaths: options.includes("--allow-sensitive-paths"),
         allowUntrustedDownloaders: options.includes("--allow-untrusted-downloaders"),
+        hostMode: options.includes("--host") || options.includes("--no-sandbox"),
         sandbox: isSandbox,
         sandboxImage: sandboxImage || undefined,
         sandboxNetwork,
@@ -611,7 +616,9 @@ export function parseArguments(argv) {
 }
 
 function selectedCredentialBindings(envFile, allowNames = []) {
-    const values = fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, "utf8")) : {};
+    const values = envFile && fs.existsSync(envFile) && fs.statSync(envFile).isFile()
+        ? parseEnv(fs.readFileSync(envFile, "utf8"))
+        : {};
     const allow = new Set(allowNames.map((name) => String(name).toLowerCase()));
     return Object.entries(values).flatMap(([envName, value]) => {
         const reference = String(value || "");
@@ -751,6 +758,7 @@ export async function prepareExecutionEnvironment(effectiveOptions, {
                 baseEnv,
                 fetchFn: brokerFetchFn,
                 randomBytes: brokerRandomBytes,
+                allowSandbox: Boolean(effectiveOptions.sandbox),
             });
             const brokerUrl = `${opened.broker.url}${opened.policy.basePath === "/" ? "" : opened.policy.basePath}`;
             env[opened.policy.baseUrlEnv] = brokerUrl;
@@ -825,14 +833,49 @@ export async function executeProcess(options, {
     assertNoShellMetacharacters(effectiveOptions.command, effectiveOptions.commandArgs);
 
     if (!effectiveOptions.allowSensitivePaths) {
-        assertNoSensitivePathAccess(effectiveOptions.command, effectiveOptions.commandArgs);
+        try {
+            assertNoSensitivePathAccess(effectiveOptions.command, effectiveOptions.commandArgs);
+        } catch (err) {
+            try {
+                recordAuditEvent({
+                    eventType: "SENSITIVE_PATH_BLOCKED",
+                    target: path.basename(effectiveOptions.command || "unknown"),
+                    result: "BLOCK",
+                    details: { command: effectiveOptions.command, error: err.message },
+                    root: effectiveOptions.root,
+                });
+            } catch {}
+            throw err;
+        }
     }
     if (!effectiveOptions.allowUntrustedDownloaders) {
-        assertNoUntrustedDownloader(effectiveOptions.command, effectiveOptions.commandArgs);
+        try {
+            assertNoUntrustedDownloader(effectiveOptions.command, effectiveOptions.commandArgs);
+        } catch (err) {
+            try {
+                recordAuditEvent({
+                    eventType: "DOWNLOADER_BLOCKED",
+                    target: path.basename(effectiveOptions.command || "unknown"),
+                    result: "BLOCK",
+                    details: { command: effectiveOptions.command, error: err.message },
+                    root: effectiveOptions.root,
+                });
+            } catch {}
+            throw err;
+        }
     }
 
     if (isReflectionCommand(effectiveOptions.command, effectiveOptions.commandArgs)) {
         const fullCmd = [effectiveOptions.command, ...effectiveOptions.commandArgs].join(" ");
+        try {
+            recordAuditEvent({
+                eventType: "REFLECTION_BLOCKED",
+                target: path.basename(effectiveOptions.command || "unknown"),
+                result: "BLOCK",
+                details: { command: effectiveOptions.command },
+                root: effectiveOptions.root,
+            });
+        } catch {}
         const err = new Error(
             `Security violation: Command '${fullCmd}' is blocked by the credential-safety policy.\n` +
             "Environment reflection commands (printenv, env, export, inline dumps) are forbidden in 'hetzer exec' to prevent secret leakage into agent context or terminal logs."
@@ -846,6 +889,23 @@ export async function executeProcess(options, {
             + "You must explicitly specify which credentials may be resolved via '--allow <id|env-var>'.\n"
             + "No ungranted secrets are accessible in strict mode."
         );
+    }
+
+    try {
+        recordAuditEvent({
+            eventType: "EXEC",
+            target: path.basename(effectiveOptions.command || "unknown"),
+            result: "ALLOW",
+            details: {
+                command: effectiveOptions.command,
+                strict: Boolean(effectiveOptions.strict),
+                canary: Boolean(effectiveOptions.canary),
+                sandbox: Boolean(effectiveOptions.sandbox),
+            },
+            root: effectiveOptions.root,
+        });
+    } catch {
+        // Fail soft
     }
 
     if (effectiveOptions.sandbox) {

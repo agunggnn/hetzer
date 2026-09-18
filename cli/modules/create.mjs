@@ -223,9 +223,14 @@ export async function createModuleRecipeFromSource({
             sourceUrl = source;
             try {
                 let fetchUrl = source;
-                if (source.includes("github.com") && !source.includes("raw.githubusercontent.com")) {
-                    const clean = source.replace(/\/+$/, "").replace(/\.git$/, "");
-                    fetchUrl = `${clean.replace("github.com", "raw.githubusercontent.com")}/main/README.md`;
+                try {
+                    const parsed = new URL(source);
+                    if ((parsed.hostname === "github.com" || parsed.hostname === "www.github.com") && parsed.hostname !== "raw.githubusercontent.com") {
+                        const cleanPath = parsed.pathname.replace(/\/+$/, "").replace(/\.git$/, "");
+                        fetchUrl = `https://raw.githubusercontent.com${cleanPath}/main/README.md`;
+                    }
+                } catch {
+                    // ignore invalid URL
                 }
                 const res = await fetchFn(fetchUrl);
                 if (res.ok) {

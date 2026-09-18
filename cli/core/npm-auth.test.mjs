@@ -4,7 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { redactExactValues, runNpmWithAuth } from "./npm-auth.mjs";
+import {
+    assertValidPackageName,
+    redactExactValues,
+    resolveNpmCli,
+    runNpmWithAuth,
+    verifyNpmRegistryAuth,
+} from "./npm-auth.mjs";
 
 test("runNpmWithAuth keeps registry credentials out of argv and npmrc", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-npm-auth-test-"));
@@ -39,4 +45,180 @@ test("runNpmWithAuth keeps registry credentials out of argv and npmrc", () => {
     assert.equal(fs.existsSync(captured.npmrcFile), false);
     assert.equal(redactExactValues(`failure ${token}`, [token]), "failure secretRef:registry-credential");
     fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test("verifyNpmRegistryAuth succeeds with Classic token when whoami returns 0", () => {
+    const mockRun = ({ args }) => {
+        if (args.includes("whoami")) {
+            return { status: 0, stdout: "agunggnn\n", stderr: "" };
+        }
+        return { status: 0, stdout: JSON.stringify({ agunggnn: "read-write" }), stderr: "" };
+    };
+
+    const res = verifyNpmRegistryAuth({
+        token: "test-token",
+        runNpm: mockRun,
+    });
+
+    assert.equal(res.ok, true);
+    assert.equal(res.type, "classic");
+    assert.equal(res.username, "agunggnn");
+});
+
+test("verifyNpmRegistryAuth falls back to GAT without overclaiming write permission", () => {
+    const mockRun = ({ args }) => {
+        if (args.includes("whoami")) {
+            return { status: 1, stdout: "", stderr: "npm error code E404\nnpm error Not Found" };
+        }
+        if (args.includes("collaborators")) {
+            return { status: 0, stdout: JSON.stringify({ agunggnn: "read-write" }), stderr: "" };
+        }
+        return { status: 1, stdout: "", stderr: "failed" };
+    };
+
+    const res = verifyNpmRegistryAuth({
+        token: "test-token",
+        packageName: "hetzer",
+        runNpm: mockRun,
+    });
+
+    assert.equal(res.ok, true);
+    assert.equal(res.type, "granular");
+    assert.equal(res.packageName, "hetzer");
+});
+
+test("verifyNpmRegistryAuth does not overclaim GAT write permission from collaborator output", () => {
+    const mockRun = ({ args }) => {
+        if (args.includes("whoami")) {
+            return { status: 1, stdout: "", stderr: "GAT does not support whoami" };
+        }
+        if (args.includes("collaborators")) {
+            return { status: 0, stdout: JSON.stringify({ agunggnn: "read-only" }), stderr: "" };
+        }
+        return { status: 1, stdout: "", stderr: "failed" };
+    };
+
+    const result = verifyNpmRegistryAuth({
+        token: "test-token",
+        packageName: "hetzer",
+        runNpm: mockRun,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.writeVerified, false);
+});
+
+test("verifyNpmRegistryAuth fails closed when Classic write permission probe fails", () => {
+    const mockRun = ({ args }) => args.includes("whoami")
+        ? { status: 0, stdout: "agunggnn\n", stderr: "" }
+        : { status: 1, stdout: "", stderr: "permission probe failed" };
+
+    assert.throws(() => verifyNpmRegistryAuth({
+        token: "test-token",
+        packageName: "hetzer",
+        runNpm: mockRun,
+    }), (err) => {
+        assert.equal(err.code, "ERR_NPM_WRITE_PERMISSION_UNVERIFIED");
+        return true;
+    });
+});
+
+test("verifyNpmRegistryAuth classifies network/DNS outage as ERR_NPM_NETWORK instead of 401", () => {
+    const mockRun = () => ({
+        status: 1,
+        stdout: "",
+        stderr: "npm error code ENOTFOUND\nnpm error getaddrinfo ENOTFOUND registry.npmjs.org",
+    });
+
+    assert.throws(() => {
+        verifyNpmRegistryAuth({
+            token: "test-token",
+            runNpm: mockRun,
+        });
+    }, (err) => {
+        assert.equal(err.code, "ERR_NPM_NETWORK");
+        assert.match(err.message, /Unable to reach/);
+        assert.doesNotMatch(err.message, /401 Unauthorized/);
+        return true;
+    });
+});
+
+test("verifyNpmRegistryAuth rejects Classic token when collaborator permission is read-only", () => {
+    const mockRun = ({ args }) => {
+        if (args.includes("whoami")) {
+            return { status: 0, stdout: "agunggnn\n", stderr: "" };
+        }
+        if (args.includes("collaborators")) {
+            return { status: 0, stdout: JSON.stringify({ agunggnn: "read-only" }), stderr: "" };
+        }
+        return { status: 1, stdout: "", stderr: "failed" };
+    };
+
+    assert.throws(() => {
+        verifyNpmRegistryAuth({
+            token: "test-token",
+            packageName: "hetzer",
+            runNpm: mockRun,
+        });
+    }, (err) => {
+        assert.equal(err.code, "ERR_NPM_WRITE_PERMISSION_MISSING");
+        assert.match(err.message, /lacks write access/);
+        return true;
+    });
+});
+
+test("verifyNpmRegistryAuth throws ERR_NPM_AUTH_FAILED on genuine invalid token", () => {
+    const mockRun = () => ({
+        status: 1,
+        stdout: "",
+        stderr: "npm error code E401\nnpm error 401 Unauthorized - Invalid token",
+    });
+
+    assert.throws(() => {
+        verifyNpmRegistryAuth({
+            token: "test-token",
+            runNpm: mockRun,
+        });
+    }, (err) => {
+        assert.equal(err.code, "ERR_NPM_AUTH_FAILED");
+        assert.match(err.message, /401 Unauthorized/);
+        return true;
+    });
+});
+
+test("assertValidPackageName accepts standard and scoped package names", () => {
+    assert.doesNotThrow(() => assertValidPackageName("hetzer"));
+    assert.doesNotThrow(() => assertValidPackageName("@agunggnn/hetzer"));
+    assert.doesNotThrow(() => assertValidPackageName("lodash.debounce"));
+    assert.doesNotThrow(() => assertValidPackageName("@types/node"));
+});
+
+test("assertValidPackageName rejects malicious and invalid package names", () => {
+    assert.throws(() => assertValidPackageName("pkg; rm -rf /"), (err) => err.code === "ERR_INVALID_PACKAGE_NAME");
+    assert.throws(() => assertValidPackageName("pkg & whoami"), (err) => err.code === "ERR_INVALID_PACKAGE_NAME");
+    assert.throws(() => assertValidPackageName("../../etc/passwd"), (err) => err.code === "ERR_INVALID_PACKAGE_NAME");
+    assert.throws(() => assertValidPackageName(""), (err) => err.code === "ERR_INVALID_PACKAGE_NAME");
+    assert.throws(() => assertValidPackageName(123), (err) => err.code === "ERR_INVALID_PACKAGE_NAME");
+});
+
+test("runNpmWithAuth rejects arguments containing shell metacharacters", () => {
+    assert.throws(() => {
+        runNpmWithAuth({
+            args: ["install", "pkg; echo pwned"],
+            registry: "https://registry.npmjs.org/",
+            token: "valid-token",
+        });
+    }, (err) => err.code === "ERR_UNSAFE_NPM_ARGUMENT");
+
+    assert.throws(() => {
+        runNpmWithAuth({
+            args: ["install", "pkg | whoami"],
+            registry: "https://registry.npmjs.org/",
+            token: "valid-token",
+        });
+    }, (err) => err.code === "ERR_UNSAFE_NPM_ARGUMENT");
+});
+
+test("resolveNpmCli safely locates npm-cli.js or returns null", () => {
+    const cli = resolveNpmCli();
+    assert.ok(cli === null || typeof cli === "string");
 });

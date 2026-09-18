@@ -20,6 +20,7 @@ import { approveCredentialRequest, createCredentialRequest, getCredentialRequest
 import { isolateMasterKey, resolveMasterKey } from "../vault/hetzer-vault.mjs";
 import { autoIngestPlaintextEnv, migrateEnvCredentials } from "../vault/migrate-env.mjs";
 import { setupCanaryTrap } from "../vault/canary.mjs";
+import { readAuditEvents, verifyAuditLedger } from "../vault/audit.mjs";
 import { redactAndVault, scanText, restoreSecrets } from "../vault/sniffer.mjs";
 import { getHetzerAsciiBanner, printHetzerBanner } from "./banner.mjs";
 import { runDoctor } from "./doctor.mjs";
@@ -38,6 +39,7 @@ import {
     isNewerVersion,
     readUpdateCache,
 } from "./version-check.mjs";
+import { runCliUpgrade } from "./upgrade.mjs";
 import { verifyModuleDeployment } from "./verifier.mjs";
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -123,13 +125,19 @@ export function levenshteinDistance(a, b) {
 export function suggestCommand(input) {
     const primaryCommands = [
         "help", "doctor", "init", "protect", "skill", "hook",
-        "sniffer", "install", "remove", "creds", "canary",
-        "modules", "up", "update", "down", "status", "logs",
+        "sniffer", "install", "remove", "creds", "canary", "audit",
+        "modules", "up", "update", "upgrade", "down", "status", "logs",
         "module", "validate", "mcp", "publish", "exec", "broker", "tui",
+        "version", "check-update",
     ];
     const lower = String(input || "").toLowerCase();
     for (const cmd of primaryCommands) {
-        if (cmd.startsWith(lower) || (lower.length >= 3 && lower.startsWith(cmd))) {
+        if (cmd.startsWith(lower)) {
+            return cmd;
+        }
+    }
+    for (const cmd of primaryCommands) {
+        if (lower.length >= 3 && lower.startsWith(cmd)) {
             return cmd;
         }
     }
@@ -159,9 +167,11 @@ export const KNOWN_COMMANDS = new Set([
     "remove",
     "creds", "credentials",
     "canary",
+    "audit",
     "modules",
     "up",
     "update",
+    "upgrade",
     "down",
     "status",
     "logs",
@@ -477,7 +487,7 @@ export function printModuleHelp(moduleId, root, values) {
     process.stdout.write("================================================================================\n");
 }
 
-function help() {
+export function help() {
     const banner = getHetzerAsciiBanner({ colored: Boolean(process.stdout.isTTY) });
     return `${banner}
 
@@ -490,7 +500,7 @@ Commands:
   init [directory]          Initialize a new instance (default: ~/.hetzer or current workspace)
   doctor [--fix]            Check system & Docker compatibility (--fix to auto-repair)
   up [module|all] [--wait]  Start containers [deprecated; use Jagdpanzer]
-  update [target|all]       Pull and update module/service image digests
+  update [module]           Update Hetzer CLI or update module images [deprecated]
   down [-v]                 Stop services [deprecated; use Jagdpanzer]
   status                    View container states [deprecated; use Jagdpanzer]
   logs [service]            Stream service logs [deprecated; use Jagdpanzer]
@@ -502,7 +512,8 @@ Commands:
   validate [module]         Validate module integrity, security, and compose recipe
   creds [list|request|approve|status|reveal|set] Manage encrypted secrets in Grimoire Vault (AES-256-GCM)
   canary [setup]            Deploy decoy canary honey-token tripwire to catch prompt injections
-  exec [--allow <ids>] [--broker-policy <file>] [--allow-raw-unmediated <ids>] [--strict] -- <c>
+  audit [verify|tail [n]]   Verify cryptographic hash-chain or inspect tamper-evident audit ledger
+  exec [--allow <ids>] [--policy <file>] [--sandbox [image]] [--host] [--strict] [--canary] [--timeout <t>] -- <c>
                               Run with mediated credentials; raw injection requires an audited opt-out
   broker --policy <file> -- <command>   Run an HTTP client using a short-lived capability instead of the real credential
   sniffer [scan|redact] <t> Detect or redact credentials supported by the scanner rules
@@ -515,6 +526,7 @@ Commands:
   publish                   Build, verify test suite, and publish package to npm
   version [--check]         Display Hetzer version (use --check to query latest release)
   check-update              Check if a newer version of Hetzer is available
+  upgrade [--yes|--check]   Upgrade Hetzer CLI to latest release
   tui                       Tactical security and runtime armor HUD
 `;
 }
@@ -578,6 +590,13 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         } else {
             process.stdout.write(`Hetzer is up to date (v${manifest.version}).\n`);
         }
+        return;
+    }
+    if (command === "upgrade" || (command === "update" && (!args[0] || args[0] === "--cli" || args[0] === "cli" || args[0].startsWith("-")))) {
+        const manifest = JSON.parse(fs.readFileSync(path.join(cliRoot, "..", "package.json"), "utf8"));
+        const cleanArgs = args.filter((a) => a !== "--cli" && a !== "cli");
+        const res = await runCliUpgrade(cleanArgs, { cliRoot, manifest });
+        if (!res.ok) process.exitCode = 1;
         return;
     }
     if (command === "doctor") {
@@ -702,6 +721,56 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             process.stdout.write("================================================================================\n");
             return;
         }
+    }
+
+    if (command === "audit") {
+        const sub = args[0] || "tail";
+        if (sub === "verify") {
+            const result = verifyAuditLedger({ root });
+            process.stdout.write("================================================================================\n");
+            process.stdout.write("  HETZER - AUDIT LEDGER INTEGRITY VERIFICATION\n");
+            process.stdout.write("================================================================================\n");
+            if (result.ok) {
+                process.stdout.write("  Status       : [v] VERIFIED (Cryptographic hash-chain intact)\n");
+                process.stdout.write(`  Total Events : ${result.count}\n`);
+                if (result.latestHash) {
+                    process.stdout.write(`  Latest Hash  : ${result.latestHash}\n`);
+                }
+            } else {
+                process.stdout.write("  Status       : [!] INTEGRITY FAILED (Tampering detected)\n");
+                process.stdout.write(`  Error        : ${result.error}\n`);
+                if (result.tamperedIndex !== undefined) {
+                    process.stdout.write(`  At Entry     : #${result.tamperedIndex}\n`);
+                }
+                process.exitCode = 1;
+            }
+            process.stdout.write("================================================================================\n");
+            return;
+        }
+        if (sub === "tail" || sub === "log" || sub === "list") {
+            const countArg = args[1] ? Number.parseInt(args[1], 10) : 20;
+            const limit = Number.isFinite(countArg) && countArg > 0 ? countArg : 20;
+            const events = readAuditEvents({ root, limit });
+            process.stdout.write("================================================================================\n");
+            process.stdout.write(`  HETZER - AUDIT LEDGER (LAST ${events.length} EVENTS)\n`);
+            process.stdout.write("================================================================================\n");
+            if (events.length === 0) {
+                process.stdout.write("  No audit events recorded yet in this workspace.\n");
+            } else {
+                process.stdout.write("TIMESTAMP                 EVENT_TYPE            RESULT  TARGET\n");
+                process.stdout.write("------------------------  --------------------  ------  ------------------------\n");
+                for (const ev of events) {
+                    const tsCol = (ev.timestamp || "").padEnd(24);
+                    const typeCol = (ev.eventType || "").padEnd(20);
+                    const resCol = (ev.result || "").padEnd(6);
+                    const targetCol = (ev.target || "").slice(0, 24);
+                    process.stdout.write(`${tsCol}  ${typeCol}  ${resCol}  ${targetCol}\n`);
+                }
+            }
+            process.stdout.write("================================================================================\n");
+            return;
+        }
+        throw new Error(`Unknown audit subcommand: '${sub}'. Use 'verify' or 'tail [count]'.`);
     }
 
     const { envFile, values } = projectEnvironment(root);
@@ -1207,14 +1276,24 @@ export async function main(argv = process.argv.slice(2), options = {}) {
     if (command === "exec") {
         const marker = args.indexOf("--");
         if (marker === -1 || !args[marker + 1]) {
-            throw new Error("Usage: hetzer exec [--policy <file>] [--broker-policy <file>] [--allow NAME,NAME] [--allow-raw-unmediated NAME,NAME] [--strict] [--canary] [--sandbox [image]] [--sandbox-network <net>] [--sandbox-ro] [--allow-sensitive-paths] [--timeout <duration>] -- <command> [args]");
+            throw new Error("Usage: hetzer exec [--policy <file>] [--broker-policy <file>] [--allow NAME,NAME] [--allow-raw-unmediated NAME,NAME] [--strict] [--canary] [--sandbox [image]] [--sandbox-network <net>] [--sandbox-ro] [--allow-sensitive-paths] [--host] [--no-sandbox] [--timeout <duration>] -- <command> [args]");
         }
         const execOptions = args.slice(0, marker);
+        const hasSandboxOption = execOptions.includes("--sandbox") || execOptions.some((o) => o.startsWith("--sandbox"));
+        const hasHostOption = execOptions.includes("--host") || execOptions.includes("--no-sandbox");
+
+        // If HETZER_AUTO_SANDBOX is enabled and host mode is not explicitly requested, default to sandbox
+        const autoSandboxEnabled = process.env.HETZER_AUTO_SANDBOX === "1" || values.HETZER_AUTO_SANDBOX === "1";
+        const effectiveExecOptions = [...execOptions];
+        if (autoSandboxEnabled && !hasSandboxOption && !hasHostOption) {
+            effectiveExecOptions.push("--sandbox");
+        }
+
         const passArgs = [
             path.join(cliRoot, "vault", "exec.mjs"),
             "--root", root,
             "--env-file", envFile,
-            ...execOptions,
+            ...effectiveExecOptions,
             "--",
             ...args.slice(marker + 1),
         ];

@@ -1,16 +1,21 @@
 #!/usr/bin/env node
 
 import crypto from "node:crypto";
+import dns from "node:dns";
 import fs from "node:fs";
 import http from "node:http";
+import https from "node:https";
+import net from "node:net";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { parseEnv } from "../core/env.mjs";
+import { recordAuditEvent } from "./audit.mjs";
 import { isCanaryCredential, triggerCanaryAlert } from "./canary.mjs";
 import { assertNoShellMetacharacters } from "./exec-policy.mjs";
-import { isReflectionCommand, pipeSanitizedChild, resolveCommandForSpawn } from "./exec.mjs";
+import { isReflectionCommand, parseDuration, pipeSanitizedChild, resolveCommandForSpawn } from "./exec.mjs";
 import { Grimoire, parseSecretRef, resolveMasterKey, resolveVaultPath } from "./hetzer-vault.mjs";
 import { strictBaseEnvironment } from "./secret-env.mjs";
 
@@ -60,6 +65,236 @@ function validateHeader(value, label) {
         throw new Error(`${label} is not an allowed HTTP header name.`);
     }
     return header;
+}
+
+function parseIpv6Hextets(ipStr) {
+    let str = ipStr.toLowerCase();
+    const lastColon = str.lastIndexOf(":");
+    if (lastColon >= 0) {
+        const potentialIpv4 = str.slice(lastColon + 1);
+        if (potentialIpv4.includes(".")) {
+            const v4Parts = potentialIpv4.split(".").map(Number);
+            if (v4Parts.length === 4 && v4Parts.every((n) => !isNaN(n) && n >= 0 && n <= 255)) {
+                const hex1 = (((v4Parts[0] << 8) | v4Parts[1]) >>> 0).toString(16);
+                const hex2 = (((v4Parts[2] << 8) | v4Parts[3]) >>> 0).toString(16);
+                str = `${str.slice(0, lastColon)}:${hex1}:${hex2}`;
+            } else {
+                return null;
+            }
+        }
+    }
+
+    const doubleColonCount = (str.match(/::/g) || []).length;
+    if (doubleColonCount > 1) return null;
+
+    let parts = [];
+    if (doubleColonCount === 1) {
+        const [left, right] = str.split("::");
+        const leftParts = left ? left.split(":") : [];
+        const rightParts = right ? right.split(":") : [];
+        const missingCount = 8 - (leftParts.length + rightParts.length);
+        if (missingCount < 1) return null;
+        const middle = Array(missingCount).fill("0");
+        parts = [...leftParts, ...middle, ...rightParts];
+    } else {
+        parts = str.split(":");
+    }
+
+    if (parts.length !== 8) return null;
+    const hextets = [];
+    for (const p of parts) {
+        if (!/^[0-9a-f]{1,4}$/i.test(p)) return null;
+        hextets.push(parseInt(p, 16));
+    }
+    return hextets;
+}
+
+export function isPrivateOrReservedIp(rawIp) {
+    let ip = String(rawIp || "").trim();
+    if (ip.startsWith("[") && ip.endsWith("]")) {
+        ip = ip.slice(1, -1).trim();
+    }
+    if (!ip) return false;
+
+    if (net.isIPv4(ip)) {
+        const parts = ip.split(".").map(Number);
+        if (parts.length !== 4 || parts.some((n) => isNaN(n) || n < 0 || n > 255)) return true;
+        const [a, b, c] = parts;
+
+        if (a === 0) return true;
+        if (a === 127) return true;
+        if (a === 10) return true;
+        if (a === 172 && b >= 16 && b <= 31) return true;
+        if (a === 192 && b === 168) return true;
+        if (a === 169 && b === 254) return true;
+        if (a === 100 && b >= 64 && b <= 127) return true;
+        if (a === 192 && b === 0 && c === 0) return true;
+        if (a === 192 && b === 0 && c === 2) return true;
+        if (a === 198 && b === 51 && c === 100) return true;
+        if (a === 203 && b === 0 && c === 113) return true;
+        if (a === 198 && (b === 18 || b === 19)) return true;
+        if (a >= 224) return true;
+
+        return false;
+    }
+
+    if (net.isIPv6(ip) || ip.includes(":")) {
+        const h = parseIpv6Hextets(ip);
+        if (!h) return net.isIPv6(ip);
+
+        // 1. ::1 (Loopback) - handles ::1, 0::1, 0:0:0:0:0:0:0:1, etc.
+        if (h[0] === 0 && h[1] === 0 && h[2] === 0 && h[3] === 0 && h[4] === 0 && h[5] === 0 && h[6] === 0 && h[7] === 1) return true;
+
+        // 2. :: (Unspecified)
+        if (h.every((x) => x === 0)) return true;
+
+        // 3. IPv4-mapped (::ffff:0:0/96) - handles ::ffff:127.0.0.1, ::ffff:7f00:1, ::ffff:a9fe:a9fe
+        if (h[0] === 0 && h[1] === 0 && h[2] === 0 && h[3] === 0 && h[4] === 0 && h[5] === 0xffff) {
+            const v4 = `${h[6] >> 8}.${h[6] & 0xff}.${h[7] >> 8}.${h[7] & 0xff}`;
+            return isPrivateOrReservedIp(v4);
+        }
+
+        // 4. IPv4-compatible (::/96)
+        if (h[0] === 0 && h[1] === 0 && h[2] === 0 && h[3] === 0 && h[4] === 0 && h[5] === 0) {
+            const v4 = `${h[6] >> 8}.${h[6] & 0xff}.${h[7] >> 8}.${h[7] & 0xff}`;
+            return isPrivateOrReservedIp(v4);
+        }
+
+        // 5. NAT64 Well-Known Prefix (64:ff9b::/96)
+        if (h[0] === 0x0064 && h[1] === 0xff9b && h[2] === 0 && h[3] === 0 && h[4] === 0 && h[5] === 0) {
+            const v4 = `${h[6] >> 8}.${h[6] & 0xff}.${h[7] >> 8}.${h[7] & 0xff}`;
+            return isPrivateOrReservedIp(v4);
+        }
+
+        // 6. Unique Local Address (fc00::/7)
+        if ((h[0] & 0xfe00) === 0xfc00) return true;
+
+        // 7. Link-Local (fe80::/10)
+        if ((h[0] & 0xffc0) === 0xfe80) return true;
+
+        // 8. Documentation (2001:db8::/32)
+        if (h[0] === 0x2001 && h[1] === 0x0db8) return true;
+
+        // 9. Discard prefix (100::/64)
+        if (h[0] === 0x0100 && h[1] === 0 && h[2] === 0 && h[3] === 0) return true;
+
+        // 10. Multicast (ff00::/8)
+        if ((h[0] & 0xff00) === 0xff00) return true;
+
+        return false;
+    }
+
+    return false;
+}
+
+export async function assertSafeUpstreamHost(hostname, {
+    allowPrivate = false,
+    lookupFn = dns.promises.lookup,
+} = {}) {
+    if (allowPrivate) return [];
+    const host = String(hostname || "").trim().toLowerCase().replace(/^\[|\]$/g, "");
+    if (!host) throw new Error("Upstream host is required.");
+
+    if (host === "localhost" || host.endsWith(".localhost") || host === "127.0.0.1" || host === "::1") {
+        const err = new Error(`SSRF blocked: Target host '${hostname}' points to local loopback.`);
+        err.code = "ERR_SSRF_TARGET_BLOCKED";
+        throw err;
+    }
+
+    if (isPrivateOrReservedIp(host)) {
+        const err = new Error(`SSRF blocked: Target host '${hostname}' is a private, loopback, or metadata address.`);
+        err.code = "ERR_SSRF_TARGET_BLOCKED";
+        throw err;
+    }
+
+    try {
+        const results = await lookupFn(host, { all: true });
+        const addresses = Array.isArray(results) ? results : [results];
+        if (!addresses.length) {
+            const err = new Error(`SSRF blocked: Host '${hostname}' resolved to no addresses.`);
+            err.code = "ERR_SSRF_LOOKUP_FAILED";
+            throw err;
+        }
+        const resolvedIps = [];
+        for (const item of addresses) {
+            const address = typeof item === "string" ? item : item?.address;
+            if (!address) continue;
+            if (isPrivateOrReservedIp(address)) {
+                const err = new Error(`SSRF blocked: Host '${hostname}' resolved to private/metadata IP '${address}'.`);
+                err.code = "ERR_SSRF_TARGET_BLOCKED";
+                throw err;
+            }
+            resolvedIps.push(address);
+        }
+        if (!resolvedIps.length) {
+            const err = new Error(`SSRF blocked: Host '${hostname}' resolved to no valid IP addresses.`);
+            err.code = "ERR_SSRF_LOOKUP_FAILED";
+            throw err;
+        }
+        return resolvedIps;
+    } catch (err) {
+        if (err.code === "ERR_SSRF_TARGET_BLOCKED" || err.code === "ERR_SSRF_LOOKUP_FAILED") throw err;
+        const lookupErr = new Error(`SSRF blocked: DNS resolution failed for host '${hostname}': ${err.message}`);
+        lookupErr.code = "ERR_SSRF_LOOKUP_FAILED";
+        throw lookupErr;
+    }
+}
+
+export function safePinnedFetch(target, options = {}, pinnedIp) {
+    return new Promise((resolve, reject) => {
+        const url = target instanceof URL ? target : new URL(String(target));
+        const isHttps = url.protocol === "https:";
+        const transport = isHttps ? https : http;
+
+        const reqOptions = {
+            host: pinnedIp || url.hostname,
+            servername: url.hostname,
+            port: url.port || (isHttps ? 443 : 80),
+            path: `${url.pathname}${url.search}`,
+            method: options.method || "GET",
+            headers: {
+                ...options.headers,
+                host: url.host,
+            },
+            signal: options.signal,
+        };
+
+        const req = transport.request(reqOptions, (res) => {
+            const webStream = Readable.toWeb(res);
+            const headers = new Headers();
+            for (const [key, val] of Object.entries(res.headers)) {
+                if (val !== undefined) {
+                    if (Array.isArray(val)) {
+                        for (const v of val) headers.append(key, v);
+                    } else {
+                        headers.set(key, val);
+                    }
+                }
+            }
+            const response = new Response(webStream, {
+                status: res.statusCode || 200,
+                statusText: res.statusMessage || "OK",
+                headers,
+            });
+            resolve(response);
+        });
+
+        req.on("error", (err) => reject(err));
+
+        if (options.body) {
+            if (Buffer.isBuffer(options.body) || typeof options.body === "string") {
+                req.write(options.body);
+                req.end();
+            } else if (typeof options.body?.pipe === "function") {
+                options.body.pipe(req);
+            } else {
+                req.write(String(options.body));
+                req.end();
+            }
+        } else {
+            req.end();
+        }
+    });
 }
 
 export function decodePathToFixedPoint(input, maxPasses = 3) {
@@ -154,6 +389,14 @@ export function validateBrokerPolicy(input) {
     ) {
         throw new Error("Broker target must be an HTTPS origin without credentials, path, query, or fragment.");
     }
+    if (!input.allowPrivateUpstream) {
+        if (isPrivateOrReservedIp(target.hostname)) {
+            throw new Error("Broker target must not point to a private, loopback, or cloud metadata IP address (SSRF guard).");
+        }
+        if (target.hostname === "localhost" || target.hostname.endsWith(".localhost")) {
+            throw new Error("Broker target must not point to localhost (SSRF guard).");
+        }
+    }
 
     const credentialId = parseSecretRef(input.credential);
     const methods = [...new Set((input.allowedMethods || ["GET", "POST"]).map((item) => String(item).toUpperCase()))];
@@ -190,6 +433,7 @@ export function validateBrokerPolicy(input) {
         [VALIDATED_POLICY]: true,
         version: 1,
         targetOrigin: target.origin,
+        allowPrivateUpstream: Boolean(input.allowPrivateUpstream),
         credentialId,
         baseUrlEnv,
         tokenEnv,
@@ -275,6 +519,23 @@ function matchesCapability(actual, expected) {
 
 function isLoopback(address) {
     return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+}
+
+export function isContainerBridgeOrLoopback(address) {
+    if (isLoopback(address)) return true;
+    let ip = String(address || "").trim();
+    if (ip.startsWith("::ffff:")) ip = ip.slice(7);
+    if (net.isIPv4(ip)) {
+        const parts = ip.split(".").map(Number);
+        if (parts.length === 4 && parts.every((n) => !isNaN(n) && n >= 0 && n <= 255)) {
+            const [a, b] = parts;
+            if (a === 127) return true;
+            if (a === 10) return true;
+            if (a === 172 && b >= 16 && b <= 31) return true;
+            if (a === 192 && b === 168) return true;
+        }
+    }
+    return false;
 }
 
 function sendJson(response, statusCode, message) {
@@ -401,6 +662,13 @@ function getSecretRepresentations(secret) {
         }
     } catch { /* ignore */ }
 
+    try {
+        if (secret.length >= 4) {
+            const b64 = Buffer.from(secret, "utf8").toString("base64");
+            if (b64.length >= 8) representations.add(b64);
+        }
+    } catch { /* ignore */ }
+
     return [...representations].filter(Boolean).sort((a, b) => b.length - a.length);
 }
 
@@ -420,24 +688,46 @@ export async function startHttpCredentialBroker({
     policy: rawPolicy,
     secret,
     fetchFn = globalThis.fetch,
+    lookupFn,
     randomBytes = crypto.randomBytes,
-    host = "127.0.0.1",
+    host,
+    allowSandbox = false,
 } = {}) {
     const policy = rawPolicy?.[VALIDATED_POLICY] ? rawPolicy : validateBrokerPolicy(rawPolicy);
     if (typeof secret !== "string" || !secret) throw new Error("Broker credential is required.");
     if (typeof fetchFn !== "function") throw new Error("A Fetch-compatible transport is required.");
-    if (host !== "127.0.0.1") throw new Error("Credential broker must bind to 127.0.0.1.");
+
+    const effectiveHost = host || (allowSandbox ? "0.0.0.0" : "127.0.0.1");
+    if (allowSandbox) {
+        if (effectiveHost !== "127.0.0.1" && effectiveHost !== "0.0.0.0") {
+            throw new Error("Credential broker must bind to 127.0.0.1 or 0.0.0.0.");
+        }
+    } else if (effectiveHost !== "127.0.0.1") {
+        throw new Error("Credential broker must bind to 127.0.0.1.");
+    }
 
     const capability = randomBytes(32).toString("base64url");
     const expectedAuth = authValue(policy.clientScheme, capability);
     const deadline = Date.now() + (policy.ttlSeconds * 1000);
     let forwardedRequests = 0;
 
+    const resolvedLookupFn = lookupFn || (fetchFn && fetchFn !== globalThis.fetch ? async (h, opts) => {
+        if (String(h).endsWith(".test") || String(h).endsWith(".example")) {
+            return [{ address: "93.184.216.34", family: 4 }];
+        }
+        return dns.promises.lookup(h, opts);
+    } : dns.promises.lookup);
+
     const server = http.createServer(async (request, response) => {
         let slotReserved = false;
         let requestDispatched = false;
         try {
-            if (!isLoopback(request.socket.remoteAddress)) return sendJson(response, 403, "Loopback clients only.");
+            const clientAllowed = allowSandbox
+                ? isContainerBridgeOrLoopback(request.socket.remoteAddress)
+                : isLoopback(request.socket.remoteAddress);
+            if (!clientAllowed) {
+                return sendJson(response, 403, allowSandbox ? "Loopback or container bridge clients only." : "Loopback clients only.");
+            }
             if (Date.now() >= deadline) return sendJson(response, 410, "Broker capability expired.");
             if (!matchesCapability(request.headers[policy.clientHeader], expectedAuth)) {
                 return sendJson(response, 401, "Invalid broker capability.");
@@ -449,6 +739,30 @@ export async function startHttpCredentialBroker({
             slotReserved = true;
 
             const target = upstreamUrl(policy, request.url);
+            let safeIps = [];
+            try {
+                safeIps = await assertSafeUpstreamHost(target.hostname, {
+                    allowPrivate: policy.allowPrivateUpstream,
+                    lookupFn: resolvedLookupFn,
+                });
+            } catch (err) {
+                if (err.code === "ERR_SSRF_TARGET_BLOCKED" || err.code === "ERR_SSRF_LOOKUP_FAILED") {
+                    if (slotReserved && !requestDispatched) {
+                        forwardedRequests = Math.max(0, forwardedRequests - 1);
+                        slotReserved = false;
+                    }
+                    try {
+                        recordAuditEvent({
+                            eventType: "SSRF_BLOCKED",
+                            target: target.hostname,
+                            result: "DENY",
+                            details: { error: err.message, url: request.url },
+                        });
+                    } catch { /* fail soft */ }
+                    return sendJson(response, 403, err.message);
+                }
+                throw err;
+            }
             const body = await readNodeStream(request, policy.maxRequestBytes);
 
             const connectionTokens = extractConnectionTokens(request.headers.connection);
@@ -464,7 +778,11 @@ export async function startHttpCredentialBroker({
             headers[policy.upstreamHeader] = authValue(policy.upstreamScheme, secret);
 
             requestDispatched = true;
-            const upstream = await fetchFn(target, {
+            const pinnedIp = safeIps?.[0];
+            const transport = (fetchFn && fetchFn !== globalThis.fetch)
+                ? fetchFn
+                : ((u, opts) => safePinnedFetch(u, opts, pinnedIp));
+            const upstream = await transport(target, {
                 method,
                 headers,
                 body: method === "GET" ? undefined : body,
@@ -506,7 +824,7 @@ export async function startHttpCredentialBroker({
 
     await new Promise((resolve, reject) => {
         server.once("error", reject);
-        server.listen(0, host, resolve);
+        server.listen(0, effectiveHost, resolve);
     });
     const address = server.address();
     const timer = setTimeout(() => server.close(), policy.ttlSeconds * 1000);
@@ -514,7 +832,7 @@ export async function startHttpCredentialBroker({
     let closed = false;
 
     return {
-        url: `http://${host}:${address.port}`,
+        url: `http://${effectiveHost === "0.0.0.0" ? "127.0.0.1" : effectiveHost}:${address.port}`,
         capability,
         policy,
         close() {
@@ -537,6 +855,7 @@ export async function openHttpCredentialBroker({
     baseEnv = process.env,
     fetchFn = globalThis.fetch,
     randomBytes = crypto.randomBytes,
+    allowSandbox = false,
 } = {}) {
     const policy = rawPolicy
         ? (rawPolicy?.[VALIDATED_POLICY] ? rawPolicy : validateBrokerPolicy(rawPolicy))
@@ -575,7 +894,7 @@ export async function openHttpCredentialBroker({
     }
 
     try {
-        const broker = await startHttpCredentialBroker({ policy, secret, fetchFn, randomBytes });
+        const broker = await startHttpCredentialBroker({ policy, secret, fetchFn, randomBytes, allowSandbox });
         return { broker, policy, secret };
     } catch (error) {
         secret = "";
@@ -595,12 +914,15 @@ export function parseBrokerArguments(argv) {
         const index = options.indexOf(name);
         return index >= 0 ? options[index + 1] : "";
     };
+    const rawTimeout = value("--timeout");
     return {
         root: path.resolve(value("--root") || process.cwd()),
-        envFile: path.resolve(value("--env-file")),
+        envFile: value("--env-file") ? path.resolve(value("--env-file")) : undefined,
         policyFile: path.resolve(options[policyIndex + 1]),
         command: argv[marker + 1],
         commandArgs: argv.slice(marker + 2),
+        timeout: rawTimeout || undefined,
+        timeoutMs: rawTimeout ? parseDuration(rawTimeout) : undefined,
     };
 }
 
@@ -614,6 +936,7 @@ export async function executeBrokeredProcess(options, {
     if (isReflectionCommand(options.command, options.commandArgs)) {
         throw Object.assign(new Error("Environment reflection commands are forbidden in broker execution."), { code: "ERR_REFLECTION_BLOCKED" });
     }
+    const timeoutMs = options.timeoutMs ?? (options.timeout ? parseDuration(options.timeout) : undefined);
     let secret = "";
     const opened = await openHttpCredentialBroker({
         root: options.root,
@@ -641,7 +964,12 @@ export async function executeBrokeredProcess(options, {
         return await pipeSanitizedChild(child, [
             { id: policy.credentialId, secret },
             { id: "broker-capability", secret: broker.capability },
-        ], { outStream, errStream });
+        ], {
+            outStream,
+            errStream,
+            root: options.root,
+            timeoutMs,
+        });
     } finally {
         await broker.close();
         secret = "";

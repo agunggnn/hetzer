@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { promptSecret, setCredential } from "../cli/vault/creds.mjs";
 import { resolveSecretEnvironment, strictBaseEnvironment } from "../cli/vault/secret-env.mjs";
-import { redactExactValues, runNpmWithAuth } from "../cli/core/npm-auth.mjs";
+import { redactExactValues, runNpmWithAuth, verifyNpmRegistryAuth } from "../cli/core/npm-auth.mjs";
 import { parseEnv } from "../cli/core/env.mjs";
 import { assertTrackedTreeClean, removeStagedPackage, stagePackage } from "./package-stage.mjs";
 
@@ -68,38 +68,18 @@ async function main() {
 
     // 2. Validate NPM Authentication
     process.stdout.write("[i] Verifying NPM registry authentication (https://registry.npmjs.org/)...\n");
-    const whoami = runNpmWithAuth({
-        args: ["whoami", "--registry", npmRegistry],
+    const authResult = verifyNpmRegistryAuth({
         registry: npmRegistry,
         token: npmToken,
+        packageName: "hetzer",
         cwd: root,
         baseEnv: process.env,
     });
 
-    if (whoami.status === 0) {
-        const npmUser = whoami.stdout.trim();
-        process.stdout.write(`[v] Authentication successful! Connected as npm user: @${npmUser}\n\n`);
+    if (authResult.type === "classic") {
+        process.stdout.write(`[v] Authentication successful! Connected as npm user: @${authResult.username}\n\n`);
     } else {
-        // npm Granular Access Tokens (GAT) only have package-scoped permissions and do not support legacy `whoami`.
-        const accessCheck = runNpmWithAuth({
-            args: ["access", "list", "collaborators", "hetzer", "--registry", npmRegistry],
-            registry: npmRegistry,
-            token: npmToken,
-            cwd: root,
-            baseEnv: process.env,
-        });
-        if (accessCheck.status === 0) {
-            process.stdout.write("[v] Granular Access Token validated for package: hetzer\n\n");
-        } else {
-            throw new Error(
-                "NPM registry authentication failed (401 Unauthorized).\n" +
-                "  The token in Grimoire Vault is invalid, expired, or lacks write access to 'hetzer'.\n" +
-                "  Please generate a new token at https://www.npmjs.com/settings/~/tokens:\n" +
-                "    - Recommended: 'Classic Token' (Type: Automation)\n" +
-                "    - Or: 'Granular Access Token' with Read & Write on package 'hetzer' and 2FA bypass\n" +
-                "  Then update the vault: node cli/bin/hetzer.js creds set npm-token"
-            );
-        }
+        process.stdout.write(`[v] Granular Access Token authenticated for package: ${authResult.packageName}; publish permission will be verified by npm during publish.\n\n`);
     }
 
     // 3. Run static checks and the concise test suite without inherited credentials.

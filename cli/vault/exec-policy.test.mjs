@@ -507,7 +507,27 @@ test("isSensitivePathAccess identifies browser cookies, wallets, and host creden
     assert.equal(isSensitivePathAccess("~/.aws/credentials"), true);
     assert.equal(isSensitivePathAccess("~/.ssh/id_rsa"), true);
     assert.equal(isSensitivePathAccess("~/.ssh/id_ed25519"), true);
+    assert.equal(isSensitivePathAccess("~/.ssh/config"), true);
     assert.equal(isSensitivePathAccess("~/.azure/accessTokens.json"), true);
+    assert.equal(isSensitivePathAccess("~/.kube/config"), true);
+    assert.equal(isSensitivePathAccess("~/.docker/config.json"), true);
+    assert.equal(isSensitivePathAccess("%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Local State"), true);
+
+    // Path normalization traversal & obfuscation (/./, redundant slashes, ..)
+    assert.equal(isSensitivePathAccess("~/.aws/./credentials"), true);
+    assert.equal(isSensitivePathAccess("~/.aws//config"), true);
+    assert.equal(isSensitivePathAccess("~/.ssh/./id_rsa"), true);
+    assert.equal(isSensitivePathAccess("foo/bar/../../.ssh/id_rsa"), true);
+    assert.equal(isSensitivePathAccess("~/.config/solana/./id.json"), true);
+    assert.equal(isSensitivePathAccess("%LOCALAPPDATA%/Google/Chrome/User Data/Default/./Network/Cookies"), true);
+    assert.equal(isSensitivePathAccess("~/.kube/./config"), true);
+    assert.equal(isSensitivePathAccess("~/.docker/./config.json"), true);
+
+    // Multi-layer percent-encoded paths (SEC-11)
+    assert.equal(isSensitivePathAccess("%252e%252e%252f.ssh%252fid_rsa"), true);
+    assert.equal(isSensitivePathAccess("%2e%2e/%2e%2e/.aws/credentials"), true);
+    assert.equal(isSensitivePathAccess("foo/%252e%252e/.ssh/id_ed25519"), true);
+    assert.equal(isSensitivePathAccess("%25252525252e%25252525252e%25252525252f.ssh%252525252fid_rsa"), true);
 
     // Clean workspace paths do NOT trigger
     assert.equal(isSensitivePathAccess("src/index.js"), false);
@@ -529,6 +549,11 @@ test("assertNoSensitivePathAccess throws ERR_SENSITIVE_PATH_ACCESS on infosteale
 
     assert.throws(
         () => assertNoSensitivePathAccess("type", ["C:\\Users\\alice\\.aws\\credentials"]),
+        (err) => err.code === "ERR_SENSITIVE_PATH_ACCESS"
+    );
+
+    assert.throws(
+        () => assertNoSensitivePathAccess("cat", ["%252e%252e%252f.ssh%252fid_rsa"]),
         (err) => err.code === "ERR_SENSITIVE_PATH_ACCESS"
     );
 
@@ -602,4 +627,3 @@ test("applyExecPolicy enforces sensitive path blocking and custom denyPaths", ()
     });
     assert.equal(result.command, "cat");
 });
-

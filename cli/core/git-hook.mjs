@@ -8,6 +8,8 @@ import { scanText } from "../vault/sniffer.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const gitHookScriptPath = fileURLToPath(import.meta.url);
+const GIT_SCISSORS_PATTERN = /^#\s*-{4,}\s*(?:>8|>%|-{4,})\s*-{4,}/;
+const GIT_STATUS_COMMENT_PATTERN = /^#\s*(?:Please enter the commit message|Lines starting with|On branch|Your branch|Changes to be committed|Changes not staged|Untracked files|Ignored files|Submodules|You are currently|All conflicts fixed|\(use "git|(?:new file|modified|deleted|renamed|copied):|(?:\t| {2,})(?:new file|modified|deleted|renamed|copied):|$)/i;
 
 export function findGitDir(startDir = process.cwd()) {
     let current = path.resolve(startDir);
@@ -15,7 +17,16 @@ export function findGitDir(startDir = process.cwd()) {
         const gitPath = path.join(current, ".git");
         if (fs.existsSync(gitPath)) {
             const stat = fs.statSync(gitPath);
-            return stat.isDirectory() ? gitPath : null;
+            if (stat.isDirectory()) return gitPath;
+            if (stat.isFile()) {
+                const content = fs.readFileSync(gitPath, "utf8").trim();
+                const match = /^gitdir:\s*(.+)$/m.exec(content);
+                if (match) {
+                    const resolvedGitDir = path.resolve(current, match[1].trim());
+                    if (fs.existsSync(resolvedGitDir)) return resolvedGitDir;
+                }
+            }
+            return null;
         }
         const parent = path.dirname(current);
         if (parent === current) break;
@@ -148,13 +159,25 @@ export function checkCommitMessage(text) {
         };
     }
 
-    const lines = text.split(/\r?\n/);
+    const allLines = text.split(/\r?\n/);
+    const scissorsIndex = allLines.findIndex((line) => GIT_SCISSORS_PATTERN.test(line.trim()));
+    const lines = scissorsIndex !== -1 ? allLines.slice(0, scissorsIndex) : allLines;
+
     const activeLines = [];
     for (let index = 0; index < lines.length; index += 1) {
         const line = lines[index];
-        if (!line.trimStart().startsWith("#")) {
-            activeLines.push({ line: index + 1, text: line });
+        const trimmed = line.trimStart();
+        if (trimmed.startsWith("#")) {
+            const lineScan = scanText(line);
+            if (lineScan.hasSecrets) {
+                activeLines.push({ line: index + 1, text: line });
+                continue;
+            }
+            if (GIT_STATUS_COMMENT_PATTERN.test(trimmed)) {
+                continue;
+            }
         }
+        activeLines.push({ line: index + 1, text: line });
     }
 
     if (activeLines.length > 0) {
@@ -201,13 +224,28 @@ export function checkCommitMessageFile(filePath) {
     return checkCommitMessage(text);
 }
 
+export function resolveGitCommonDir(gitDir) {
+    if (!gitDir) return null;
+    const commonDirFile = path.join(gitDir, "commondir");
+    if (fs.existsSync(commonDirFile)) {
+        try {
+            const rel = fs.readFileSync(commonDirFile, "utf8").trim();
+            if (rel) {
+                return path.resolve(gitDir, rel);
+            }
+        } catch {}
+    }
+    return gitDir;
+}
+
 export function installGitHook(root = process.cwd()) {
     const gitDir = findGitDir(root);
     if (!gitDir) {
         throw new Error(`.git directory not found in '${root}'. Ensure you are inside a Git repository.`);
     }
 
-    const hooksDir = path.join(gitDir, "hooks");
+    const commonDir = resolveGitCommonDir(gitDir);
+    const hooksDir = path.join(commonDir, "hooks");
     fs.mkdirSync(hooksDir, { recursive: true });
 
     const preCommitFile = path.join(hooksDir, "pre-commit");
@@ -264,7 +302,8 @@ export function uninstallGitHook(root = process.cwd()) {
     if (!gitDir) return { uninstalled: false };
 
     let uninstalled = false;
-    const hooksDir = path.join(gitDir, "hooks");
+    const commonDir = resolveGitCommonDir(gitDir);
+    const hooksDir = path.join(commonDir, "hooks");
     const preCommitFile = path.join(hooksDir, "pre-commit");
     const commitMsgFile = path.join(hooksDir, "commit-msg");
 
