@@ -70,6 +70,34 @@ test("checkCommitMessage detects leaked token in commit message text", () => {
     assert.equal(result.violations[0].type, "npm_token");
 });
 
+test("checkCommitMessage detects leaked token in lines starting with # (issue references, markdown headers)", () => {
+    const fakeNpm = ["npm_", "b1c2d3e4f5g6h7i8j9k0l1m2n3o4p5q6r7s8"].join("");
+    const issueMsg = `#104: resolve deployment using ${fakeNpm}\n\n# Please enter the commit message for your changes.`;
+    const issueRes = checkCommitMessage(issueMsg);
+    assert.equal(issueRes.ok, false);
+    assert.equal(issueRes.violations.length, 1);
+    assert.equal(issueRes.violations[0].line, 1);
+    assert.equal(issueRes.violations[0].type, "npm_token");
+
+    const fakeAnthropic = ["sk-ant-", "api03-synthetic-sample-token-12345"].join("");
+    const headerMsg = `# Security Patch with ${fakeAnthropic}\n\nDetailed release description.\n# On branch main`;
+    const headerRes = checkCommitMessage(headerMsg);
+    assert.equal(headerRes.ok, false);
+    assert.equal(headerRes.violations.length, 1);
+    assert.equal(headerRes.violations[0].line, 1);
+
+    // Scissors cut line truncates diff output below it
+    const scissorsMsg = [
+        "feat: clean commit message",
+        "",
+        "# ------------------------ >8 ------------------------",
+        `# diff --git a/test.txt b/test.txt\n# + ${fakeNpm}`,
+    ].join("\n");
+    const scissorsRes = checkCommitMessage(scissorsMsg);
+    assert.equal(scissorsRes.ok, true);
+    assert.equal(scissorsRes.violations.length, 0);
+});
+
 test("checkCommitMessageFile reads from disk and detects violations", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-msg-test-"));
     try {

@@ -95,6 +95,35 @@ test("callMcpTool invokes tool with JSON-RPC payload and handles response", asyn
     }
 });
 
+test("callMcpTool rejects with ERR_INVALID_TOOL_ARGUMENTS on malformed JSON or non-object args", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-mcp-invalid-args-"));
+    try {
+        fs.writeFileSync(path.join(root, ".env"), "SAMPLE_MOD_MCP_PORT=8001\n");
+
+        await assert.rejects(
+            () => callMcpTool({
+                root,
+                targetService: "sample-mod",
+                toolName: "search",
+                args: "{ malformed json",
+            }),
+            (err) => err.code === "ERR_INVALID_TOOL_ARGUMENTS" && err.message.includes("Invalid JSON arguments")
+        );
+
+        await assert.rejects(
+            () => callMcpTool({
+                root,
+                targetService: "sample-mod",
+                toolName: "search",
+                args: ["not", "an", "object"],
+            }),
+            (err) => err.code === "ERR_INVALID_TOOL_ARGUMENTS" && err.message.includes("must be a JSON object")
+        );
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test("runMcpToolCommand executes tool and writes output to stream", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-mcp-call-test-"));
     try {

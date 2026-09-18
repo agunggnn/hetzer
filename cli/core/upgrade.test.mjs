@@ -81,6 +81,38 @@ test("runCliUpgrade executes git pull and npm link in git clone", async () => {
     assert.match(out, /Successfully upgraded Hetzer to v0.5.7/);
 });
 
+test("runCliUpgrade executes git pull origin master when active branch is master", async () => {
+    let out = "";
+    const commandsRun = [];
+    const mockStdout = { write: (msg) => { out += msg; return true; } };
+    const mockStderr = { write: () => true };
+    const mockFetch = async () => ({
+        ok: true,
+        json: async () => ({ tag_name: "v0.5.7", html_url: "https://github.com/agunggnn/hetzer/releases" }),
+    });
+    const mockSpawn = (cmd, args) => {
+        commandsRun.push(`${cmd} ${args.join(" ")}`);
+        if (args.includes("--abbrev-ref")) {
+            return { status: 0, stdout: "master\n" };
+        }
+        return { status: 0, stdout: "" };
+    };
+
+    const res = await runCliUpgrade(["--yes"], {
+        cliRoot: path.resolve("cli"),
+        manifest: { version: "0.5.6" },
+        spawnFn: mockSpawn,
+        fetchFn: mockFetch,
+        stdout: mockStdout,
+        stderr: mockStderr,
+    });
+
+    assert.equal(res.ok, true);
+    assert.equal(res.updated, true);
+    assert.ok(commandsRun.some((c) => c === "git pull origin master"));
+    assert.match(out, /Pulling latest changes from git origin \(master\)/);
+});
+
 test("runCliUpgrade rejects git upgrade when active branch is a feature branch", async () => {
     let errOut = "";
     const mockStdout = { write: () => true };

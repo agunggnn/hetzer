@@ -15,7 +15,7 @@ import { parseEnv } from "../core/env.mjs";
 import { recordAuditEvent } from "./audit.mjs";
 import { isCanaryCredential, triggerCanaryAlert } from "./canary.mjs";
 import { assertNoShellMetacharacters } from "./exec-policy.mjs";
-import { isReflectionCommand, pipeSanitizedChild, resolveCommandForSpawn } from "./exec.mjs";
+import { isReflectionCommand, parseDuration, pipeSanitizedChild, resolveCommandForSpawn } from "./exec.mjs";
 import { Grimoire, parseSecretRef, resolveMasterKey, resolveVaultPath } from "./hetzer-vault.mjs";
 import { strictBaseEnvironment } from "./secret-env.mjs";
 
@@ -521,6 +521,23 @@ function isLoopback(address) {
     return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
 }
 
+export function isContainerBridgeOrLoopback(address) {
+    if (isLoopback(address)) return true;
+    let ip = String(address || "").trim();
+    if (ip.startsWith("::ffff:")) ip = ip.slice(7);
+    if (net.isIPv4(ip)) {
+        const parts = ip.split(".").map(Number);
+        if (parts.length === 4 && parts.every((n) => !isNaN(n) && n >= 0 && n <= 255)) {
+            const [a, b] = parts;
+            if (a === 127) return true;
+            if (a === 10) return true;
+            if (a === 172 && b >= 16 && b <= 31) return true;
+            if (a === 192 && b === 168) return true;
+        }
+    }
+    return false;
+}
+
 function sendJson(response, statusCode, message) {
     const body = Buffer.from(`${JSON.stringify({ error: message })}\n`);
     response.writeHead(statusCode, {
@@ -673,12 +690,21 @@ export async function startHttpCredentialBroker({
     fetchFn = globalThis.fetch,
     lookupFn,
     randomBytes = crypto.randomBytes,
-    host = "127.0.0.1",
+    host,
+    allowSandbox = false,
 } = {}) {
     const policy = rawPolicy?.[VALIDATED_POLICY] ? rawPolicy : validateBrokerPolicy(rawPolicy);
     if (typeof secret !== "string" || !secret) throw new Error("Broker credential is required.");
     if (typeof fetchFn !== "function") throw new Error("A Fetch-compatible transport is required.");
-    if (host !== "127.0.0.1") throw new Error("Credential broker must bind to 127.0.0.1.");
+
+    const effectiveHost = host || (allowSandbox ? "0.0.0.0" : "127.0.0.1");
+    if (allowSandbox) {
+        if (effectiveHost !== "127.0.0.1" && effectiveHost !== "0.0.0.0") {
+            throw new Error("Credential broker must bind to 127.0.0.1 or 0.0.0.0.");
+        }
+    } else if (effectiveHost !== "127.0.0.1") {
+        throw new Error("Credential broker must bind to 127.0.0.1.");
+    }
 
     const capability = randomBytes(32).toString("base64url");
     const expectedAuth = authValue(policy.clientScheme, capability);
@@ -696,7 +722,12 @@ export async function startHttpCredentialBroker({
         let slotReserved = false;
         let requestDispatched = false;
         try {
-            if (!isLoopback(request.socket.remoteAddress)) return sendJson(response, 403, "Loopback clients only.");
+            const clientAllowed = allowSandbox
+                ? isContainerBridgeOrLoopback(request.socket.remoteAddress)
+                : isLoopback(request.socket.remoteAddress);
+            if (!clientAllowed) {
+                return sendJson(response, 403, allowSandbox ? "Loopback or container bridge clients only." : "Loopback clients only.");
+            }
             if (Date.now() >= deadline) return sendJson(response, 410, "Broker capability expired.");
             if (!matchesCapability(request.headers[policy.clientHeader], expectedAuth)) {
                 return sendJson(response, 401, "Invalid broker capability.");
@@ -793,7 +824,7 @@ export async function startHttpCredentialBroker({
 
     await new Promise((resolve, reject) => {
         server.once("error", reject);
-        server.listen(0, host, resolve);
+        server.listen(0, effectiveHost, resolve);
     });
     const address = server.address();
     const timer = setTimeout(() => server.close(), policy.ttlSeconds * 1000);
@@ -801,7 +832,7 @@ export async function startHttpCredentialBroker({
     let closed = false;
 
     return {
-        url: `http://${host}:${address.port}`,
+        url: `http://${effectiveHost === "0.0.0.0" ? "127.0.0.1" : effectiveHost}:${address.port}`,
         capability,
         policy,
         close() {
@@ -824,6 +855,7 @@ export async function openHttpCredentialBroker({
     baseEnv = process.env,
     fetchFn = globalThis.fetch,
     randomBytes = crypto.randomBytes,
+    allowSandbox = false,
 } = {}) {
     const policy = rawPolicy
         ? (rawPolicy?.[VALIDATED_POLICY] ? rawPolicy : validateBrokerPolicy(rawPolicy))
@@ -862,7 +894,7 @@ export async function openHttpCredentialBroker({
     }
 
     try {
-        const broker = await startHttpCredentialBroker({ policy, secret, fetchFn, randomBytes });
+        const broker = await startHttpCredentialBroker({ policy, secret, fetchFn, randomBytes, allowSandbox });
         return { broker, policy, secret };
     } catch (error) {
         secret = "";
@@ -882,12 +914,15 @@ export function parseBrokerArguments(argv) {
         const index = options.indexOf(name);
         return index >= 0 ? options[index + 1] : "";
     };
+    const rawTimeout = value("--timeout");
     return {
         root: path.resolve(value("--root") || process.cwd()),
         envFile: value("--env-file") ? path.resolve(value("--env-file")) : undefined,
         policyFile: path.resolve(options[policyIndex + 1]),
         command: argv[marker + 1],
         commandArgs: argv.slice(marker + 2),
+        timeout: rawTimeout || undefined,
+        timeoutMs: rawTimeout ? parseDuration(rawTimeout) : undefined,
     };
 }
 
@@ -901,6 +936,7 @@ export async function executeBrokeredProcess(options, {
     if (isReflectionCommand(options.command, options.commandArgs)) {
         throw Object.assign(new Error("Environment reflection commands are forbidden in broker execution."), { code: "ERR_REFLECTION_BLOCKED" });
     }
+    const timeoutMs = options.timeoutMs ?? (options.timeout ? parseDuration(options.timeout) : undefined);
     let secret = "";
     const opened = await openHttpCredentialBroker({
         root: options.root,
@@ -928,7 +964,12 @@ export async function executeBrokeredProcess(options, {
         return await pipeSanitizedChild(child, [
             { id: policy.credentialId, secret },
             { id: "broker-capability", secret: broker.capability },
-        ], { outStream, errStream });
+        ], {
+            outStream,
+            errStream,
+            root: options.root,
+            timeoutMs,
+        });
     } finally {
         await broker.close();
         secret = "";

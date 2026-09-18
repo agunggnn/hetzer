@@ -758,6 +758,7 @@ export async function prepareExecutionEnvironment(effectiveOptions, {
                 baseEnv,
                 fetchFn: brokerFetchFn,
                 randomBytes: brokerRandomBytes,
+                allowSandbox: Boolean(effectiveOptions.sandbox),
             });
             const brokerUrl = `${opened.broker.url}${opened.policy.basePath === "/" ? "" : opened.policy.basePath}`;
             env[opened.policy.baseUrlEnv] = brokerUrl;

@@ -80,8 +80,8 @@ export async function runCliUpgrade(args = [], {
         const activeBranch = String(branchRes?.stdout || "").trim();
         if (activeBranch && activeBranch !== "main" && activeBranch !== "master") {
             stderr.write(`  [!] Active git branch is '${activeBranch}'.\n`);
-            stderr.write("      Automated upgrade can only be run on the 'main' branch to prevent unintended merges.\n");
-            stderr.write("      Please commit your work, switch to 'main', and rerun 'hetzer upgrade'.\n");
+            stderr.write("      Automated upgrade can only be run on the 'main' or 'master' branch to prevent unintended merges.\n");
+            stderr.write("      Please commit your work, switch to 'main' or 'master', and rerun 'hetzer upgrade'.\n");
             stdout.write("================================================================================\n");
             return { ok: false, error: "git_branch_mismatch", activeBranch };
         }
@@ -99,8 +99,9 @@ export async function runCliUpgrade(args = [], {
             return { ok: false, error: "git_dirty_working_tree" };
         }
 
-        stdout.write("  Action            : Pulling latest changes from git origin...\n");
-        const pullRes = spawnFn("git", ["pull", "origin", "main"], {
+        const targetBranch = activeBranch || "main";
+        stdout.write(`  Action            : Pulling latest changes from git origin (${targetBranch})...\n`);
+        const pullRes = spawnFn("git", ["pull", "origin", targetBranch], {
             cwd: repoDir,
             stdio: "inherit",
             windowsHide: true,

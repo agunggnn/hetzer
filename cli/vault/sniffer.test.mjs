@@ -55,6 +55,14 @@ test("sniffer detects PKCS8 private keys, credentialed database URLs, and high-e
     assert.equal(scanText(candidate).matches.some((item) => item.type === "high_entropy"), true);
 });
 
+test("sniffer ignores agent tool and call IDs including toolu_ prefixes", () => {
+    const claudeToolId = "toolu_01A5b8GzK2mQ9xR4vN8pL3sT";
+    assert.ok(shannonEntropy(claudeToolId) >= 4.3);
+    const scan = scanText(`Tool call response: ${claudeToolId}`);
+    assert.equal(scan.hasSecrets, false);
+    assert.equal(scan.matches.length, 0);
+});
+
 test("sniffer redactAndVault replaces raw credentials with secretRef and auto-vaults", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-sniffer-test-"));
     const dataDir = path.join(tempDir, "data");

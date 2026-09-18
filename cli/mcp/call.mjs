@@ -248,13 +248,17 @@ export async function callMcpTool({
         try {
             resolvedArgs = args.trim() ? JSON.parse(args) : {};
         } catch (e) {
-            throw new Error(`Invalid JSON arguments for tool '${toolName}': ${e.message}`);
+            const err = new Error(`Invalid JSON arguments for tool '${toolName}': ${e.message}`);
+            err.code = "ERR_INVALID_TOOL_ARGUMENTS";
+            throw err;
         }
     } else if (args && typeof args === "object") {
         resolvedArgs = args;
     }
     if (!resolvedArgs || typeof resolvedArgs !== "object" || Array.isArray(resolvedArgs)) {
-        throw new Error(`Arguments for tool '${toolName}' must be a JSON object.`);
+        const err = new Error(`Arguments for tool '${toolName}' must be a JSON object.`);
+        err.code = "ERR_INVALID_TOOL_ARGUMENTS";
+        throw err;
     }
     const resolvedSecrets = [];
     const envFile = path.join(root, ".env");

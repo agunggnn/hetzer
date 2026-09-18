@@ -8,6 +8,8 @@ import { scanText } from "../vault/sniffer.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const gitHookScriptPath = fileURLToPath(import.meta.url);
+const GIT_SCISSORS_PATTERN = /^#\s*-{4,}\s*(?:>8|>%|-{4,})\s*-{4,}/;
+const GIT_STATUS_COMMENT_PATTERN = /^#\s*(?:Please enter the commit message|Lines starting with|On branch|Your branch|Changes to be committed|Changes not staged|Untracked files|Ignored files|Submodules|You are currently|All conflicts fixed|\(use "git|(?:new file|modified|deleted|renamed|copied):|(?:\t| {2,})(?:new file|modified|deleted|renamed|copied):|$)/i;
 
 export function findGitDir(startDir = process.cwd()) {
     let current = path.resolve(startDir);
@@ -157,13 +159,18 @@ export function checkCommitMessage(text) {
         };
     }
 
-    const lines = text.split(/\r?\n/);
+    const allLines = text.split(/\r?\n/);
+    const scissorsIndex = allLines.findIndex((line) => GIT_SCISSORS_PATTERN.test(line.trim()));
+    const lines = scissorsIndex !== -1 ? allLines.slice(0, scissorsIndex) : allLines;
+
     const activeLines = [];
     for (let index = 0; index < lines.length; index += 1) {
         const line = lines[index];
-        if (!line.trimStart().startsWith("#")) {
-            activeLines.push({ line: index + 1, text: line });
+        const trimmed = line.trimStart();
+        if (trimmed.startsWith("#") && GIT_STATUS_COMMENT_PATTERN.test(trimmed)) {
+            continue;
         }
+        activeLines.push({ line: index + 1, text: line });
     }
 
     if (activeLines.length > 0) {

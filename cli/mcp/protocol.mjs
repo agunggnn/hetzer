@@ -185,6 +185,7 @@ export async function handleMcpRequest(request, catalog) {
                 isError: false,
             });
         } catch (cause) {
+            if (cause?.code === "ERR_CANARY_TRIPWIRE_TRIGGERED") throw cause;
             if (String(cause.message).startsWith("Unknown tool")) return error(request.id, -32602, cause.message);
             const secretsToRedact = Array.isArray(requestContext.secretsToRedact) ? requestContext.secretsToRedact : [];
             const sanitizedMessage = sanitizeStreamOutput(cause.message || "Tool execution error", secretsToRedact);

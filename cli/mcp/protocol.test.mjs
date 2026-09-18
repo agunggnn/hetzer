@@ -397,3 +397,25 @@ test("synthesized service tools enforce traversal defense, header safety, creden
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });
+
+test("handleMcpRequest rethrows ERR_CANARY_TRIPWIRE_TRIGGERED for tools/call", async () => {
+    const mockCatalog = {
+        call: async () => {
+            const err = new Error("Canary honey-token accessed!");
+            err.code = "ERR_CANARY_TRIPWIRE_TRIGGERED";
+            err.exitCode = 43;
+            throw err;
+        },
+        close: () => {},
+    };
+
+    await assert.rejects(
+        () => handleMcpRequest({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name: "test_tool", arguments: {} },
+        }, mockCatalog),
+        (err) => err.code === "ERR_CANARY_TRIPWIRE_TRIGGERED" && err.exitCode === 43
+    );
+});

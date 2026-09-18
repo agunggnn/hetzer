@@ -12,6 +12,7 @@ import {
     canonicalizePath,
     decodePathToFixedPoint,
     executeBrokeredProcess,
+    isContainerBridgeOrLoopback,
     isPrivateOrReservedIp,
     parseBrokerArguments,
     safePinnedFetch,
@@ -811,5 +812,108 @@ test("safePinnedFetch connects to pinned IP directly with synthetic Host header 
         assert.equal(capturedReq.body, "hello-pinned-socket");
     } finally {
         await new Promise((resolve) => server.close(resolve));
+    }
+});
+
+test("isContainerBridgeOrLoopback correctly classifies loopback, container bridge, and public addresses", () => {
+    // Loopback
+    assert.equal(isContainerBridgeOrLoopback("127.0.0.1"), true);
+    assert.equal(isContainerBridgeOrLoopback("::1"), true);
+    assert.equal(isContainerBridgeOrLoopback("::ffff:127.0.0.1"), true);
+
+    // Docker / Podman RFC 1918 bridge subnets
+    assert.equal(isContainerBridgeOrLoopback("172.17.0.2"), true);
+    assert.equal(isContainerBridgeOrLoopback("172.16.0.1"), true);
+    assert.equal(isContainerBridgeOrLoopback("172.31.255.254"), true);
+    assert.equal(isContainerBridgeOrLoopback("10.0.2.15"), true);
+    assert.equal(isContainerBridgeOrLoopback("192.168.1.100"), true);
+    assert.equal(isContainerBridgeOrLoopback("::ffff:172.17.0.3"), true);
+
+    // Public / Non-bridge addresses
+    assert.equal(isContainerBridgeOrLoopback("93.184.216.34"), false);
+    assert.equal(isContainerBridgeOrLoopback("8.8.8.8"), false);
+    assert.equal(isContainerBridgeOrLoopback("172.32.0.1"), false);
+    assert.equal(isContainerBridgeOrLoopback("169.254.169.254"), false);
+    assert.equal(isContainerBridgeOrLoopback("invalid-ip"), false);
+});
+
+test("startHttpCredentialBroker with allowSandbox binds to 0.0.0.0 and returns 127.0.0.1 url", async () => {
+    const broker = await startHttpCredentialBroker({
+        policy: policy({ target: "https://api.example.test" }),
+        secret: "super-secret-service-token",
+        allowSandbox: true,
+        fetchFn: async () => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } }),
+    });
+
+    try {
+        assert.ok(broker.url.startsWith("http://127.0.0.1:"));
+        assert.ok(typeof broker.capability === "string");
+
+        // Verify request with capability succeeds
+        const res = await fetch(`${broker.url}/v1/status`, {
+            headers: { authorization: `Bearer ${broker.capability}` },
+        });
+        assert.equal(res.status, 200);
+    } finally {
+        await broker.close();
+    }
+});
+
+test("parseBrokerArguments parses --timeout and forwards timeoutMs", () => {
+    const parsed = parseBrokerArguments([
+        "--policy", "policy.json",
+        "--timeout", "15s",
+        "--", "node", "app.mjs"
+    ]);
+    assert.equal(parsed.timeout, "15s");
+    assert.equal(parsed.timeoutMs, 15000);
+});
+
+test("executeBrokeredProcess enforces timeout and terminates runaway child process", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-broker-timeout-test-"));
+    const masterKey = "33445566778899001122aabbccddeeff33445566778899001122aabbccddeeff";
+    const envFile = path.join(tempDir, ".env");
+    fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${masterKey}\n`);
+    const policyFile = path.join(tempDir, "policy.json");
+    fs.writeFileSync(policyFile, JSON.stringify(policy({ credential: "secretRef:timeout-svc" })));
+
+    const vault = new Grimoire({
+        dbPath: path.join(tempDir, "data", "hetzer-vault.db"),
+        masterKey,
+    });
+    try {
+        vault.upsertTarget({ id: "default", name: "default" });
+        vault.create({
+            id: "timeout-svc",
+            projectId: "default",
+            keyName: "key",
+            authType: "api-key",
+            allowedActions: ["process.start"],
+            secret: "synthetic-secret-value",
+        });
+    } finally {
+        vault.close();
+    }
+
+    const childFile = path.join(tempDir, "sleep.mjs");
+    fs.writeFileSync(childFile, "setTimeout(() => {}, 10000);\n");
+
+    try {
+        await assert.rejects(
+            () => executeBrokeredProcess({
+                root: tempDir,
+                envFile,
+                policyFile,
+                command: process.execPath,
+                commandArgs: [childFile],
+                timeoutMs: 300,
+            }, {
+                outStream: { write() { return true; } },
+                errStream: { write() { return true; } },
+            }),
+            (err) => err.code === "ERR_SUBPROCESS_TIMEOUT" && err.exitCode === 124
+        );
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });
