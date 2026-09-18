@@ -776,9 +776,8 @@ function renderOverview(lines, snapshot, color) {
         for (const item of issues.slice(0, 3)) {
             const sevColor = ["CRITICAL", "HIGH"].includes(item.severity) ? ANSI.red : ANSI.yellow;
             const badge = color ? `${sevColor}[${item.severity}]${ANSI.reset}` : `[${item.severity}]`;
-            lines.push(boxLine(`  ! ${badge} ${bounded(item.title, 57)}`));
             const cmdText = color ? `${ANSI.green}${item.command}${ANSI.reset}` : item.command;
-            lines.push(boxLine(`    Action: ${bounded(item.action, 38)} -> ${cmdText}`));
+            lines.push(boxLine(`  ! ${badge} ${bounded(item.title, 34)} -> ${cmdText}`));
         }
         if (issues.length > 3) {
             lines.push(boxLine(`  ... and ${issues.length - 3} more issue(s). Press [i] for full remediation guide.`));
@@ -1127,7 +1126,7 @@ function renderCompactOverview(lines, snapshot, color) {
 export function renderTui(snapshot, {
     color = process.stdout.isTTY && !process.env.NO_COLOR,
     view = "overview",
-    compact = Boolean(process.stdout.isTTY && process.stdout.rows && process.stdout.rows < 36),
+    compact = Boolean(process.stdout.isTTY && process.stdout.rows && process.stdout.rows < 22),
     banner = undefined,
 } = {}) {
     const showBanner = banner !== undefined ? banner : !compact;
@@ -1228,8 +1227,10 @@ export function drawFrame(output, options = {}) {
         return;
     }
     const lines = output.split("\n");
+    const maxRows = stream.rows && stream.rows > 10 ? stream.rows : lines.length;
+    const renderLines = lines.length > maxRows ? lines.slice(0, maxRows) : lines;
     let frame = "\x1b[H";
-    for (const line of lines) {
+    for (const line of renderLines) {
         frame += line + "\x1b[K\n";
     }
     frame += "\x1b[J";

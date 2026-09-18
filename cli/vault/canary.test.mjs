@@ -4,7 +4,15 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { generateCanaryToken, isCanaryCredential, isCanaryToken, setupCanaryTrap, triggerCanaryAlert } from "./canary.mjs";
+import {
+    clearCanaryIncidents,
+    generateCanaryToken,
+    getCanaryStatus,
+    isCanaryCredential,
+    isCanaryToken,
+    setupCanaryTrap,
+    triggerCanaryAlert,
+} from "./canary.mjs";
 import { revealCredential } from "./creds.mjs";
 import { resolveSecretEnvironment } from "./secret-env.mjs";
 import { readAuditEvents } from "./audit.mjs";
@@ -121,6 +129,47 @@ test("resolveSecretEnvironment automatically injects HETZER_CANARY_TOKEN when ca
     assert.ok(resolved.HETZER_CANARY_TOKEN);
     assert.match(resolved.HETZER_CANARY_TOKEN, /^canary_trap_[0-9a-f]{32}$/);
     assert.equal(isCanaryToken(resolved.HETZER_CANARY_TOKEN), true);
+
+    fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("getCanaryStatus and clearCanaryIncidents track and reset honeytoken incidents", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-canary-status-"));
+    const dataDir = path.join(root, "data");
+    fs.mkdirSync(dataDir, { recursive: true });
+    const envFile = path.join(root, ".env");
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${masterKey}\n`);
+
+    // 1. Unarmed initial state
+    let status = getCanaryStatus({ root });
+    assert.equal(status.state, "UNARMED");
+    assert.equal(status.incidentCount, 0);
+    assert.equal(status.hasCanaryBinding, false);
+
+    // 2. Setup trap -> ARMED
+    setupCanaryTrap({ root, envFile });
+    status = getCanaryStatus({ root });
+    assert.equal(status.state, "ARMED");
+    assert.equal(status.incidentCount, 0);
+    assert.equal(status.hasCanaryBinding, true);
+
+    // 3. Trigger tripwire -> TRIPPED
+    assert.throws(() => {
+        revealCredential({ root, envFile, id: "canary-token" });
+    });
+    status = getCanaryStatus({ root });
+    assert.equal(status.state, "TRIPPED");
+    assert.equal(status.incidentCount, 1);
+    assert.equal(status.recentIncidents.length, 1);
+
+    // 4. Clear incidents -> ARMED
+    const clearRes = clearCanaryIncidents({ root });
+    assert.equal(clearRes.ok, true);
+    status = getCanaryStatus({ root });
+    assert.equal(status.state, "ARMED");
+    assert.equal(status.incidentCount, 0);
+    assert.equal(status.recentIncidents.length, 0);
 
     fs.rmSync(root, { recursive: true, force: true });
 });

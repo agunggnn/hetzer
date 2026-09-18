@@ -118,6 +118,53 @@ export function setupCanaryTrap({ root = process.cwd(), envFile, id = CANARY_DEF
     };
 }
 
+export function getCanaryStatus({ root = process.cwd() } = {}) {
+    const incidentsFile = path.join(root, "data", "hetzer-incidents.log");
+    let incidentCount = 0;
+    let recentIncidents = [];
+    if (fs.existsSync(incidentsFile)) {
+        try {
+            const content = fs.readFileSync(incidentsFile, "utf8");
+            const lines = content.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+            incidentCount = lines.length;
+            recentIncidents = lines.slice(-10);
+        } catch {
+            // fail soft
+        }
+    }
+
+    const envFile = path.join(root, ".env");
+    let hasCanaryBinding = false;
+    if (fs.existsSync(envFile)) {
+        try {
+            const envContent = fs.readFileSync(envFile, "utf8");
+            hasCanaryBinding = envContent.includes("HETZER_CANARY_TOKEN") || envContent.includes("canary-token");
+        } catch {
+            // fail soft
+        }
+    }
+
+    return {
+        incidentCount,
+        recentIncidents,
+        hasCanaryBinding,
+        incidentsFile,
+        state: incidentCount > 0 ? "TRIPPED" : (hasCanaryBinding ? "ARMED" : "UNARMED"),
+    };
+}
+
+export function clearCanaryIncidents({ root = process.cwd() } = {}) {
+    const incidentsFile = path.join(root, "data", "hetzer-incidents.log");
+    if (fs.existsSync(incidentsFile)) {
+        try {
+            fs.writeFileSync(incidentsFile, "", "utf8");
+        } catch {
+            // fail soft
+        }
+    }
+    return { ok: true, incidentsFile };
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
     try {
         const args = process.argv.slice(2);
@@ -125,7 +172,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         const root = path.resolve(process.env.HETZER_ROOT || process.cwd());
         const envFile = path.resolve(process.env.HETZER_ENV_FILE || path.join(root, ".env"));
 
-        if (action === "setup" || action === "enable") {
+        if (action === "setup" || action === "enable" || action === "add") {
             const trap = setupCanaryTrap({ root, envFile });
             process.stdout.write("================================================================================\n");
             process.stdout.write("  HETZER - CANARY HONEY-TOKEN TRAP DEPLOYED\n");
@@ -135,11 +182,44 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             process.stdout.write(`  [v] Protection     : Guarded reveal or environment resolution of this ID\n`);
             process.stdout.write(`                       logs an incident and aborts with exit code 43.\n`);
             process.stdout.write("================================================================================\n");
+        } else if (action === "list" || action === "status" || action === "incidents") {
+            const status = getCanaryStatus({ root });
+            process.stdout.write("================================================================================\n");
+            process.stdout.write("  HETZER - CANARY HONEY-TOKEN TRAP STATUS\n");
+            process.stdout.write("================================================================================\n");
+            process.stdout.write(`  [v] Status         : ${status.state}\n`);
+            process.stdout.write(`  [v] Decoy Binding  : ${status.hasCanaryBinding ? "Active in .env" : "Not configured (run hetzer canary setup)"}\n`);
+            process.stdout.write(`  [v] Total Incidents: ${status.incidentCount}\n`);
+            process.stdout.write(`  [v] Incident Log   : ${status.incidentsFile}\n`);
+            if (status.recentIncidents.length > 0) {
+                process.stdout.write("--------------------------------------------------------------------------------\n");
+                process.stdout.write("  Recent Incidents (last 10):\n");
+                for (const inc of status.recentIncidents) {
+                    process.stdout.write(`    > ${inc}\n`);
+                }
+                process.stdout.write("--------------------------------------------------------------------------------\n");
+                process.stdout.write("  Guidance:\n");
+                process.stdout.write("    * Rotate leaked credentials: hetzer creds set <id>\n");
+                process.stdout.write("    * Reset incident alarm after rotating: hetzer canary clear\n");
+            } else {
+                process.stdout.write("--------------------------------------------------------------------------------\n");
+                process.stdout.write("  Zero security incidents recorded. Honeytoken tripwire is intact.\n");
+            }
+            process.stdout.write("================================================================================\n");
+        } else if (action === "clear" || action === "reset") {
+            clearCanaryIncidents({ root });
+            process.stdout.write("================================================================================\n");
+            process.stdout.write("  HETZER - CANARY INCIDENTS CLEARED\n");
+            process.stdout.write("================================================================================\n");
+            process.stdout.write("  [v] Incident log data/hetzer-incidents.log reset to 0.\n");
+            process.stdout.write("  [v] Threat radar status restored to ARMED.\n");
+            process.stdout.write("================================================================================\n");
         } else {
-            throw new Error(`Unknown canary action '${action}'. Use 'setup'.`);
+            throw new Error(`Unknown canary action '${action}'. Use 'setup', 'list', or 'clear'.`);
         }
     } catch (err) {
         process.stderr.write(`[hetzer canary error] ${err.message}\n`);
         process.exitCode = err.exitCode || 1;
     }
 }
+
