@@ -5,6 +5,8 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+    analyzeIssues,
+    ASCII_LOGO,
     auditLedgerSnapshot,
     boxBottom,
     boxDivider,
@@ -17,6 +19,7 @@ import {
     getBoxWidth,
     quickSniffSnapshot,
     refreshDimensions,
+    renderIssuesView,
     renderTui,
     startTui,
     stripAnsi,
@@ -344,4 +347,165 @@ test("startTui single-shot mode runs non-interactively without timer", async () 
     await startTui({ root: process.cwd(), args: ["--once"], stream: mockStream });
     assert.match(captured, /HETZER \/\/ TACTICAL ARMOR HUD/);
     assert.doesNotMatch(captured, /\x1b\[\?1049h/, "Single-shot mode must not enter alternate screen");
+});
+
+test("ASCII_LOGO is exported as a 5-line art array and renders in non-compact mode", () => {
+    assert.ok(Array.isArray(ASCII_LOGO));
+    assert.equal(ASCII_LOGO.length, 5);
+    for (const line of ASCII_LOGO) {
+        assert.equal(line.length, 37, `Line '${line}' must have length 37`);
+    }
+
+    const output = renderTui({
+        root: "/test/project",
+        generatedAt: "2026-09-18T00:00:00.000Z",
+    }, { color: false, banner: true });
+
+    assert.match(output, /_____/);
+    assert.match(output, /DEFENSE-IN-DEPTH RUNTIME ARMOR & THREAT REMEDIATION/);
+});
+
+test("analyzeIssues detects all vulnerability categories with concrete actions and CLI commands", () => {
+    const mockSnapshot = {
+        root: "/test/repo",
+        sniff: {
+            status: "VIOLATIONS",
+            count: 2,
+            violations: [{ file: ".env", line: 4, type: "aws_key" }],
+        },
+        threat: {
+            state: "TRIPPED",
+            incidentCount: 3,
+            canaryCount: 1,
+        },
+        vault: {
+            state: "ready",
+            keyIsolation: "EXPOSED",
+            rawSecretCount: 2,
+        },
+        shield: {
+            preCommit: { state: "MISSING" },
+            commitMsg: { state: "MISSING" },
+        },
+        audit: {
+            state: "CORRUPTED",
+            detail: "hash chain broken at #12",
+        },
+        runtime: {
+            container: { state: "offline", detail: "Docker not running" },
+        },
+        mcp: {
+            state: "degraded",
+            detail: "manifest parse error",
+        },
+        services: [
+            { id: "worker", label: "Worker", state: "offline", endpoint: "http://127.0.0.1:8080" },
+        ],
+        warnings: ["Deprecated configuration key used"],
+    };
+
+    const issues = analyzeIssues(mockSnapshot);
+    assert.ok(issues.length >= 8, `Expected at least 8 issues, got ${issues.length}`);
+
+    const leakIssue = issues.find((i) => i.id === "STAGED_SECRET_LEAK");
+    assert.ok(leakIssue);
+    assert.equal(leakIssue.severity, "CRITICAL");
+    assert.match(leakIssue.command, /git restore --staged/);
+
+    const tripIssue = issues.find((i) => i.id === "CANARY_TRIPWIRE_TRIGGERED");
+    assert.ok(tripIssue);
+    assert.equal(tripIssue.severity, "CRITICAL");
+    assert.match(tripIssue.command, /hetzer canary list/);
+
+    const keyIssue = issues.find((i) => i.id === "MASTER_KEY_EXPOSED");
+    assert.ok(keyIssue);
+    assert.equal(keyIssue.severity, "HIGH");
+    assert.match(keyIssue.command, /hetzer init/);
+
+    const rawIssue = issues.find((i) => i.id === "RAW_SECRETS_IN_ENV");
+    assert.ok(rawIssue);
+    assert.equal(rawIssue.severity, "HIGH");
+    assert.match(rawIssue.command, /hetzer creds set/);
+
+    const hookIssue = issues.find((i) => i.id === "PRE_COMMIT_HOOK_MISSING");
+    assert.ok(hookIssue);
+    assert.equal(hookIssue.severity, "MEDIUM");
+    assert.match(hookIssue.command, /hetzer hook install/);
+
+    const auditIssue = issues.find((i) => i.id === "AUDIT_LEDGER_TAMPERED");
+    assert.ok(auditIssue);
+    assert.equal(auditIssue.severity, "CRITICAL");
+    assert.match(auditIssue.command, /hetzer audit verify/);
+});
+
+test("renderIssuesView formats issues guide with problem, action, and resolution commands", () => {
+    const output = renderTui({
+        root: "/test/project",
+        generatedAt: "2026-09-18T00:00:00.000Z",
+        vault: {
+            state: "ready",
+            keyIsolation: "EXPOSED",
+            rawSecretCount: 1,
+        },
+        shield: {
+            preCommit: { state: "MISSING" },
+            commitMsg: { state: "ACTIVE" },
+        },
+    }, { color: false, view: "issues" });
+
+    assert.match(output, /SECURITY POSTURE & ACTIONABLE REMEDIATION GUIDE/);
+    assert.match(output, /MASTER_KEY_EXPOSED|Master encryption key exposed/);
+    assert.match(output, /Resolve\s+:\s+hetzer init/);
+    assert.match(output, /Resolve\s+:\s+hetzer creds set <id>/);
+    assert.match(output, /Resolve\s+:\s+hetzer hook install/);
+    assert.match(output, /\[Tip\] Press \[i\] to toggle back to Overview/);
+});
+
+test("renderIssuesView displays hardened confirmation checklist when zero issues exist", () => {
+    const output = renderTui({
+        root: "/test/secure",
+        generatedAt: "2026-09-18T00:00:00.000Z",
+        threat: { state: "ARMED", canaryCount: 1, incidentCount: 0 },
+        vault: { state: "ready", keyIsolation: "ISOLATED", rawSecretCount: 0 },
+        shield: { preCommit: { state: "ACTIVE" }, commitMsg: { state: "ACTIVE" } },
+        audit: { state: "VERIFIED" },
+        runtime: { container: { state: "ready" } },
+        mcp: { state: "ready" },
+        sniff: { status: "CLEAN", count: 0, violations: [] },
+    }, { color: false, view: "issues" });
+
+    assert.match(output, /ZERO VULNERABILITIES DETECTED/);
+    assert.match(output, /Git Pre-Commit & Commit-Msg Guards\s+:\s+ACTIVE/);
+    assert.match(output, /Master Key Isolation\s+:\s+ISOLATED/);
+    assert.match(output, /Canary Tripwire Honeytokens\s+:\s+ARMED/);
+    assert.match(output, /No remediation required/);
+});
+
+test("renderOverview displays ACTIVE ISSUES & ACTIONS REQUIRED and contextual actions", () => {
+    const output = renderTui({
+        root: "/test/project",
+        generatedAt: "2026-09-18T00:00:00.000Z",
+        threat: {
+            state: "TRIPPED",
+            detail: "canary alert",
+            incidentCount: 1,
+            canaryCount: 1,
+        },
+        vault: {
+            state: "ready",
+            keyIsolation: "EXPOSED",
+            rawSecretCount: 1,
+        },
+        shield: {
+            preCommit: { state: "MISSING", detail: "not installed" },
+            commitMsg: { state: "ACTIVE", detail: "active" },
+        },
+    }, { color: false });
+
+    assert.match(output, /ACTIVE ISSUES & ACTIONS REQUIRED/);
+    assert.match(output, /-> hetzer canary list|-> hetzer init/);
+    assert.match(output, /Action: Run 'hetzer canary list'/);
+    assert.match(output, /Action: Run 'hetzer init'/);
+    assert.match(output, /Action: Run 'hetzer hook install'/);
+    assert.match(output, /\[i\] Issues \(\d+\)/);
 });
