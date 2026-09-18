@@ -58,6 +58,7 @@ export function getAuditHeadPath(filePath) {
 }
 
 function withAuditLock(filePath, fn, timeoutMs = 5000) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const lockPath = `${filePath}.lock`;
     const start = Date.now();
     let lockFd = null;
@@ -177,88 +178,123 @@ export function verifyAuditLedger({ logFile, root, expectedHeadHash, expectedCou
     const filePath = logFile || getAuditLogPath({ root });
     const headPath = getAuditHeadPath(filePath);
 
-    if (!fs.existsSync(filePath)) {
-        return { ok: true, count: 0, message: "Audit log does not exist yet (clean state)." };
-    }
-    const content = fs.readFileSync(filePath, "utf8").trim();
-    if (!content) {
-        return { ok: true, count: 0, message: "Audit log is empty." };
-    }
-    const lines = content.split(/\r?\n/).filter(Boolean);
-    let expectedPrevHash = GENESIS_HASH;
-    let expectedIndex = 1;
-
-    for (let i = 0; i < lines.length; i++) {
-        let entry;
-        try {
-            entry = JSON.parse(lines[i]);
-        } catch {
+    if (!fs.existsSync(filePath) && !fs.existsSync(headPath)) {
+        if (typeof expectedCount === "number" && expectedCount > 0) {
             return {
                 ok: false,
-                tamperedIndex: i + 1,
-                error: `Corrupted JSON format at line ${i + 1}.`,
+                tamperedIndex: 1,
+                error: `Audit ledger missing or empty, but expected ${expectedCount} entries.`,
             };
         }
-
-        if (entry.index !== expectedIndex) {
-            return {
-                ok: false,
-                tamperedIndex: entry.index,
-                error: `Sequence break at line ${i + 1}: expected index ${expectedIndex}, found ${entry.index}.`,
-            };
-        }
-
-        if (entry.prevHash !== expectedPrevHash) {
-            return {
-                ok: false,
-                tamperedIndex: entry.index,
-                error: `Hash chain broken at index ${entry.index}: prevHash does not match previous entry hash.`,
-            };
-        }
-
-        const calculatedHash = computeAuditEntryHash(entry);
-        if (entry.hash !== calculatedHash) {
-            return {
-                ok: false,
-                tamperedIndex: entry.index,
-                error: `Integrity check failed at index ${entry.index}: entry hash mismatch (data altered).`,
-            };
-        }
-
-        expectedPrevHash = entry.hash;
-        expectedIndex += 1;
-    }
-
-    // Check against head state anchor or explicit parameters to prevent tail deletion
-    let head = null;
-    if (fs.existsSync(headPath)) {
-        try {
-            head = JSON.parse(fs.readFileSync(headPath, "utf8"));
-        } catch {}
-    }
-
-    const targetExpectedCount = expectedCount !== undefined ? expectedCount : head?.lastIndex;
-    if (typeof targetExpectedCount === "number" && lines.length < targetExpectedCount) {
         return {
-            ok: false,
-            tamperedIndex: lines.length + 1,
-            error: `Audit ledger truncated: expected at least ${targetExpectedCount} entries from checkpoint anchor, found ${lines.length}.`,
+            ok: true,
+            count: 0,
+            message: "Audit log does not exist yet (clean state).",
         };
     }
 
-    const targetExpectedHash = expectedHeadHash || head?.lastHash;
-    if (targetExpectedHash && expectedPrevHash !== targetExpectedHash) {
-        return {
-            ok: false,
-            tamperedIndex: lines.length,
-            error: `Audit ledger tail hash mismatch: latest entry hash does not match checkpoint anchor.`,
-        };
-    }
+    return withAuditLock(filePath, () => {
+        let head = null;
+        if (fs.existsSync(headPath)) {
+            try {
+                head = JSON.parse(fs.readFileSync(headPath, "utf8"));
+            } catch {}
+        }
 
-    return {
-        ok: true,
-        count: lines.length,
-        latestHash: expectedPrevHash,
-        message: `Verified ${lines.length} audit entries. Hash chain valid.`,
-    };
+        const fileExists = fs.existsSync(filePath);
+        const content = fileExists ? fs.readFileSync(filePath, "utf8").trim() : "";
+
+        if (!fileExists || !content) {
+            if (head && typeof head.lastIndex === "number" && head.lastIndex > 0) {
+                return {
+                    ok: false,
+                    tamperedIndex: 1,
+                    error: `Audit ledger missing or empty, but checkpoint anchor records ${head.lastIndex} entries.`,
+                };
+            }
+            if (typeof expectedCount === "number" && expectedCount > 0) {
+                return {
+                    ok: false,
+                    tamperedIndex: 1,
+                    error: `Audit ledger missing or empty, but expected ${expectedCount} entries.`,
+                };
+            }
+            return {
+                ok: true,
+                count: 0,
+                message: !fileExists ? "Audit log does not exist yet (clean state)." : "Audit log is empty.",
+            };
+        }
+
+        const lines = content.split(/\r?\n/).filter(Boolean);
+        let expectedPrevHash = GENESIS_HASH;
+        let expectedIndex = 1;
+
+        for (let i = 0; i < lines.length; i++) {
+            let entry;
+            try {
+                entry = JSON.parse(lines[i]);
+            } catch {
+                return {
+                    ok: false,
+                    tamperedIndex: i + 1,
+                    error: `Corrupted JSON format at line ${i + 1}.`,
+                };
+            }
+
+            if (entry.index !== expectedIndex) {
+                return {
+                    ok: false,
+                    tamperedIndex: entry.index,
+                    error: `Sequence break at line ${i + 1}: expected index ${expectedIndex}, found ${entry.index}.`,
+                };
+            }
+
+            if (entry.prevHash !== expectedPrevHash) {
+                return {
+                    ok: false,
+                    tamperedIndex: entry.index,
+                    error: `Hash chain broken at index ${entry.index}: prevHash does not match previous entry hash.`,
+                };
+            }
+
+            const calculatedHash = computeAuditEntryHash(entry);
+            if (entry.hash !== calculatedHash) {
+                return {
+                    ok: false,
+                    tamperedIndex: entry.index,
+                    error: `Integrity check failed at index ${entry.index}: entry hash mismatch (data altered).`,
+                };
+            }
+
+            expectedPrevHash = entry.hash;
+            expectedIndex += 1;
+        }
+
+        // Check against head state anchor or explicit parameters to prevent tail deletion
+        const targetExpectedCount = expectedCount !== undefined ? expectedCount : head?.lastIndex;
+        if (typeof targetExpectedCount === "number" && lines.length < targetExpectedCount) {
+            return {
+                ok: false,
+                tamperedIndex: lines.length + 1,
+                error: `Audit ledger truncated: expected at least ${targetExpectedCount} entries from checkpoint anchor, found ${lines.length}.`,
+            };
+        }
+
+        const targetExpectedHash = expectedHeadHash || head?.lastHash;
+        if (targetExpectedHash && expectedPrevHash !== targetExpectedHash) {
+            return {
+                ok: false,
+                tamperedIndex: lines.length,
+                error: `Audit ledger tail hash mismatch: latest entry hash does not match checkpoint anchor.`,
+            };
+        }
+
+        return {
+            ok: true,
+            count: lines.length,
+            latestHash: expectedPrevHash,
+            message: `Verified ${lines.length} audit entries. Hash chain valid.`,
+        };
+    });
 }

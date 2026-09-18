@@ -83,7 +83,45 @@ export function verifyNpmRegistryAuth({
 
     if (whoami.status === 0) {
         const username = String(whoami.stdout || "").trim();
-        return { ok: true, type: "classic", username };
+
+        // Verify write access for the authenticated Classic user on the target package
+        const accessCheck = runNpm({
+            args: ["access", "list", "collaborators", packageName, "--json", "--registry", registry],
+            registry,
+            token,
+            cwd,
+            baseEnv,
+        });
+
+        if (accessCheck.status === 0) {
+            const stdout = String(accessCheck.stdout || "").trim();
+            let hasWrite = false;
+            try {
+                const parsed = JSON.parse(stdout);
+                if (typeof parsed === "object" && parsed !== null) {
+                    if (parsed[username]) {
+                        hasWrite = parsed[username] === "read-write" || parsed[username] === "write";
+                    } else {
+                        hasWrite = Object.values(parsed).some(
+                            (perm) => perm === "read-write" || perm === "write"
+                        );
+                    }
+                }
+            } catch {
+                hasWrite = /\bread-write\b|\bwrite\b/i.test(stdout);
+            }
+
+            if (!hasWrite) {
+                const err = new Error(
+                    `Classic token authenticated as '@${username}', but lacks write access to '${packageName}'.\n` +
+                    `  The token has read-only access. Publish requires read-write permissions.`
+                );
+                err.code = "ERR_NPM_WRITE_PERMISSION_MISSING";
+                throw err;
+            }
+        }
+
+        return { ok: true, type: "classic", username, packageName };
     }
 
     const whoamiStderr = String(whoami.stderr || "");

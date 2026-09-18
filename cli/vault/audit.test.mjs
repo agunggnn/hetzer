@@ -131,3 +131,28 @@ test("audit ledger detects deletion of newest entries (tail truncation)", () => 
     }
 });
 
+test("audit ledger detects complete deletion of audit.log when checkpoint anchor exists", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-audit-delete-log-"));
+    const logFile = path.join(tempDir, "audit.log");
+
+    try {
+        recordAuditEvent({ eventType: "E1", target: "t1", logFile });
+        recordAuditEvent({ eventType: "E2", target: "t2", logFile });
+
+        // Verify valid initial state
+        const initialCheck = verifyAuditLedger({ logFile });
+        assert.equal(initialCheck.ok, true);
+        assert.equal(initialCheck.count, 2);
+
+        // Delete audit.log entirely, leaving audit.log.head intact
+        fs.unlinkSync(logFile);
+
+        // Verification must fail (not report clean state)!
+        const check = verifyAuditLedger({ logFile });
+        assert.equal(check.ok, false);
+        assert.equal(check.tamperedIndex, 1);
+        assert.match(check.error, /Audit ledger missing or empty, but checkpoint anchor records 2 entries/i);
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});

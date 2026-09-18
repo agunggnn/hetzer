@@ -699,4 +699,46 @@ test("assertSafeUpstreamHost returns resolved public IP addresses", async () => 
     assert.deepEqual(addresses, ["93.184.216.34", "93.184.216.35"]);
 });
 
+test("safePinnedFetch connects to pinned IP directly with synthetic Host header (real socket test)", async () => {
+    let capturedReq = null;
+    const server = http.createServer((req, res) => {
+        let body = "";
+        req.on("data", (chunk) => { body += chunk; });
+        req.on("end", () => {
+            capturedReq = {
+                host: req.headers.host,
+                url: req.url,
+                method: req.method,
+                remoteAddress: req.socket.remoteAddress,
+                body,
+            };
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(JSON.stringify({ status: "pinned-ok" }));
+        });
+    });
 
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = server.address().port;
+
+    try {
+        // Target URL uses non-existent unresolvable hostname, but pinned to 127.0.0.1
+        const targetUrl = `http://unresolvable-domain-for-testing.internal:${port}/api/endpoint?query=1`;
+        const res = await safePinnedFetch(targetUrl, {
+            method: "POST",
+            headers: { "content-type": "text/plain" },
+            body: "hello-pinned-socket",
+        }, "127.0.0.1");
+
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.deepEqual(data, { status: "pinned-ok" });
+
+        assert.ok(capturedReq);
+        assert.equal(capturedReq.host, `unresolvable-domain-for-testing.internal:${port}`);
+        assert.equal(capturedReq.url, "/api/endpoint?query=1");
+        assert.equal(capturedReq.method, "POST");
+        assert.equal(capturedReq.body, "hello-pinned-socket");
+    } finally {
+        await new Promise((resolve) => server.close(resolve));
+    }
+});

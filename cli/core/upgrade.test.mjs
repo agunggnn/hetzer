@@ -142,3 +142,87 @@ test("runCliUpgrade rejects git upgrade when working tree is dirty", async () =>
     assert.match(errOut, /uncommitted changes/);
 });
 
+test("runCliUpgrade fails closed when release checksum returns 404", async () => {
+    let errOut = "";
+    const mockStdout = { write: () => true };
+    const mockStderr = { write: (msg) => { errOut += msg; return true; } };
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-non-git-"));
+    const mockFetch = async (url) => {
+        if (url.includes("releases/latest")) {
+            return {
+                ok: true,
+                json: async () => ({ tag_name: "v0.5.7", html_url: "https://github.com/agunggnn/hetzer/releases" }),
+            };
+        }
+        if (url.endsWith(".tgz")) {
+            return {
+                ok: true,
+                arrayBuffer: async () => Buffer.from("fake-tarball-content"),
+            };
+        }
+        if (url.endsWith("SHASUMS256.txt")) {
+            return { ok: false, status: 404 };
+        }
+        return { ok: false, status: 500 };
+    };
+
+    try {
+        const res = await runCliUpgrade(["--yes"], {
+            cliRoot: path.join(tempDir, "cli"),
+            manifest: { version: "0.5.6" },
+            fetchFn: mockFetch,
+            stdout: mockStdout,
+            stderr: mockStderr,
+        });
+
+        assert.equal(res.ok, false);
+        assert.equal(res.error, "checksum_unavailable");
+        assert.match(errOut, /Release checksum asset unavailable/);
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test("runCliUpgrade fails closed when release checksum does not match", async () => {
+    let errOut = "";
+    const mockStdout = { write: () => true };
+    const mockStderr = { write: (msg) => { errOut += msg; return true; } };
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-non-git-"));
+    const mockFetch = async (url) => {
+        if (url.includes("releases/latest")) {
+            return {
+                ok: true,
+                json: async () => ({ tag_name: "v0.5.7", html_url: "https://github.com/agunggnn/hetzer/releases" }),
+            };
+        }
+        if (url.endsWith(".tgz")) {
+            return {
+                ok: true,
+                arrayBuffer: async () => Buffer.from("fake-tarball-content"),
+            };
+        }
+        if (url.endsWith("SHASUMS256.txt")) {
+            return {
+                ok: true,
+                text: async () => "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  hetzer-0.5.7.tgz\n",
+            };
+        }
+        return { ok: false, status: 500 };
+    };
+
+    try {
+        const res = await runCliUpgrade(["--yes"], {
+            cliRoot: path.join(tempDir, "cli"),
+            manifest: { version: "0.5.6" },
+            fetchFn: mockFetch,
+            stdout: mockStdout,
+            stderr: mockStderr,
+        });
+
+        assert.equal(res.ok, false);
+        assert.equal(res.error, "integrity_check_failed");
+        assert.match(errOut, /Release checksum mismatch/);
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});

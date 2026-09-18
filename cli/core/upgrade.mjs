@@ -137,26 +137,40 @@ export async function runCliUpgrade(args = [], {
         const tarballBuffer = Buffer.from(await tarballRes.arrayBuffer());
         const actualSha256 = crypto.createHash("sha256").update(tarballBuffer).digest("hex");
 
+        let checksumRes;
         try {
-            const checksumRes = await fetchFn(checksumUrl);
-            if (checksumRes.ok) {
-                const checksumText = await checksumRes.text();
-                const expectedLine = checksumText.split("\n").find((line) => line.includes(`hetzer-${update.latestVersion}.tgz`));
-                if (expectedLine) {
-                    const expectedSha = expectedLine.trim().split(/\s+/)[0].toLowerCase();
-                    if (actualSha256 !== expectedSha) {
-                        stderr.write("  [!] CRITICAL INTEGRITY ERROR: Release checksum mismatch!\n");
-                        stderr.write(`      Expected : ${expectedSha}\n`);
-                        stderr.write(`      Actual   : ${actualSha256}\n`);
-                        stdout.write("================================================================================\n");
-                        return { ok: false, error: "integrity_check_failed" };
-                    }
-                    stdout.write("  [v] Release integrity verified via SHA-256.\n");
-                }
-            }
-        } catch {
-            // Non-fatal if checksum asset unavailable
+            checksumRes = await fetchFn(checksumUrl);
+        } catch (err) {
+            stderr.write(`  [!] Failed to reach release checksum URL: ${err.message}\n`);
+            stdout.write("================================================================================\n");
+            return { ok: false, error: "checksum_download_failed" };
         }
+
+        if (!checksumRes || !checksumRes.ok) {
+            stderr.write(`  [!] Release checksum asset unavailable (HTTP ${checksumRes?.status || "error"}).\n`);
+            stderr.write("      Installation aborted because release integrity could not be verified.\n");
+            stdout.write("================================================================================\n");
+            return { ok: false, error: "checksum_unavailable" };
+        }
+
+        const checksumText = await checksumRes.text();
+        const expectedLine = checksumText.split("\n").find((line) => line.includes(`hetzer-${update.latestVersion}.tgz`));
+        if (!expectedLine) {
+            stderr.write(`  [!] Release checksum file missing entry for hetzer-${update.latestVersion}.tgz.\n`);
+            stderr.write("      Installation aborted due to unverified package integrity.\n");
+            stdout.write("================================================================================\n");
+            return { ok: false, error: "checksum_entry_missing" };
+        }
+
+        const expectedSha = expectedLine.trim().split(/\s+/)[0].toLowerCase();
+        if (!/^[0-9a-f]{64}$/.test(expectedSha) || actualSha256 !== expectedSha) {
+            stderr.write("  [!] CRITICAL INTEGRITY ERROR: Release checksum mismatch!\n");
+            stderr.write(`      Expected : ${expectedSha}\n`);
+            stderr.write(`      Actual   : ${actualSha256}\n`);
+            stdout.write("================================================================================\n");
+            return { ok: false, error: "integrity_check_failed" };
+        }
+        stdout.write("  [v] Release integrity verified via SHA-256.\n");
 
         fs.writeFileSync(tarballPath, tarballBuffer);
 

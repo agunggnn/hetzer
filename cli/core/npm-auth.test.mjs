@@ -125,6 +125,30 @@ test("verifyNpmRegistryAuth classifies network/DNS outage as ERR_NPM_NETWORK ins
     });
 });
 
+test("verifyNpmRegistryAuth rejects Classic token when collaborator permission is read-only", () => {
+    const mockRun = ({ args }) => {
+        if (args.includes("whoami")) {
+            return { status: 0, stdout: "agunggnn\n", stderr: "" };
+        }
+        if (args.includes("collaborators")) {
+            return { status: 0, stdout: JSON.stringify({ agunggnn: "read-only" }), stderr: "" };
+        }
+        return { status: 1, stdout: "", stderr: "failed" };
+    };
+
+    assert.throws(() => {
+        verifyNpmRegistryAuth({
+            token: "test-token",
+            packageName: "hetzer",
+            runNpm: mockRun,
+        });
+    }, (err) => {
+        assert.equal(err.code, "ERR_NPM_WRITE_PERMISSION_MISSING");
+        assert.match(err.message, /lacks write access/);
+        return true;
+    });
+});
+
 test("verifyNpmRegistryAuth throws ERR_NPM_AUTH_FAILED on genuine invalid token", () => {
     const mockRun = () => ({
         status: 1,
@@ -143,4 +167,3 @@ test("verifyNpmRegistryAuth throws ERR_NPM_AUTH_FAILED on genuine invalid token"
         return true;
     });
 });
-
