@@ -1,6 +1,6 @@
 # Hetzer Contributor & Agent Guidance
 
-> **Version**: v0.5.6 | **Verify**: `npm run check && npm test && npm run verify`
+> **Version**: v0.5.7 | **Verify**: `npm run check && npm test && npm run verify`
 
 ---
 
@@ -32,6 +32,7 @@
 13. **Cryptographic Audit Ledger (`cli/vault/audit.mjs`)**: Append-only JSONL event log with SHA-256 hash chaining (`prevHash`) recording execution, canary trips, sensitive path denials, SSRF blocks, and credential approvals. Tamper verification via `hetzer audit verify`.
 14. **Anti-SSRF & Reserved IP Containment (`cli/vault/http-broker.mjs`)**: Enforces DNS and IP boundaries rejecting loopback (`127.0.0.0/8`), private RFC 1918 subnets, and cloud instance metadata services (`169.254.169.254`).
 15. **Universal OCI Container Engine (`cli/vault/sandbox.mjs`)**: Auto-probes Docker and Podman with Linux SELinux `:Z` mounts and loopback bridge mapping (`host.docker.internal` / `host.containers.internal`).
+16. **Performance Reporting**: `hetzer exec` is a process wrapper; cold CLI startup can dominate short commands. Report measured p50/p95 values separately for cold CLI and steady-state execution. Do not claim universal zero overhead, provider KV-cache hits, or TTFT improvements without harness/provider telemetry.
 
 ---
 

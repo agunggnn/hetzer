@@ -31,9 +31,11 @@ Run `npm run check` for syntax and the public-file credential-pattern scan, then
 
 Hetzer minimizes context window bloat and prompt token costs for AI-assisted workflows:
 - **Two-tier rule architecture**: The root entry pointer block (`ENTRY_POINTER_BLOCK`) in `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` consumes approximately ~150 tokens (< 0.12% of a standard 128k context window). Full instructions (`AGENT_SYSTEM_RULE`) reside in `.agents/skills/hetzer/SKILL.md` and are loaded strictly on-demand by agent routers.
-- **Prompt-cache friendliness**: Pointer and skill rules are deterministic and static. They contain no dynamic timestamps, nonces, or session UUIDs, ensuring 100% KV cache hit compatibility with Anthropic Claude, Google Gemini, and OpenAI prompt caching.
+- **Prompt-cache friendliness**: Pointer and skill rules are deterministic and static. They contain no dynamic timestamps, nonces, or session UUIDs, which makes them eligible for prefix-cache reuse when the agent harness and provider preserve an identical prefix. Hetzer cannot verify provider cache hits or claim a specific TTFT improvement without provider telemetry.
 - **Out-of-band secret handling**: Agents pass `secretRef:<id>` (4 tokens) rather than raw API tokens or credentials, preventing token leakage into conversation history across turns.
 - **Local verification**: Run `hetzer skill status` or `hetzer doctor` to audit local workspace rules against token budgets and prompt-cache integrity.
+
+Process-wrapper measurements must separate cold CLI startup from steady-state execution. A fresh `hetzer exec` process loads the Node.js CLI, execution policy, audit, and redaction paths before spawning the child; this startup cost can dominate short commands. A persistent in-process or MCP workflow is not equivalent to repeatedly launching the CLI.
 
 ## Compliance claims
 
