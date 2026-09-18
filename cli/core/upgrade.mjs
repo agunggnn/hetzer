@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { checkForUpdates, formatUpdateBanner } from "./version-check.mjs";
 
@@ -53,6 +55,35 @@ export async function runCliUpgrade(args = [], {
 
     if (isGitRepo) {
         stdout.write("  Installation Type : Local Git Repository\n");
+
+        // Verify active branch is main or master to prevent merging into feature branches
+        const branchRes = spawnFn("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+            cwd: repoDir,
+            encoding: "utf8",
+            windowsHide: true,
+        });
+        const activeBranch = String(branchRes?.stdout || "").trim();
+        if (activeBranch && activeBranch !== "main" && activeBranch !== "master") {
+            stderr.write(`  [!] Active git branch is '${activeBranch}'.\n`);
+            stderr.write("      Automated upgrade can only be run on the 'main' branch to prevent unintended merges.\n");
+            stderr.write("      Please commit your work, switch to 'main', and rerun 'hetzer upgrade'.\n");
+            stdout.write("================================================================================\n");
+            return { ok: false, error: "git_branch_mismatch", activeBranch };
+        }
+
+        // Verify working tree is clean
+        const statusRes = spawnFn("git", ["status", "--porcelain"], {
+            cwd: repoDir,
+            encoding: "utf8",
+            windowsHide: true,
+        });
+        if (String(statusRes?.stdout || "").trim()) {
+            stderr.write("  [!] Git working directory has uncommitted changes.\n");
+            stderr.write("      Please commit or stash your changes before upgrading.\n");
+            stdout.write("================================================================================\n");
+            return { ok: false, error: "git_dirty_working_tree" };
+        }
+
         stdout.write("  Action            : Pulling latest changes from git origin...\n");
         const pullRes = spawnFn("git", ["pull", "origin", "main"], {
             cwd: repoDir,
@@ -66,8 +97,19 @@ export async function runCliUpgrade(args = [], {
         }
 
         stdout.write("  Action            : Installing dependencies & updating global symlink...\n");
-        spawnFn("npm", ["install"], { cwd: repoDir, stdio: "inherit", windowsHide: true });
-        spawnFn("npm", ["link"], { cwd: repoDir, stdio: "inherit", windowsHide: true });
+        const installRes = spawnFn("npm", ["install"], { cwd: repoDir, stdio: "inherit", windowsHide: true });
+        if (installRes.status !== 0) {
+            stderr.write("  [!] 'npm install' failed during upgrade.\n");
+            stdout.write("================================================================================\n");
+            return { ok: false, error: "npm_install_failed" };
+        }
+
+        const linkRes = spawnFn("npm", ["link"], { cwd: repoDir, stdio: "inherit", windowsHide: true });
+        if (linkRes.status !== 0) {
+            stderr.write("  [!] 'npm link' failed during upgrade.\n");
+            stdout.write("================================================================================\n");
+            return { ok: false, error: "npm_link_failed" };
+        }
 
         stdout.write("--------------------------------------------------------------------------------\n");
         stdout.write(`  [v] Successfully upgraded Hetzer to v${update.latestVersion}!\n`);
@@ -75,32 +117,73 @@ export async function runCliUpgrade(args = [], {
         return { ok: true, updated: true, latestVersion: update.latestVersion };
     }
 
-    // Global npm package installation via GitHub Release tarball or git URL
-    const releaseTarball = `https://github.com/agunggnn/hetzer/releases/download/v${update.latestVersion}/hetzer-${update.latestVersion}.tgz`;
+    // Global npm package installation with release integrity verification
     stdout.write("  Installation Type : Global NPM Package\n");
-    stdout.write(`  Action            : Installing v${update.latestVersion} via npm...\n`);
+    stdout.write(`  Action            : Downloading and verifying release v${update.latestVersion}...\n`);
+    const releaseTarballUrl = `https://github.com/agunggnn/hetzer/releases/download/v${update.latestVersion}/hetzer-${update.latestVersion}.tgz`;
+    const checksumUrl = `https://github.com/agunggnn/hetzer/releases/download/v${update.latestVersion}/SHASUMS256.txt`;
 
-    const installRes = spawnFn("npm", ["install", "-g", releaseTarball], {
-        stdio: "inherit",
-        windowsHide: true,
-    });
+    let tarballPath = null;
+    try {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-upgrade-"));
+        tarballPath = path.join(tempDir, `hetzer-${update.latestVersion}.tgz`);
 
-    if (installRes.status !== 0) {
-        stdout.write("  Falling back to GitHub repository URL...\n");
-        const fallbackRes = spawnFn("npm", ["install", "-g", "git+https://github.com/agunggnn/hetzer.git"], {
+        const tarballRes = await fetchFn(releaseTarballUrl);
+        if (!tarballRes.ok) {
+            stderr.write(`  [!] Failed to download release tarball (HTTP ${tarballRes.status}).\n`);
+            stdout.write("================================================================================\n");
+            return { ok: false, error: "release_download_failed" };
+        }
+        const tarballBuffer = Buffer.from(await tarballRes.arrayBuffer());
+        const actualSha256 = crypto.createHash("sha256").update(tarballBuffer).digest("hex");
+
+        try {
+            const checksumRes = await fetchFn(checksumUrl);
+            if (checksumRes.ok) {
+                const checksumText = await checksumRes.text();
+                const expectedLine = checksumText.split("\n").find((line) => line.includes(`hetzer-${update.latestVersion}.tgz`));
+                if (expectedLine) {
+                    const expectedSha = expectedLine.trim().split(/\s+/)[0].toLowerCase();
+                    if (actualSha256 !== expectedSha) {
+                        stderr.write("  [!] CRITICAL INTEGRITY ERROR: Release checksum mismatch!\n");
+                        stderr.write(`      Expected : ${expectedSha}\n`);
+                        stderr.write(`      Actual   : ${actualSha256}\n`);
+                        stdout.write("================================================================================\n");
+                        return { ok: false, error: "integrity_check_failed" };
+                    }
+                    stdout.write("  [v] Release integrity verified via SHA-256.\n");
+                }
+            }
+        } catch {
+            // Non-fatal if checksum asset unavailable
+        }
+
+        fs.writeFileSync(tarballPath, tarballBuffer);
+
+        stdout.write(`  Action            : Installing v${update.latestVersion} via npm...\n`);
+        const installRes = spawnFn("npm", ["install", "-g", tarballPath], {
             stdio: "inherit",
             windowsHide: true,
         });
-        if (fallbackRes.status !== 0) {
-            stderr.write("  [!] Upgrade failed. Run manually:\n");
-            stderr.write(`      npm install -g ${releaseTarball}\n`);
+
+        if (installRes.status !== 0) {
+            stderr.write("  [!] 'npm install -g' failed. Run manually:\n");
+            stderr.write(`      npm install -g @agunggnn/hetzer@${update.latestVersion} --registry=https://npm.pkg.github.com\n`);
             stdout.write("================================================================================\n");
             return { ok: false, error: "npm_install_failed" };
         }
-    }
 
-    stdout.write("--------------------------------------------------------------------------------\n");
-    stdout.write(`  [v] Successfully upgraded Hetzer to v${update.latestVersion}!\n`);
-    stdout.write("================================================================================\n");
-    return { ok: true, updated: true, latestVersion: update.latestVersion };
+        stdout.write("--------------------------------------------------------------------------------\n");
+        stdout.write(`  [v] Successfully upgraded Hetzer to v${update.latestVersion}!\n`);
+        stdout.write("================================================================================\n");
+        return { ok: true, updated: true, latestVersion: update.latestVersion };
+    } finally {
+        if (tarballPath) {
+            try {
+                fs.rmSync(path.dirname(tarballPath), { recursive: true, force: true });
+            } catch {
+                // Ignore cleanup error
+            }
+        }
+    }
 }

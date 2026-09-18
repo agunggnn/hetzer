@@ -14,6 +14,7 @@ import {
     executeBrokeredProcess,
     isPrivateOrReservedIp,
     parseBrokerArguments,
+    safePinnedFetch,
     startHttpCredentialBroker,
     validateBrokerPolicy,
 } from "./http-broker.mjs";
@@ -667,4 +668,35 @@ test("assertSafeUpstreamHost throws ERR_SSRF_TARGET_BLOCKED for localhost and pr
         { code: "ERR_SSRF_TARGET_BLOCKED" }
     );
 });
+
+test("assertSafeUpstreamHost fails closed on DNS lookup errors (ERR_SSRF_LOOKUP_FAILED)", async () => {
+    await assert.rejects(
+        () => assertSafeUpstreamHost("unresolvable.domain.invalid", {
+            lookupFn: async () => {
+                const err = new Error("getaddrinfo ENOTFOUND unresolvable.domain.invalid");
+                err.code = "ENOTFOUND";
+                throw err;
+            },
+        }),
+        { code: "ERR_SSRF_LOOKUP_FAILED" }
+    );
+
+    await assert.rejects(
+        () => assertSafeUpstreamHost("empty.domain.test", {
+            lookupFn: async () => [],
+        }),
+        { code: "ERR_SSRF_LOOKUP_FAILED" }
+    );
+});
+
+test("assertSafeUpstreamHost returns resolved public IP addresses", async () => {
+    const addresses = await assertSafeUpstreamHost("api.example.test", {
+        lookupFn: async () => [
+            { address: "93.184.216.34", family: 4 },
+            { address: "93.184.216.35", family: 4 },
+        ],
+    });
+    assert.deepEqual(addresses, ["93.184.216.34", "93.184.216.35"]);
+});
+
 

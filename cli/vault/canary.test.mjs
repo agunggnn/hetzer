@@ -7,6 +7,7 @@ import test from "node:test";
 import { generateCanaryToken, isCanaryCredential, isCanaryToken, setupCanaryTrap, triggerCanaryAlert } from "./canary.mjs";
 import { revealCredential } from "./creds.mjs";
 import { resolveSecretEnvironment } from "./secret-env.mjs";
+import { readAuditEvents } from "./audit.mjs";
 
 test("isCanaryCredential accurately detects decoy credential identifiers", () => {
     assert.equal(isCanaryCredential("canary-token"), true);
@@ -58,6 +59,13 @@ test("revealCredential trips immediately when a canary honey-token is requested"
     assert.ok(fs.existsSync(incidentsLog));
     const logContent = fs.readFileSync(incidentsLog, "utf8");
     assert.match(logContent, /Canary 'canary-token' triggered/);
+
+    const auditEvents = readAuditEvents({ root });
+    assert.equal(auditEvents.length, 1);
+    assert.equal(auditEvents[0].eventType, "CANARY_TRIGGER");
+    assert.equal(auditEvents[0].target, "canary-token");
+    assert.equal(auditEvents[0].result, "TRIGGERED");
+    assert.match(auditEvents[0].details.threatVector, /Unauthorized Credential Scraping/);
 
     fs.rmSync(root, { recursive: true, force: true });
 });

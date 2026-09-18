@@ -101,3 +101,33 @@ test("audit ledger detects deleted or skipped lines", () => {
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });
+
+test("audit ledger detects deletion of newest entries (tail truncation)", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-audit-tail-trunc-"));
+    const logFile = path.join(tempDir, "audit.log");
+
+    try {
+        recordAuditEvent({ eventType: "E1", target: "t1", logFile });
+        recordAuditEvent({ eventType: "E2", target: "t2", logFile });
+        const e3 = recordAuditEvent({ eventType: "E3", target: "t3", logFile });
+
+        // Verify clean state
+        const initialCheck = verifyAuditLedger({ logFile });
+        assert.equal(initialCheck.ok, true);
+        assert.equal(initialCheck.count, 3);
+        assert.equal(initialCheck.latestHash, e3.hash);
+
+        // Delete the newest entry (tail entry 3)
+        const content = fs.readFileSync(logFile, "utf8").trim().split("\n");
+        content.pop(); // remove index 3
+        fs.writeFileSync(logFile, content.join("\n") + "\n");
+
+        // Verification must fail!
+        const check = verifyAuditLedger({ logFile });
+        assert.equal(check.ok, false);
+        assert.match(check.error, /Audit ledger truncated|checkpoint anchor/i);
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+

@@ -53,6 +53,49 @@ function readLastEntry(filePath) {
     }
 }
 
+export function getAuditHeadPath(filePath) {
+    return `${filePath}.head`;
+}
+
+function withAuditLock(filePath, fn, timeoutMs = 5000) {
+    const lockPath = `${filePath}.lock`;
+    const start = Date.now();
+    let lockFd = null;
+
+    while (Date.now() - start < timeoutMs) {
+        try {
+            lockFd = fs.openSync(lockPath, "wx");
+            fs.writeFileSync(lockFd, `${process.pid}\n${Date.now()}\n`);
+            break;
+        } catch (err) {
+            if (err.code === "EEXIST") {
+                try {
+                    const stat = fs.statSync(lockPath);
+                    if (Date.now() - stat.mtimeMs > 10000) {
+                        try { fs.unlinkSync(lockPath); } catch {}
+                        continue;
+                    }
+                } catch {}
+                const until = Date.now() + 20;
+                while (Date.now() < until) {}
+            } else {
+                throw err;
+            }
+        }
+    }
+
+    if (lockFd === null) {
+        throw new Error(`Timeout acquiring audit log lock on ${lockPath}`);
+    }
+
+    try {
+        return fn();
+    } finally {
+        try { fs.closeSync(lockFd); } catch {}
+        try { fs.unlinkSync(lockPath); } catch {}
+    }
+}
+
 export function recordAuditEvent({
     eventType,
     target = "",
@@ -68,37 +111,49 @@ export function recordAuditEvent({
 
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
 
-    const lastEntry = readLastEntry(filePath);
-    const prevHash = lastEntry?.hash || GENESIS_HASH;
-    const index = (lastEntry?.index || 0) + 1;
-    const timestamp = now instanceof Date ? now.toISOString() : new Date(now).toISOString();
+    return withAuditLock(filePath, () => {
+        const lastEntry = readLastEntry(filePath);
+        const prevHash = lastEntry?.hash || GENESIS_HASH;
+        const index = (lastEntry?.index || 0) + 1;
+        const timestamp = now instanceof Date ? now.toISOString() : new Date(now).toISOString();
 
-    const resolvedActor = {
-        pid: actor.pid || process.pid,
-        user: actor.user || process.env.USERNAME || process.env.USER || "unknown",
-        isTTY: actor.isTTY !== undefined ? Boolean(actor.isTTY) : Boolean(process.stdin?.isTTY),
-        processName: actor.processName || path.basename(process.argv[1] || "hetzer"),
-        ...actor,
-    };
+        const resolvedActor = {
+            pid: actor.pid || process.pid,
+            user: actor.user || process.env.USERNAME || process.env.USER || "unknown",
+            isTTY: actor.isTTY !== undefined ? Boolean(actor.isTTY) : Boolean(process.stdin?.isTTY),
+            processName: actor.processName || path.basename(process.argv[1] || "hetzer"),
+            ...actor,
+        };
 
-    const entry = {
-        index,
-        timestamp,
-        eventType: String(eventType).toUpperCase(),
-        target: String(target),
-        result: String(result).toUpperCase(),
-        actor: resolvedActor,
-        details,
-        prevHash,
-        hash: "",
-    };
+        const entry = {
+            index,
+            timestamp,
+            eventType: String(eventType).toUpperCase(),
+            target: String(target),
+            result: String(result).toUpperCase(),
+            actor: resolvedActor,
+            details,
+            prevHash,
+            hash: "",
+        };
 
-    entry.hash = computeAuditEntryHash(entry);
+        entry.hash = computeAuditEntryHash(entry);
 
-    fs.appendFileSync(filePath, `${JSON.stringify(entry)}\n`, { encoding: "utf8", mode: 0o600 });
-    secureFilePermissions(filePath);
+        fs.appendFileSync(filePath, `${JSON.stringify(entry)}\n`, { encoding: "utf8", mode: 0o600 });
+        secureFilePermissions(filePath);
 
-    return entry;
+        // Update monotonic head anchor for truncation detection
+        const headPath = getAuditHeadPath(filePath);
+        const headData = {
+            lastIndex: entry.index,
+            lastHash: entry.hash,
+            updatedAt: entry.timestamp,
+        };
+        fs.writeFileSync(headPath, JSON.stringify(headData, null, 2), { encoding: "utf8", mode: 0o600 });
+        secureFilePermissions(headPath);
+
+        return entry;
+    });
 }
 
 export function readAuditEvents({ logFile, root, limit = 50 } = {}) {
@@ -118,8 +173,10 @@ export function readAuditEvents({ logFile, root, limit = 50 } = {}) {
     return entries.slice(-limit);
 }
 
-export function verifyAuditLedger({ logFile, root } = {}) {
+export function verifyAuditLedger({ logFile, root, expectedHeadHash, expectedCount } = {}) {
     const filePath = logFile || getAuditLogPath({ root });
+    const headPath = getAuditHeadPath(filePath);
+
     if (!fs.existsSync(filePath)) {
         return { ok: true, count: 0, message: "Audit log does not exist yet (clean state)." };
     }
@@ -170,6 +227,32 @@ export function verifyAuditLedger({ logFile, root } = {}) {
 
         expectedPrevHash = entry.hash;
         expectedIndex += 1;
+    }
+
+    // Check against head state anchor or explicit parameters to prevent tail deletion
+    let head = null;
+    if (fs.existsSync(headPath)) {
+        try {
+            head = JSON.parse(fs.readFileSync(headPath, "utf8"));
+        } catch {}
+    }
+
+    const targetExpectedCount = expectedCount !== undefined ? expectedCount : head?.lastIndex;
+    if (typeof targetExpectedCount === "number" && lines.length < targetExpectedCount) {
+        return {
+            ok: false,
+            tamperedIndex: lines.length + 1,
+            error: `Audit ledger truncated: expected at least ${targetExpectedCount} entries from checkpoint anchor, found ${lines.length}.`,
+        };
+    }
+
+    const targetExpectedHash = expectedHeadHash || head?.lastHash;
+    if (targetExpectedHash && expectedPrevHash !== targetExpectedHash) {
+        return {
+            ok: false,
+            tamperedIndex: lines.length,
+            error: `Audit ledger tail hash mismatch: latest entry hash does not match checkpoint anchor.`,
+        };
     }
 
     return {

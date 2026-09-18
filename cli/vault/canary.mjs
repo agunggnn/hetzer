@@ -33,6 +33,7 @@ export function triggerCanaryAlert({
     root = process.cwd(),
 } = {}) {
     const timestamp = new Date().toISOString();
+    const threatVector = "Unauthorized Credential Scraping / Agent Prompt Injection";
     const alertMessage = [
         "🚨 ============================================================================",
         "🚨 HETZER CRITICAL SECURITY ALERT: CANARY HONEY-TOKEN TRIGGERED!",
@@ -40,7 +41,7 @@ export function triggerCanaryAlert({
         `🚨 Target Decoy    : ${id}`,
         `🚨 Incident Time   : ${timestamp}`,
         `🚨 Suspected Actor : ${actor} (${action})`,
-        `🚨 Threat Vector   : Unauthorized Credential Scraping / Agent Prompt Injection`,
+        `🚨 Threat Vector   : ${threatVector}`,
         "🚨 Action Taken    : Guarded operation aborted.",
         "🚨 ============================================================================",
     ].join("\n");

@@ -80,3 +80,65 @@ test("runCliUpgrade executes git pull and npm link in git clone", async () => {
     assert.ok(commandsRun.some((c) => c.includes("npm link")));
     assert.match(out, /Successfully upgraded Hetzer to v0.5.7/);
 });
+
+test("runCliUpgrade rejects git upgrade when active branch is a feature branch", async () => {
+    let errOut = "";
+    const mockStdout = { write: () => true };
+    const mockStderr = { write: (msg) => { errOut += msg; return true; } };
+    const mockFetch = async () => ({
+        ok: true,
+        json: async () => ({ tag_name: "v0.5.7", html_url: "https://github.com/agunggnn/hetzer/releases" }),
+    });
+    const mockSpawn = (cmd, args) => {
+        if (args.includes("--abbrev-ref")) {
+            return { status: 0, stdout: "feat/security-hardening-v0.5.6\n" };
+        }
+        return { status: 0, stdout: "" };
+    };
+
+    const res = await runCliUpgrade(["--yes"], {
+        cliRoot: path.resolve("cli"),
+        manifest: { version: "0.5.6" },
+        spawnFn: mockSpawn,
+        fetchFn: mockFetch,
+        stdout: mockStdout,
+        stderr: mockStderr,
+    });
+
+    assert.equal(res.ok, false);
+    assert.equal(res.error, "git_branch_mismatch");
+    assert.match(errOut, /Active git branch is 'feat\/security-hardening-v0\.5\.6'/);
+});
+
+test("runCliUpgrade rejects git upgrade when working tree is dirty", async () => {
+    let errOut = "";
+    const mockStdout = { write: () => true };
+    const mockStderr = { write: (msg) => { errOut += msg; return true; } };
+    const mockFetch = async () => ({
+        ok: true,
+        json: async () => ({ tag_name: "v0.5.7", html_url: "https://github.com/agunggnn/hetzer/releases" }),
+    });
+    const mockSpawn = (cmd, args) => {
+        if (args.includes("--abbrev-ref")) {
+            return { status: 0, stdout: "main\n" };
+        }
+        if (args.includes("--porcelain")) {
+            return { status: 0, stdout: " M package.json\n" };
+        }
+        return { status: 0, stdout: "" };
+    };
+
+    const res = await runCliUpgrade(["--yes"], {
+        cliRoot: path.resolve("cli"),
+        manifest: { version: "0.5.6" },
+        spawnFn: mockSpawn,
+        fetchFn: mockFetch,
+        stdout: mockStdout,
+        stderr: mockStderr,
+    });
+
+    assert.equal(res.ok, false);
+    assert.equal(res.error, "git_dirty_working_tree");
+    assert.match(errOut, /uncommitted changes/);
+});
+

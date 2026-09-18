@@ -52,9 +52,9 @@ npx hetzer creds set openai-api-key
   ```bash
   npm install -g @agunggnn/hetzer --registry=https://npm.pkg.github.com
   ```
-- **Via NPM Registry**:
+- **Via GitHub Repository (Latest Source)**:
   ```bash
-  npm install -g hetzer
+  npm install -g git+https://github.com/agunggnn/hetzer.git
   ```
 
 ---

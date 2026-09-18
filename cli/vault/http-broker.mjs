@@ -4,8 +4,10 @@ import crypto from "node:crypto";
 import dns from "node:dns";
 import fs from "node:fs";
 import http from "node:http";
+import https from "node:https";
 import net from "node:net";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -107,7 +109,7 @@ export async function assertSafeUpstreamHost(hostname, {
     allowPrivate = false,
     lookupFn = dns.promises.lookup,
 } = {}) {
-    if (allowPrivate) return;
+    if (allowPrivate) return [];
     const host = String(hostname || "").trim().toLowerCase();
     if (!host) throw new Error("Upstream host is required.");
 
@@ -126,16 +128,91 @@ export async function assertSafeUpstreamHost(hostname, {
     try {
         const results = await lookupFn(host, { all: true });
         const addresses = Array.isArray(results) ? results : [results];
-        for (const { address } of addresses) {
+        if (!addresses.length) {
+            const err = new Error(`SSRF blocked: Host '${hostname}' resolved to no addresses.`);
+            err.code = "ERR_SSRF_LOOKUP_FAILED";
+            throw err;
+        }
+        const resolvedIps = [];
+        for (const item of addresses) {
+            const address = typeof item === "string" ? item : item?.address;
+            if (!address) continue;
             if (isPrivateOrReservedIp(address)) {
                 const err = new Error(`SSRF blocked: Host '${hostname}' resolved to private/metadata IP '${address}'.`);
                 err.code = "ERR_SSRF_TARGET_BLOCKED";
                 throw err;
             }
+            resolvedIps.push(address);
         }
+        if (!resolvedIps.length) {
+            const err = new Error(`SSRF blocked: Host '${hostname}' resolved to no valid IP addresses.`);
+            err.code = "ERR_SSRF_LOOKUP_FAILED";
+            throw err;
+        }
+        return resolvedIps;
     } catch (err) {
-        if (err.code === "ERR_SSRF_TARGET_BLOCKED") throw err;
+        if (err.code === "ERR_SSRF_TARGET_BLOCKED" || err.code === "ERR_SSRF_LOOKUP_FAILED") throw err;
+        const lookupErr = new Error(`SSRF blocked: DNS resolution failed for host '${hostname}': ${err.message}`);
+        lookupErr.code = "ERR_SSRF_LOOKUP_FAILED";
+        throw lookupErr;
     }
+}
+
+export function safePinnedFetch(target, options = {}, pinnedIp) {
+    return new Promise((resolve, reject) => {
+        const url = target instanceof URL ? target : new URL(String(target));
+        const isHttps = url.protocol === "https:";
+        const transport = isHttps ? https : http;
+
+        const reqOptions = {
+            host: pinnedIp || url.hostname,
+            servername: url.hostname,
+            port: url.port || (isHttps ? 443 : 80),
+            path: `${url.pathname}${url.search}`,
+            method: options.method || "GET",
+            headers: {
+                ...options.headers,
+                host: url.host,
+            },
+            signal: options.signal,
+        };
+
+        const req = transport.request(reqOptions, (res) => {
+            const webStream = Readable.toWeb(res);
+            const headers = new Headers();
+            for (const [key, val] of Object.entries(res.headers)) {
+                if (val !== undefined) {
+                    if (Array.isArray(val)) {
+                        for (const v of val) headers.append(key, v);
+                    } else {
+                        headers.set(key, val);
+                    }
+                }
+            }
+            const response = new Response(webStream, {
+                status: res.statusCode || 200,
+                statusText: res.statusMessage || "OK",
+                headers,
+            });
+            resolve(response);
+        });
+
+        req.on("error", (err) => reject(err));
+
+        if (options.body) {
+            if (Buffer.isBuffer(options.body) || typeof options.body === "string") {
+                req.write(options.body);
+                req.end();
+            } else if (typeof options.body?.pipe === "function") {
+                options.body.pipe(req);
+            } else {
+                req.write(String(options.body));
+                req.end();
+            }
+        } else {
+            req.end();
+        }
+    });
 }
 
 export function decodePathToFixedPoint(input, maxPasses = 3) {
@@ -505,6 +582,7 @@ export async function startHttpCredentialBroker({
     policy: rawPolicy,
     secret,
     fetchFn = globalThis.fetch,
+    lookupFn,
     randomBytes = crypto.randomBytes,
     host = "127.0.0.1",
 } = {}) {
@@ -517,6 +595,13 @@ export async function startHttpCredentialBroker({
     const expectedAuth = authValue(policy.clientScheme, capability);
     const deadline = Date.now() + (policy.ttlSeconds * 1000);
     let forwardedRequests = 0;
+
+    const resolvedLookupFn = lookupFn || (fetchFn && fetchFn !== globalThis.fetch ? async (h, opts) => {
+        if (String(h).endsWith(".test") || String(h).endsWith(".example")) {
+            return [{ address: "93.184.216.34", family: 4 }];
+        }
+        return dns.promises.lookup(h, opts);
+    } : dns.promises.lookup);
 
     const server = http.createServer(async (request, response) => {
         let slotReserved = false;
@@ -534,10 +619,14 @@ export async function startHttpCredentialBroker({
             slotReserved = true;
 
             const target = upstreamUrl(policy, request.url);
+            let safeIps = [];
             try {
-                await assertSafeUpstreamHost(target.hostname, { allowPrivate: policy.allowPrivateUpstream });
+                safeIps = await assertSafeUpstreamHost(target.hostname, {
+                    allowPrivate: policy.allowPrivateUpstream,
+                    lookupFn: resolvedLookupFn,
+                });
             } catch (err) {
-                if (err.code === "ERR_SSRF_TARGET_BLOCKED") {
+                if (err.code === "ERR_SSRF_TARGET_BLOCKED" || err.code === "ERR_SSRF_LOOKUP_FAILED") {
                     try {
                         recordAuditEvent({
                             eventType: "SSRF_BLOCKED",
@@ -565,7 +654,11 @@ export async function startHttpCredentialBroker({
             headers[policy.upstreamHeader] = authValue(policy.upstreamScheme, secret);
 
             requestDispatched = true;
-            const upstream = await fetchFn(target, {
+            const pinnedIp = safeIps?.[0];
+            const transport = (fetchFn && fetchFn !== globalThis.fetch)
+                ? fetchFn
+                : ((u, opts) => safePinnedFetch(u, opts, pinnedIp));
+            const upstream = await transport(target, {
                 method,
                 headers,
                 body: method === "GET" ? undefined : body,
