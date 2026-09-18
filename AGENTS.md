@@ -34,6 +34,7 @@
 15. **Universal OCI Container Engine (`cli/vault/sandbox.mjs`)**: Auto-probes Docker and Podman with Linux SELinux `:Z` mounts and loopback bridge mapping (`host.docker.internal` / `host.containers.internal`).
 16. **Same-User Agentic Reveal Guard & Ancestry Inspection (`cli/vault/human-guard.mjs`, `cli/vault/hetzer-vault.mjs`)**: Blocks automated agents under the same OS user account from dumping plaintext secrets via direct `Grimoire.reveal()` or programmatic imports, while decoupling `#decryptRaw` and `resolve()` so that `hetzer exec`, HTTP brokers, and MCP proxies operate without human TTY interruption. Caches process ancestry tree scans for sub-ms execution.
 17. **Master Key Isolation Precedence & Separation (`cli/vault/hetzer-vault.mjs`)**: `isolateMasterKey` moves encryption keys from workspace `.env` to `~/.hetzer/grimoire.key` with restrictive ACLs (0600) to protect against agent workspace read operations. `resolveMasterKey` enforces deterministic precedence (runtime env -> local `.env` -> isolated user store fallback).
+18. **Performance Reporting**: `hetzer exec` is a process wrapper; cold CLI startup can dominate short commands. Report measured p50/p95 values separately for cold CLI and steady-state execution. Do not claim universal zero overhead, provider KV-cache hits, or TTFT improvements without harness/provider telemetry.
 
 ---
 
