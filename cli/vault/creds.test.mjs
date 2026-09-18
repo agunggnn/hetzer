@@ -164,3 +164,75 @@ test("resolveMasterKey and isolateMasterKey manage key isolation lifecycle", () 
 
     fs.rmSync(tempDir, { recursive: true, force: true });
 });
+
+test("setCredential preserves allowedActions and defaults to MCP-compatible permissions", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-creds-allowed-"));
+    fs.mkdirSync(path.join(root, "data"));
+    const envFile = path.join(root, ".env");
+    const masterKey = "test-master-key-for-creds-allowed-actions-32";
+    fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${masterKey}\n`);
+
+    setCredential({
+        root,
+        envFile,
+        id: "nine-router-initial-password",
+        secret: "test-secret-value",
+    });
+
+    const vault = new Grimoire({
+        dbPath: path.join(root, "data", "hetzer-vault.db"),
+        masterKey,
+    });
+    const item = vault.find("nine-router-initial-password");
+    assert.ok(item.allowedActions.includes("mcp.tools/call"));
+    assert.ok(item.allowedActions.includes("mcp.tools.call"));
+
+    // Update with custom allowedActions
+    setCredential({
+        root,
+        envFile,
+        id: "nine-router-initial-password",
+        secret: "test-secret-value-updated",
+        allowedActions: ["custom.action"],
+    });
+    const updatedItem = vault.find("nine-router-initial-password");
+    assert.deepEqual(updatedItem.allowedActions, ["custom.action"]);
+
+    vault.db?.close?.();
+    fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("Grimoire recordAudit records target_id and credential_id from snake_case and camelCase", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-audit-case-"));
+    const dbPath = path.join(root, "test-vault.db");
+    const masterKey = "test-master-key-for-audit-case-testing-32";
+    const vault = new Grimoire({ dbPath, masterKey });
+
+    // snake_case
+    vault.recordAudit({
+        actor: "canary-detector",
+        action: "canary.tripwire",
+        target_id: "canary-honeytoken",
+        credential_id: "canary-token",
+        outcome: "ABORT",
+    });
+
+    // camelCase
+    vault.recordAudit({
+        actor: "cli",
+        action: "vault.create",
+        targetId: "target-123",
+        credentialId: "cred-456",
+        outcome: "SUCCESS",
+    });
+
+    const rows = vault.db.prepare("SELECT actor, target_id, credential_id FROM vault_audit_events ORDER BY id ASC").all();
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].target_id, "canary-honeytoken");
+    assert.equal(rows[0].credential_id, "canary-token");
+    assert.equal(rows[1].target_id, "target-123");
+    assert.equal(rows[1].credential_id, "cred-456");
+
+    vault.db?.close?.();
+    fs.rmSync(root, { recursive: true, force: true });
+});

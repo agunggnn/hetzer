@@ -4,7 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { redactExactValues, runNpmWithAuth, verifyNpmRegistryAuth } from "./npm-auth.mjs";
+import {
+    assertValidPackageName,
+    redactExactValues,
+    resolveNpmCli,
+    runNpmWithAuth,
+    verifyNpmRegistryAuth,
+} from "./npm-auth.mjs";
 
 test("runNpmWithAuth keeps registry credentials out of argv and npmrc", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-npm-auth-test-"));
@@ -177,4 +183,42 @@ test("verifyNpmRegistryAuth throws ERR_NPM_AUTH_FAILED on genuine invalid token"
         assert.match(err.message, /401 Unauthorized/);
         return true;
     });
+});
+
+test("assertValidPackageName accepts standard and scoped package names", () => {
+    assert.doesNotThrow(() => assertValidPackageName("hetzer"));
+    assert.doesNotThrow(() => assertValidPackageName("@agunggnn/hetzer"));
+    assert.doesNotThrow(() => assertValidPackageName("lodash.debounce"));
+    assert.doesNotThrow(() => assertValidPackageName("@types/node"));
+});
+
+test("assertValidPackageName rejects malicious and invalid package names", () => {
+    assert.throws(() => assertValidPackageName("pkg; rm -rf /"), (err) => err.code === "ERR_INVALID_PACKAGE_NAME");
+    assert.throws(() => assertValidPackageName("pkg & whoami"), (err) => err.code === "ERR_INVALID_PACKAGE_NAME");
+    assert.throws(() => assertValidPackageName("../../etc/passwd"), (err) => err.code === "ERR_INVALID_PACKAGE_NAME");
+    assert.throws(() => assertValidPackageName(""), (err) => err.code === "ERR_INVALID_PACKAGE_NAME");
+    assert.throws(() => assertValidPackageName(123), (err) => err.code === "ERR_INVALID_PACKAGE_NAME");
+});
+
+test("runNpmWithAuth rejects arguments containing shell metacharacters", () => {
+    assert.throws(() => {
+        runNpmWithAuth({
+            args: ["install", "pkg; echo pwned"],
+            registry: "https://registry.npmjs.org/",
+            token: "valid-token",
+        });
+    }, (err) => err.code === "ERR_UNSAFE_NPM_ARGUMENT");
+
+    assert.throws(() => {
+        runNpmWithAuth({
+            args: ["install", "pkg | whoami"],
+            registry: "https://registry.npmjs.org/",
+            token: "valid-token",
+        });
+    }, (err) => err.code === "ERR_UNSAFE_NPM_ARGUMENT");
+});
+
+test("resolveNpmCli safely locates npm-cli.js or returns null", () => {
+    const cli = resolveNpmCli();
+    assert.ok(cli === null || typeof cli === "string");
 });

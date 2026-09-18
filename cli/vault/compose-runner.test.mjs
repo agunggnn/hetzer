@@ -81,3 +81,15 @@ test("Compose child output sanitizes both stdout and stderr", async () => {
     assert.equal(stdout, "service output: secretRef:compose-secret");
     assert.equal(stderr, "service error: secretRef:compose-secret");
 });
+
+test("composeInvocation correctly handles default envFile path", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-compose-env-"));
+    try {
+        const defaultEnv = path.join(tempDir, ".env");
+        fs.writeFileSync(path.join(tempDir, "docker-compose.yml"), "services:\n  app:\n    image: test\n");
+        const invocation = composeInvocation({ root: tempDir, envFile: defaultEnv, composeArgs: ["ps"] });
+        assert.ok(invocation.args.includes(defaultEnv));
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});

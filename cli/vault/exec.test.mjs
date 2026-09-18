@@ -89,6 +89,23 @@ test("createStreamSanitizer blocks terminal-control and long scanner bypasses", 
     assert.match(output, /secretRef:github-token/);
 });
 
+test("createStreamSanitizer redacts extended database schemes (rediss, mariadb, amqp, amqps)", () => {
+    for (const scheme of ["rediss://", "mariadb://", "amqp://", "amqps://"]) {
+        const sanitizer = createStreamSanitizer([]);
+        const url = `${scheme}user:${"X".repeat(700)}@cluster.local:5432/db`;
+        const output = sanitizer.write(Buffer.from(url.slice(0, 350)))
+            + sanitizer.write(Buffer.from(url.slice(350)))
+            + sanitizer.end();
+        assert.doesNotMatch(output, /X{50}/);
+        assert.match(output, /secretRef:database-url/);
+    }
+});
+
+test("parseArguments defaults omitted --env-file to root .env without directory read crash", () => {
+    const parsed = parseArguments(["--root", "C:\\myproject", "--", "node", "app.js"]);
+    assert.equal(parsed.envFile, path.join(path.resolve("C:\\myproject"), ".env"));
+});
+
 test("executeProcess blocks reflection commands from running", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-exec-test-"));
     const envFile = path.join(tempDir, ".env");

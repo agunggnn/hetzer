@@ -226,7 +226,7 @@ export function redactAndVault(text, { root, envFile, masterKey, autoVault = tru
                         }
                     }
 
-                    const allowedActions = ["compose.start", "process.start"];
+                    const allowedActions = ["compose.start", "process.start", "mcp.tools/call", "mcp.tools.call"];
                     vaultInstance.upsertTarget({ id: "sniffed-secrets", name: "sniffed-secrets", target_type: "hetzer-module" });
                     if (!existing) {
                         vaultInstance.create({

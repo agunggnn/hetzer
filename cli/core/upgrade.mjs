@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { checkForUpdates, formatUpdateBanner } from "./version-check.mjs";
+import { resolveNpmCli } from "./npm-auth.mjs";
 
 export async function runCliUpgrade(args = [], {
     cliRoot,
@@ -17,6 +18,20 @@ export async function runCliUpgrade(args = [], {
     const isCheck = args.includes("--check") || args.includes("-c");
     const repoDir = path.resolve(cliRoot, "..");
     const isGitRepo = fs.existsSync(path.join(repoDir, ".git"));
+
+    const runNpm = (npmArgs, options = {}) => {
+        if (spawnFn === spawnSync) {
+            const cliPath = resolveNpmCli();
+            if (cliPath) {
+                return spawnFn(process.execPath, [cliPath, ...npmArgs], { ...options, shell: false });
+            }
+            return spawnFn(process.platform === "win32" ? "npm.cmd" : "npm", npmArgs, {
+                ...options,
+                shell: process.platform === "win32",
+            });
+        }
+        return spawnFn("npm", npmArgs, options);
+    };
 
     stdout.write("================================================================================\n");
     stdout.write("  HETZER - CLI UPGRADE MANAGER\n");
@@ -97,14 +112,14 @@ export async function runCliUpgrade(args = [], {
         }
 
         stdout.write("  Action            : Installing dependencies & updating global symlink...\n");
-        const installRes = spawnFn("npm", ["install"], { cwd: repoDir, stdio: "inherit", windowsHide: true });
+        const installRes = runNpm(["install"], { cwd: repoDir, stdio: "inherit", windowsHide: true });
         if (installRes.status !== 0) {
             stderr.write("  [!] 'npm install' failed during upgrade.\n");
             stdout.write("================================================================================\n");
             return { ok: false, error: "npm_install_failed" };
         }
 
-        const linkRes = spawnFn("npm", ["link"], { cwd: repoDir, stdio: "inherit", windowsHide: true });
+        const linkRes = runNpm(["link"], { cwd: repoDir, stdio: "inherit", windowsHide: true });
         if (linkRes.status !== 0) {
             stderr.write("  [!] 'npm link' failed during upgrade.\n");
             stdout.write("================================================================================\n");
@@ -175,7 +190,7 @@ export async function runCliUpgrade(args = [], {
         fs.writeFileSync(tarballPath, tarballBuffer);
 
         stdout.write(`  Action            : Installing v${update.latestVersion} via npm...\n`);
-        const installRes = spawnFn("npm", ["install", "-g", tarballPath], {
+        const installRes = runNpm(["install", "-g", tarballPath], {
             stdio: "inherit",
             windowsHide: true,
         });

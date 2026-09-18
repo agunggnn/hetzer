@@ -89,3 +89,36 @@ test("setModuleEnabled sets chmod 600 on .env (Unix)", { skip: process.platform 
     assert.equal(stats.mode & 0o777, 0o600);
     fs.rmSync(root, { recursive: true, force: true });
 });
+
+test("setModuleEnabled creates .env file when it does not exist", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-toggle-noenv-"));
+    const envFile = path.join(root, ".env");
+    assert.equal(fs.existsSync(envFile), false);
+    setupTempModule(root, "sample-mod");
+    setModuleEnabled({ root, envFile, moduleId: "sample-mod", enabled: true, builtinFile: path.resolve("cli/modules/builtin.json") });
+    assert.equal(fs.existsSync(envFile), true);
+    const text = fs.readFileSync(envFile, "utf8");
+    assert.ok(text.includes("HETZER_ENABLED_MODULES=sample-mod"));
+    fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("setModuleEnabled rejects invalid module ID format", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-toggle-invalid-"));
+    const envFile = path.join(root, ".env");
+    fs.writeFileSync(envFile, "HETZER_ENABLED_MODULES=\n");
+    assert.throws(
+        () => setModuleEnabled({ root, envFile, moduleId: "../evil-module", enabled: true, builtinFile: path.resolve("cli/modules/builtin.json") }),
+        (err) => {
+            assert.equal(err.code, "ERR_INVALID_MODULE_ID");
+            return true;
+        }
+    );
+    assert.throws(
+        () => setModuleEnabled({ root, envFile, moduleId: "SAMPLE_MOD", enabled: true, builtinFile: path.resolve("cli/modules/builtin.json") }),
+        (err) => {
+            assert.equal(err.code, "ERR_INVALID_MODULE_ID");
+            return true;
+        }
+    );
+    fs.rmSync(root, { recursive: true, force: true });
+});

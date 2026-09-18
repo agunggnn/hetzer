@@ -387,7 +387,7 @@ export async function ensureCredential({ root, envFile, id, promptMessage }) {
     return secret;
 }
 
-export function setCredential({ root, envFile, id, secret }) {
+export function setCredential({ root, envFile, id, secret, allowedActions }) {
     if (!id || typeof id !== "string") throw new Error("Credential ID is required.");
     if (typeof secret !== "string" || !secret) throw new Error("Secret value is required.");
 
@@ -398,12 +398,12 @@ export function setCredential({ root, envFile, id, secret }) {
         const keyName = known?.keyName || id;
         const authType = known?.authType || (id.includes("password") ? "password" : "api-key");
         const label = known?.label || id;
-        const allowedActions = ["compose.start", "process.start"];
-
+        const DEFAULT_ALLOWED_ACTIONS = ["compose.start", "process.start", "mcp.tools/call", "mcp.tools.call"];
         vault.upsertTarget({ id: targetId, name: targetId, target_type: "hetzer-module" });
         const existing = vault.find(id);
+        const resolvedAllowedActions = allowedActions || (existing?.allowedActions?.length ? existing.allowedActions : DEFAULT_ALLOWED_ACTIONS);
         if (existing) {
-            vault.update(id, { secret, allowedActions });
+            vault.update(id, { secret, allowedActions: resolvedAllowedActions });
         } else {
             vault.create({
                 id,
@@ -413,7 +413,7 @@ export function setCredential({ root, envFile, id, secret }) {
                 authType,
                 scope: "env",
                 accessRole: "operator",
-                allowedActions,
+                allowedActions: resolvedAllowedActions,
                 secret,
                 source: "cli-creds-set",
             });

@@ -31,7 +31,7 @@ export function secureFilePermissions(filePath, { run = spawnSync } = {}) {
 const MAX_ENTRIES = 500;
 const MAX_SECRET_LENGTH = 8192;
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const ALLOWED_ACTION_PATTERN = /^[a-z0-9]+(?:[.:_-][a-z0-9]+)*$/;
+const ALLOWED_ACTION_PATTERN = /^[a-z0-9]+(?:[.:_/-][a-z0-9]+)*$/;
 
 export const SCOPES = new Set(["header", "query", "env", "basic"]);
 export const REALMS = new Set(["core", "data", "memory", "social", "command", "frontier"]);
@@ -687,8 +687,8 @@ export class Grimoire {
         `).run(
             String(event.actor || "unknown").slice(0, 120),
             String(event.action || "unknown").slice(0, 120),
-            event.targetId || null,
-            event.credentialId || null,
+            event.targetId || event.target_id || null,
+            event.credentialId || event.credential_id || null,
             String(event.reason || "").slice(0, 500) || null,
             String(event.outcome || "unknown").slice(0, 40),
             JSON.stringify(metadata).slice(0, 4000),

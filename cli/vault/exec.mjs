@@ -20,7 +20,7 @@ const FORMAT_CONTROL = /\p{Cf}/u;
 const LEXICAL_CHARACTER = /[A-Za-z0-9+/_=.-]/;
 const PRIVATE_KEY_BEGIN = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/;
 const PRIVATE_KEY_END = /-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----/;
-const DATABASE_SCHEME = /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis):\/\//i;
+const DATABASE_SCHEME = /\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?|amqps?):\/\//i;
 const STRUCTURED_MARKER_TAIL = 128;
 const LEXICAL_SCAN_LIMIT = 512;
 
@@ -72,7 +72,7 @@ export function collectResolvedSecrets(envFile, env) {
             }
         }
     }
-    if (envFile && fs.existsSync(envFile)) {
+    if (envFile && fs.existsSync(envFile) && fs.statSync(envFile).isFile()) {
         const rawValues = parseEnv(fs.readFileSync(envFile, "utf8"));
         for (const [name, rawValue] of Object.entries(rawValues)) {
             if (!String(rawValue).startsWith("secretRef:")) continue;
@@ -588,9 +588,12 @@ export function parseArguments(argv) {
     const rawSandboxVal = value("--sandbox");
     const sandboxImage = value("--sandbox-image") || (rawSandboxVal && !rawSandboxVal.startsWith("-") ? rawSandboxVal : undefined);
     const sandboxNetwork = value("--sandbox-network") || undefined;
+    const root = path.resolve(value("--root") || process.cwd());
+    const rawEnvFile = value("--env-file");
+    const envFile = rawEnvFile ? path.resolve(rawEnvFile) : path.join(root, ".env");
     return {
-        root: path.resolve(value("--root") || process.cwd()),
-        envFile: path.resolve(value("--env-file")),
+        root,
+        envFile,
         policyFile: rawPolicy ? path.resolve(rawPolicy) : undefined,
         policyHash: rawPolicyHash || undefined,
         brokerPolicyFiles: values("--broker-policy").map((file) => path.resolve(file)),
@@ -613,7 +616,9 @@ export function parseArguments(argv) {
 }
 
 function selectedCredentialBindings(envFile, allowNames = []) {
-    const values = fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, "utf8")) : {};
+    const values = envFile && fs.existsSync(envFile) && fs.statSync(envFile).isFile()
+        ? parseEnv(fs.readFileSync(envFile, "utf8"))
+        : {};
     const allow = new Set(allowNames.map((name) => String(name).toLowerCase()));
     return Object.entries(values).flatMap(([envName, value]) => {
         const reference = String(value || "");

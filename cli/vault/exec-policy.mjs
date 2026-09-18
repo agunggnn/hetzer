@@ -62,37 +62,46 @@ export const UNTRUSTED_DOWNLOADER_PATTERNS = [
 
 export function isSensitivePathAccess(token, { denyPatterns = [] } = {}) {
     if (typeof token !== "string") return false;
-    const normalized = token.replace(/\\/g, "/");
-    let canonical = normalized;
+    const candidates = new Set([token]);
+
+    let current = token;
+    for (let pass = 0; pass < 5; pass++) {
+        const normalized = current.replace(/\\/g, "/");
+        candidates.add(normalized);
+        try {
+            candidates.add(path.posix.normalize(normalized));
+        } catch {}
+
+        try {
+            const next = decodeURIComponent(current);
+            if (next === current) break;
+            current = next;
+            candidates.add(current);
+        } catch {
+            break;
+        }
+    }
+
+    const finalNormalized = current.replace(/\\/g, "/");
+    candidates.add(finalNormalized);
     try {
-        canonical = path.posix.normalize(normalized);
+        candidates.add(path.posix.normalize(finalNormalized));
     } catch {}
 
-    let decoded = normalized;
-    try {
-        decoded = decodeURIComponent(normalized);
-    } catch {}
-
-    let canonicalDecoded = decoded;
-    try {
-        canonicalDecoded = path.posix.normalize(decoded);
-    } catch {}
-
-    const candidates = [token, normalized, canonical, decoded, canonicalDecoded];
-
+    const candidateList = [...candidates];
     for (const pattern of SENSITIVE_HOST_PATTERNS) {
-        if (candidates.some((c) => pattern.test(c))) {
+        if (candidateList.some((c) => pattern.test(c))) {
             return true;
         }
     }
     for (const pattern of denyPatterns) {
         if (typeof pattern === "string") {
             const patLower = pattern.toLowerCase();
-            if (candidates.some((c) => c.toLowerCase().includes(patLower))) {
+            if (candidateList.some((c) => c.toLowerCase().includes(patLower))) {
                 return true;
             }
         } else if (pattern instanceof RegExp) {
-            if (candidates.some((c) => pattern.test(c))) {
+            if (candidateList.some((c) => pattern.test(c))) {
                 return true;
             }
         }

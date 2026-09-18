@@ -13,6 +13,30 @@ export function redactExactValues(text, values = []) {
     return result;
 }
 
+export const NPM_PACKAGE_NAME_PATTERN = /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/i;
+
+export function assertValidPackageName(name) {
+    if (typeof name !== "string" || !NPM_PACKAGE_NAME_PATTERN.test(name)) {
+        const err = new Error(`Invalid npm package name: ${JSON.stringify(name)}`);
+        err.code = "ERR_INVALID_PACKAGE_NAME";
+        throw err;
+    }
+}
+
+export function resolveNpmCli() {
+    const nodeDir = path.dirname(process.execPath);
+    const candidates = [
+        path.join(nodeDir, "node_modules", "npm", "bin", "npm-cli.js"),
+        path.join(nodeDir, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+    ];
+    for (const candidate of candidates) {
+        try {
+            if (fs.existsSync(candidate)) return candidate;
+        } catch {}
+    }
+    return null;
+}
+
 export function runNpmWithAuth({
     args,
     registry,
@@ -27,6 +51,15 @@ export function runNpmWithAuth({
 } = {}) {
     if (!Array.isArray(args)) throw new Error("npm arguments are required.");
     if (typeof token !== "string" || !token) throw new Error("Registry credential is required.");
+
+    for (const arg of args) {
+        if (typeof arg !== "string") throw new TypeError("npm argument must be a string.");
+        if (/[&|;<>`\n\r^\0]/.test(arg)) {
+            const err = new Error(`Unsafe npm argument containing shell metacharacters: ${JSON.stringify(arg)}`);
+            err.code = "ERR_UNSAFE_NPM_ARGUMENT";
+            throw err;
+        }
+    }
 
     const registryUrl = new URL(registry);
     if (registryUrl.protocol !== "https:") throw new Error("npm registry must use HTTPS.");
@@ -48,13 +81,26 @@ export function runNpmWithAuth({
     };
     if (otp) env.npm_config_otp = otp;
 
+    let command = "npm";
+    let finalArgs = [...args, "--userconfig", npmrcFile];
+    let shell = process.platform === "win32";
+
+    if (run === spawnSync) {
+        const cliPath = resolveNpmCli();
+        if (cliPath) {
+            command = process.execPath;
+            finalArgs = [cliPath, ...finalArgs];
+            shell = false;
+        }
+    }
+
     try {
-        return run("npm", [...args, "--userconfig", npmrcFile], {
+        return run(command, finalArgs, {
             cwd,
             encoding,
             stdio,
             windowsHide: true,
-            shell: process.platform === "win32",
+            shell,
             env,
         });
     } finally {
@@ -71,6 +117,9 @@ export function verifyNpmRegistryAuth({
     runNpm = runNpmWithAuth,
 } = {}) {
     if (!token) throw new Error("Registry credential is required.");
+    if (packageName) {
+        assertValidPackageName(packageName);
+    }
 
     const networkPatterns = /\b(ENOTFOUND|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|ECONNRESET|ERR_SOCKET_TIMEOUT)\b|FetchError|network|offline|\b(502|503|504)\b/i;
 
