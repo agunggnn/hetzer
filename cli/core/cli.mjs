@@ -1321,7 +1321,8 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         return;
     }
     if (command === "tui") {
-        run(process.execPath, [path.join(cliRoot, "modules", "tui.mjs"), "--root", root, ...args], { cwd: root });
+        const { startTui } = await import("../modules/tui.mjs");
+        await startTui({ root, args });
         return;
     }
     const suggested = suggestCommand(command);

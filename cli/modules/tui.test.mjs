@@ -11,8 +11,14 @@ import {
     boxLine,
     boxTop,
     collectStatus,
+    drawFrame,
+    enterAltScreen,
+    exitAltScreen,
+    getBoxWidth,
     quickSniffSnapshot,
+    refreshDimensions,
     renderTui,
+    startTui,
     stripAnsi,
     threatSnapshot,
     vaultPostureSnapshot,
@@ -265,3 +271,77 @@ test("auditLedgerSnapshot gathers audit ledger verification status", () => {
     }
 });
 
+test("compact mode renders streamlined overview within 15 lines", () => {
+    const output = renderTui({
+        root: "/test/compact",
+        generatedAt: "2026-09-18T00:00:00.000Z",
+        threat: { state: "ARMED", detail: "1 canary honeytoken", incidentCount: 0 },
+        vault: { state: "ready", detail: "ready", keyIsolation: "ISOLATED", totalStored: 2, secretRefCount: 2 },
+        shield: { preCommit: { state: "ACTIVE" }, commitMsg: { state: "ACTIVE" }, detectedAgents: ["Antigravity"] },
+        runtime: {
+            container: { state: "ready" },
+            broker: { state: "ready" },
+            redactor: { state: "ready" },
+        },
+    }, { color: false, compact: true });
+
+    const lines = output.split("\n");
+    assert.ok(lines.length <= 15, `Compact view must have <= 15 lines (got ${lines.length})`);
+    assert.match(output, /REFRESH 2s \(COMPACT\)/);
+    assert.match(output, /Threat Radar\s+ARMED/);
+    assert.match(output, /Vault Posture\s+READY/);
+    assert.match(output, /Agent Shield/);
+    assert.match(output, /Runtime Armor/);
+});
+
+test("drawFrame outputs in-place frame with cursor home and line erases in TTY mode", () => {
+    let captured = "";
+    const mockStream = {
+        isTTY: true,
+        write(chunk) {
+            captured += String(chunk);
+            return true;
+        },
+    };
+
+    drawFrame("Line 1\nLine 2", { stream: mockStream, isTTY: true });
+    assert.ok(captured.startsWith("\x1b[H"), "Must start with cursor home escape sequence");
+    assert.ok(captured.includes("\x1b[K"), "Must include line erase escape sequence");
+    assert.ok(captured.endsWith("\x1b[J"), "Must end with bottom-clear escape sequence");
+    assert.doesNotMatch(captured, /\x1b\[2J/, "Must NOT use full-screen blanking \\x1b[2J");
+});
+
+test("alternate screen buffer enters and exits with correct ANSI escape codes", () => {
+    let captured = "";
+    const mockStream = {
+        isTTY: true,
+        write(chunk) {
+            captured += String(chunk);
+            return true;
+        },
+    };
+
+    enterAltScreen(mockStream);
+    assert.ok(captured.includes("\x1b[?1049h"), "Must switch to alternate screen buffer");
+    assert.ok(captured.includes("\x1b[?25l"), "Must hide cursor");
+
+    captured = "";
+    exitAltScreen(mockStream);
+    assert.ok(captured.includes("\x1b[?1049l"), "Must leave alternate screen buffer");
+    assert.ok(captured.includes("\x1b[?25h"), "Must show cursor");
+});
+
+test("startTui single-shot mode runs non-interactively without timer", async () => {
+    let captured = "";
+    const mockStream = {
+        isTTY: false,
+        write(chunk) {
+            captured += String(chunk);
+            return true;
+        },
+    };
+
+    await startTui({ root: process.cwd(), args: ["--once"], stream: mockStream });
+    assert.match(captured, /HETZER \/\/ TACTICAL ARMOR HUD/);
+    assert.doesNotMatch(captured, /\x1b\[\?1049h/, "Single-shot mode must not enter alternate screen");
+});
