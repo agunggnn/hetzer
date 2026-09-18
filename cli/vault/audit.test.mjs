@@ -156,3 +156,36 @@ test("audit ledger detects complete deletion of audit.log when checkpoint anchor
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });
+
+test("audit ledger detects deletion of log and checkpoint when initialization sentinel remains", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-audit-delete-pair-"));
+    const logFile = path.join(tempDir, "audit.log");
+
+    try {
+        recordAuditEvent({ eventType: "E1", target: "t1", logFile });
+        fs.unlinkSync(logFile);
+        fs.unlinkSync(`${logFile}.head`);
+
+        const check = verifyAuditLedger({ logFile });
+        assert.equal(check.ok, false);
+        assert.match(check.error, /initialization sentinel remains/i);
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test("audit ledger fails closed when checkpoint anchor is malformed", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-audit-bad-head-"));
+    const logFile = path.join(tempDir, "audit.log");
+
+    try {
+        recordAuditEvent({ eventType: "E1", target: "t1", logFile });
+        fs.writeFileSync(`${logFile}.head`, "{broken");
+
+        const check = verifyAuditLedger({ logFile });
+        assert.equal(check.ok, false);
+        assert.match(check.error, /checkpoint anchor is missing or malformed/i);
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});

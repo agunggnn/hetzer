@@ -57,6 +57,10 @@ export function getAuditHeadPath(filePath) {
     return `${filePath}.head`;
 }
 
+export function getAuditStatePath(filePath) {
+    return `${filePath}.state`;
+}
+
 function withAuditLock(filePath, fn, timeoutMs = 5000) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const lockPath = `${filePath}.lock`;
@@ -113,6 +117,15 @@ export function recordAuditEvent({
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
 
     return withAuditLock(filePath, () => {
+        const statePath = getAuditStatePath(filePath);
+        if (!fs.existsSync(statePath)) {
+            fs.writeFileSync(statePath, JSON.stringify({ version: 1, initializedAt: new Date().toISOString() }), {
+                encoding: "utf8",
+                mode: 0o600,
+            });
+            secureFilePermissions(statePath);
+        }
+
         const lastEntry = readLastEntry(filePath);
         const prevHash = lastEntry?.hash || GENESIS_HASH;
         const index = (lastEntry?.index || 0) + 1;
@@ -177,8 +190,9 @@ export function readAuditEvents({ logFile, root, limit = 50 } = {}) {
 export function verifyAuditLedger({ logFile, root, expectedHeadHash, expectedCount } = {}) {
     const filePath = logFile || getAuditLogPath({ root });
     const headPath = getAuditHeadPath(filePath);
+    const statePath = getAuditStatePath(filePath);
 
-    if (!fs.existsSync(filePath) && !fs.existsSync(headPath)) {
+    if (!fs.existsSync(filePath) && !fs.existsSync(headPath) && !fs.existsSync(statePath)) {
         if (typeof expectedCount === "number" && expectedCount > 0) {
             return {
                 ok: false,
@@ -195,16 +209,35 @@ export function verifyAuditLedger({ logFile, root, expectedHeadHash, expectedCou
 
     return withAuditLock(filePath, () => {
         let head = null;
+        let headMalformed = false;
         if (fs.existsSync(headPath)) {
             try {
                 head = JSON.parse(fs.readFileSync(headPath, "utf8"));
-            } catch {}
+            } catch {
+                headMalformed = true;
+            }
         }
 
         const fileExists = fs.existsSync(filePath);
         const content = fileExists ? fs.readFileSync(filePath, "utf8").trim() : "";
+        const stateExists = fs.existsSync(statePath);
+
+        if (headMalformed || (fileExists && !head)) {
+            return {
+                ok: false,
+                tamperedIndex: 1,
+                error: "Audit ledger checkpoint anchor is missing or malformed.",
+            };
+        }
 
         if (!fileExists || !content) {
+            if (!fileExists && !head && stateExists) {
+                return {
+                    ok: false,
+                    tamperedIndex: 1,
+                    error: "Audit ledger is missing, but its initialization sentinel remains.",
+                };
+            }
             if (head && typeof head.lastIndex === "number" && head.lastIndex > 0) {
                 return {
                     ok: false,

@@ -46,7 +46,7 @@ test("verifyNpmRegistryAuth succeeds with Classic token when whoami returns 0", 
         if (args.includes("whoami")) {
             return { status: 0, stdout: "agunggnn\n", stderr: "" };
         }
-        return { status: 1, stdout: "", stderr: "failed" };
+        return { status: 0, stdout: JSON.stringify({ agunggnn: "read-write" }), stderr: "" };
     };
 
     const res = verifyNpmRegistryAuth({
@@ -59,7 +59,7 @@ test("verifyNpmRegistryAuth succeeds with Classic token when whoami returns 0", 
     assert.equal(res.username, "agunggnn");
 });
 
-test("verifyNpmRegistryAuth falls back to GAT and verifies read-write permissions", () => {
+test("verifyNpmRegistryAuth falls back to GAT without overclaiming write permission", () => {
     const mockRun = ({ args }) => {
         if (args.includes("whoami")) {
             return { status: 1, stdout: "", stderr: "npm error code E404\nnpm error Not Found" };
@@ -81,7 +81,7 @@ test("verifyNpmRegistryAuth falls back to GAT and verifies read-write permission
     assert.equal(res.packageName, "hetzer");
 });
 
-test("verifyNpmRegistryAuth rejects GAT when permission is read-only", () => {
+test("verifyNpmRegistryAuth does not overclaim GAT write permission from collaborator output", () => {
     const mockRun = ({ args }) => {
         if (args.includes("whoami")) {
             return { status: 1, stdout: "", stderr: "GAT does not support whoami" };
@@ -92,15 +92,26 @@ test("verifyNpmRegistryAuth rejects GAT when permission is read-only", () => {
         return { status: 1, stdout: "", stderr: "failed" };
     };
 
-    assert.throws(() => {
-        verifyNpmRegistryAuth({
-            token: "test-token",
-            packageName: "hetzer",
-            runNpm: mockRun,
-        });
-    }, (err) => {
-        assert.equal(err.code, "ERR_NPM_WRITE_PERMISSION_MISSING");
-        assert.match(err.message, /lacks write access/);
+    const result = verifyNpmRegistryAuth({
+        token: "test-token",
+        packageName: "hetzer",
+        runNpm: mockRun,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.writeVerified, false);
+});
+
+test("verifyNpmRegistryAuth fails closed when Classic write permission probe fails", () => {
+    const mockRun = ({ args }) => args.includes("whoami")
+        ? { status: 0, stdout: "agunggnn\n", stderr: "" }
+        : { status: 1, stdout: "", stderr: "permission probe failed" };
+
+    assert.throws(() => verifyNpmRegistryAuth({
+        token: "test-token",
+        packageName: "hetzer",
+        runNpm: mockRun,
+    }), (err) => {
+        assert.equal(err.code, "ERR_NPM_WRITE_PERMISSION_UNVERIFIED");
         return true;
     });
 });

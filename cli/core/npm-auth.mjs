@@ -72,6 +72,8 @@ export function verifyNpmRegistryAuth({
 } = {}) {
     if (!token) throw new Error("Registry credential is required.");
 
+    const networkPatterns = /\b(ENOTFOUND|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|ECONNRESET|ERR_SOCKET_TIMEOUT)\b|FetchError|network|offline|\b(502|503|504)\b/i;
+
     // 1. Try legacy whoami check (works for Classic/Automation tokens)
     const whoami = runNpm({
         args: ["whoami", "--registry", registry],
@@ -93,39 +95,45 @@ export function verifyNpmRegistryAuth({
             baseEnv,
         });
 
-        if (accessCheck.status === 0) {
-            const stdout = String(accessCheck.stdout || "").trim();
-            let hasWrite = false;
-            try {
-                const parsed = JSON.parse(stdout);
-                if (typeof parsed === "object" && parsed !== null) {
-                    if (parsed[username]) {
-                        hasWrite = parsed[username] === "read-write" || parsed[username] === "write";
-                    } else {
-                        hasWrite = Object.values(parsed).some(
-                            (perm) => perm === "read-write" || perm === "write"
-                        );
-                    }
-                }
-            } catch {
-                hasWrite = /\bread-write\b|\bwrite\b/i.test(stdout);
-            }
-
-            if (!hasWrite) {
+        if (accessCheck.status !== 0) {
+            const accessStderr = String(accessCheck.stderr || "");
+            if (networkPatterns.test(accessStderr)) {
                 const err = new Error(
-                    `Classic token authenticated as '@${username}', but lacks write access to '${packageName}'.\n` +
-                    `  The token has read-only access. Publish requires read-write permissions.`
+                    `NPM registry connection failed: Unable to reach '${registry}'.\n` +
+                    `  Network error: ${redactExactValues(accessStderr.trim(), [token])}`
                 );
-                err.code = "ERR_NPM_WRITE_PERMISSION_MISSING";
+                err.code = "ERR_NPM_NETWORK";
                 throw err;
             }
+            const err = new Error(
+                `Classic token authenticated as '@${username}', but npm write permission for '${packageName}' could not be verified.`
+            );
+            err.code = "ERR_NPM_WRITE_PERMISSION_UNVERIFIED";
+            throw err;
+        }
+
+        let permissions;
+        try {
+            permissions = JSON.parse(String(accessCheck.stdout || "").trim());
+        } catch {
+            permissions = null;
+        }
+        const userPermission = permissions && typeof permissions === "object"
+            ? permissions[username]
+            : undefined;
+        if (userPermission !== "read-write" && userPermission !== "write") {
+            const err = new Error(
+                `Classic token authenticated as '@${username}', but lacks write access to '${packageName}'.\n` +
+                "  The token has read-only access. Publish requires read-write permissions."
+            );
+            err.code = "ERR_NPM_WRITE_PERMISSION_MISSING";
+            throw err;
         }
 
         return { ok: true, type: "classic", username, packageName };
     }
 
     const whoamiStderr = String(whoami.stderr || "");
-    const networkPatterns = /\b(ENOTFOUND|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|ECONNRESET|ERR_SOCKET_TIMEOUT)\b|FetchError|network|offline|\b(502|503|504)\b/i;
 
     // 2. Check for network / DNS / server errors first from whoami
     if (networkPatterns.test(whoamiStderr)) {
@@ -147,29 +155,10 @@ export function verifyNpmRegistryAuth({
     });
 
     if (accessCheck.status === 0) {
-        const stdout = String(accessCheck.stdout || "").trim();
-        let hasWrite = false;
-        try {
-            const parsed = JSON.parse(stdout);
-            if (typeof parsed === "object" && parsed !== null) {
-                hasWrite = Object.values(parsed).some(
-                    (perm) => perm === "read-write" || perm === "write"
-                );
-            }
-        } catch {
-            hasWrite = /\bread-write\b|\bwrite\b/i.test(stdout);
-        }
-
-        if (!hasWrite) {
-            const err = new Error(
-                `Granular Access Token authenticated, but lacks write access to '${packageName}'.\n` +
-                `  The token has read-only access. Publish requires read-write permissions.`
-            );
-            err.code = "ERR_NPM_WRITE_PERMISSION_MISSING";
-            throw err;
-        }
-
-        return { ok: true, type: "granular", packageName };
+        // npm returns the complete collaborator map here. Without a whoami
+        // identity, another collaborator's write permission is not proof that
+        // this GAT can publish. The real publish operation remains authoritative.
+        return { ok: true, type: "granular", packageName, writeVerified: false };
     }
 
     // 4. Check for network errors in fallback accessCheck

@@ -79,7 +79,7 @@ async function main() {
     if (authResult.type === "classic") {
         process.stdout.write(`[v] Authentication successful! Connected as npm user: @${authResult.username}\n\n`);
     } else {
-        process.stdout.write(`[v] Granular Access Token validated with write access for package: ${authResult.packageName}\n\n`);
+        process.stdout.write(`[v] Granular Access Token authenticated for package: ${authResult.packageName}; publish permission will be verified by npm during publish.\n\n`);
     }
 
     // 3. Run static checks and the concise test suite without inherited credentials.
