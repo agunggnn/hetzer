@@ -737,6 +737,13 @@ export class Grimoire {
     }
 
     close() {
-        this.db.close();
+        if (!this._closed) {
+            this._closed = true;
+            try {
+                this.db?.close();
+            } catch {
+                // Fail soft if already closed
+            }
+        }
     }
 }

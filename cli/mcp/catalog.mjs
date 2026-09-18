@@ -369,6 +369,11 @@ export function createToolCatalog({ root = process.env.HETZER_ROOT || process.cw
             }
             return tool.execute(finalArgs);
         },
-        close() { vault?.close(); },
+        close() {
+            if (vault) {
+                vault.close();
+                vault = null;
+            }
+        },
     };
 }

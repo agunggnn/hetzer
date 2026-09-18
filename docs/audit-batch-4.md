@@ -1,8 +1,8 @@
 # 🛡️ Hetzer Security Hardening Specification: Batch 4
 
-> **Status**: Verified & Implemented | All 7 Findings Resolved & Tests Passing  
-> **Target Version**: `@agunggnn/hetzer` v0.5.6  
-> **Scope**: 7 Findings across Git Commit Hook, Container Sandbox Broker Bridging, CLI Upgrader, Brokered Process Timeouts, MCP Canary Tripwire, and Sniffer Identifiers  
+> **Status**: Verified & Implemented | All 7 Findings Resolved & Tests Passing<br>
+> **Target Version**: `@agunggnn/hetzer` v0.5.6<br>
+> **Scope**: 7 Findings across Git Commit Hook, Container Sandbox Broker Bridging, CLI Upgrader, Brokered Process Timeouts, MCP Canary Tripwire, and Sniffer Identifiers
 
 ---
 

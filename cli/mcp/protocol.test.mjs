@@ -419,3 +419,12 @@ test("handleMcpRequest rethrows ERR_CANARY_TRIPWIRE_TRIGGERED for tools/call", a
         (err) => err.code === "ERR_CANARY_TRIPWIRE_TRIGGERED" && err.exitCode === 43
     );
 });
+
+test("catalog.close and Grimoire.close are idempotent and do not throw on double close", async () => {
+    const { createToolCatalog } = await import("./catalog.mjs");
+    const catalog = createToolCatalog();
+    assert.doesNotThrow(() => {
+        catalog.close();
+        catalog.close();
+    });
+});

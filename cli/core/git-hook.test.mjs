@@ -98,6 +98,30 @@ test("checkCommitMessage detects leaked token in lines starting with # (issue re
     assert.equal(scissorsRes.violations.length, 0);
 });
 
+test("checkCommitMessage detects leaked tokens even when appended to Git status template comment lines", () => {
+    const fakeNpm = ["npm_", "b1c2d3e4f5g6h7i8j9k0l1m2n3o4p5q6r7s8"].join("");
+
+    const case1 = checkCommitMessage(`# On branch main ${fakeNpm}`);
+    assert.equal(case1.ok, false);
+    assert.equal(case1.violations.length, 1);
+    assert.equal(case1.violations[0].type, "npm_token");
+
+    const case2 = checkCommitMessage(`# Please enter the commit message ${fakeNpm}`);
+    assert.equal(case2.ok, false);
+    assert.equal(case2.violations.length, 1);
+    assert.equal(case2.violations[0].type, "npm_token");
+
+    const case3 = checkCommitMessage(`# Lines starting with ${fakeNpm}`);
+    assert.equal(case3.ok, false);
+    assert.equal(case3.violations.length, 1);
+    assert.equal(case3.violations[0].type, "npm_token");
+
+    const case4 = checkCommitMessage(`# Changes to be committed ${fakeNpm}`);
+    assert.equal(case4.ok, false);
+    assert.equal(case4.violations.length, 1);
+    assert.equal(case4.violations[0].type, "npm_token");
+});
+
 test("checkCommitMessageFile reads from disk and detects violations", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-msg-test-"));
     try {

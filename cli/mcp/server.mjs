@@ -23,9 +23,7 @@ try {
     }
 } catch (err) {
     if (err?.code === "ERR_CANARY_TRIPWIRE_TRIGGERED") {
-        catalog.close();
         process.exitCode = err.exitCode || 43;
-        throw err;
     }
     throw err;
 } finally {

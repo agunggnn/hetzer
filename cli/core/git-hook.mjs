@@ -167,8 +167,15 @@ export function checkCommitMessage(text) {
     for (let index = 0; index < lines.length; index += 1) {
         const line = lines[index];
         const trimmed = line.trimStart();
-        if (trimmed.startsWith("#") && GIT_STATUS_COMMENT_PATTERN.test(trimmed)) {
-            continue;
+        if (trimmed.startsWith("#")) {
+            const lineScan = scanText(line);
+            if (lineScan.hasSecrets) {
+                activeLines.push({ line: index + 1, text: line });
+                continue;
+            }
+            if (GIT_STATUS_COMMENT_PATTERN.test(trimmed)) {
+                continue;
+            }
         }
         activeLines.push({ line: index + 1, text: line });
     }
