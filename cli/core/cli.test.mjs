@@ -436,3 +436,59 @@ test("audit verify and tail commands inspect workspace audit ledger", async () =
     }
 });
 
+test("canary setup, list, and clear subcommands manage honeytoken tripwire", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-canary-cli-"));
+    let stdoutOutput = "";
+    const originalStdout = process.stdout.write;
+    process.stdout.write = (chunk) => {
+        stdoutOutput += chunk;
+        return true;
+    };
+    try {
+        const envFile = path.join(tempDir, ".env");
+        const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+        fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${masterKey}\n`);
+
+        // 1. Initial list -> UNARMED
+        stdoutOutput = "";
+        await main(["canary", "list"], { root: tempDir });
+        assert.match(stdoutOutput, /Status\s+:\s+UNARMED/);
+        assert.match(stdoutOutput, /Total Incidents:\s+0/);
+
+        // 2. Setup -> deploy trap
+        stdoutOutput = "";
+        await main(["canary", "setup"], { root: tempDir });
+        assert.match(stdoutOutput, /CANARY HONEY-TOKEN TRAP DEPLOYED/);
+        assert.match(stdoutOutput, /Honey-Token ID\s+:\s+canary-token/);
+
+        // 3. List after setup -> ARMED
+        stdoutOutput = "";
+        await main(["canary", "list"], { root: tempDir });
+        assert.match(stdoutOutput, /Status\s+:\s+ARMED/);
+
+        // 4. Simulate incident
+        const incidentsLog = path.join(tempDir, "data", "hetzer-incidents.log");
+        fs.mkdirSync(path.dirname(incidentsLog), { recursive: true });
+        fs.writeFileSync(incidentsLog, "[2026-09-18T00:00:00Z] CRITICAL: canary-token tripped\n");
+
+        stdoutOutput = "";
+        await main(["canary", "list"], { root: tempDir });
+        assert.match(stdoutOutput, /Status\s+:\s+TRIPPED/);
+        assert.match(stdoutOutput, /Total Incidents:\s+1/);
+
+        // 5. Clear incidents -> reset to ARMED
+        stdoutOutput = "";
+        await main(["canary", "clear"], { root: tempDir });
+        assert.match(stdoutOutput, /CANARY INCIDENTS CLEARED/);
+        assert.match(stdoutOutput, /Threat radar status restored to ARMED/);
+
+        stdoutOutput = "";
+        await main(["canary", "list"], { root: tempDir });
+        assert.match(stdoutOutput, /Status\s+:\s+ARMED/);
+        assert.match(stdoutOutput, /Total Incidents:\s+0/);
+    } finally {
+        process.stdout.write = originalStdout;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+

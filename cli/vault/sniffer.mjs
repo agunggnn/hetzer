@@ -133,7 +133,7 @@ export function scanText(text) {
     }
 
 
-    const candidatePattern = /\b[A-Za-z0-9][A-Za-z0-9+/_=-]{23,511}\b/g;
+    const candidatePattern = /\b[A-Za-z0-9][A-Za-z0-9+/_-]{22,510}={0,2}\b/g;
     const NON_SECRET_PREFIXES = [
         "call_", "tool_", "toolu_", "chunk_", "resp_", "turn_", "session_",
         "msg_", "exec-", "item-", "ctc_", "ctco_", "node_modules"

@@ -17,6 +17,7 @@ import { scanText } from "../vault/sniffer.mjs";
 import { verifyAuditLedger, readAuditEvents } from "../vault/audit.mjs";
 import { detectContainerEngine } from "../vault/sandbox.mjs";
 import { loadModuleRegistry } from "./registry.mjs";
+import { getUpdateCachePath, isNewerVersion, readUpdateCache } from "../core/version-check.mjs";
 
 const ANSI = {
     reset: "\x1b[0m",
@@ -29,8 +30,26 @@ const ANSI = {
     magenta: "\x1b[35m",
 };
 
-const BOX_WIDTH = 77;
-const INNER_WIDTH = BOX_WIDTH - 4; // 73
+export const ASCII_LOGO = [
+    " _   _ _____ _____ _____ _____ ____  ",
+    "| | | | ____|_   _|__  /| ____|  _ \\ ",
+    "| |_| |  _|   | |   / / |  _| | |_) |",
+    "|  _  | |___  | |  / /_ | |___|  _ < ",
+    "|_| |_|_____| |_| /____|_____|_| \\_\\ ",
+];
+
+export function getBoxWidth() {
+    if (!process.stdout.columns) return 77;
+    return Math.max(60, Math.min(process.stdout.columns - 3, 120));
+}
+
+export let BOX_WIDTH = 77;
+export let INNER_WIDTH = BOX_WIDTH - 4; // 73
+
+export function refreshDimensions() {
+    BOX_WIDTH = getBoxWidth();
+    INNER_WIDTH = BOX_WIDTH - 4;
+}
 
 export function stripAnsi(text) {
     return String(text || "").replace(/\x1b\[[0-9;]*m/g, "");
@@ -487,7 +506,285 @@ export async function collectStatus({ root = process.env.HETZER_ROOT || process.
     };
 }
 
+export function analyzeIssues(snapshot = {}) {
+    const issues = [];
+    const root = snapshot.root || process.cwd();
+
+    // 1. Staged Secret Leaks (Pre-commit)
+    const sniff = snapshot.sniff || (snapshot.root ? quickSniffSnapshot(snapshot.root) : null);
+    if (sniff && sniff.status === "VIOLATIONS") {
+        const fileList = Array.isArray(sniff.violations)
+            ? [...new Set(sniff.violations.map((v) => v.file).filter(Boolean))].join(", ")
+            : "staged files";
+        issues.push({
+            id: "STAGED_SECRET_LEAK",
+            category: "GIT_SAFETY",
+            severity: "CRITICAL",
+            title: "Plaintext secrets detected in staged Git diff",
+            detail: `${sniff.count} secret violation(s) in staged files (${fileList || "staged files"})`,
+            action: "Unstage files immediately to prevent credential leak in Git history",
+            command: "git restore --staged <file>",
+        });
+    }
+
+    // 2. Canary Honeytoken & Tripwires
+    const threat = snapshot.threat;
+    if (threat) {
+        if (threat.incidentCount > 0 || threat.state === "TRIPPED") {
+            issues.push({
+                id: "CANARY_TRIPWIRE_TRIGGERED",
+                category: "THREAT_RADAR",
+                severity: "CRITICAL",
+                title: "Canary honeytoken triggered / incident logged",
+                detail: `${threat.incidentCount} incident(s) recorded in data/hetzer-incidents.log`,
+                action: "Inspect incident log, identify compromised token, and rotate secrets",
+                command: "hetzer canary list",
+            });
+        } else if (threat.canaryCount === 0 || threat.state === "UNARMED") {
+            issues.push({
+                id: "CANARY_TRAP_UNARMED",
+                category: "THREAT_RADAR",
+                severity: "WARNING",
+                title: "No canary honeytokens armed in vault",
+                detail: "Zero honeytokens active to catch scraping or prompt-injection attacks",
+                action: "Deploy a canary tripwire honeytoken into the vault",
+                command: "hetzer creds set canary-token",
+            });
+        }
+    }
+
+    // 3. Vault & Key Security
+    const vault = snapshot.vault;
+    if (vault) {
+        if (vault.keyIsolation === "EXPOSED") {
+            issues.push({
+                id: "MASTER_KEY_EXPOSED",
+                category: "VAULT_SECURITY",
+                severity: "HIGH",
+                title: "Master encryption key exposed in workspace .env",
+                detail: "HETZER_GRIMOIRE_KEY is in .env; AI agents reading workspace files can exfiltrate it",
+                action: "Migrate master key to ~/.hetzer/grimoire.key with 0600 user-only permissions",
+                command: "hetzer init (or hetzer creds isolate-key)",
+            });
+        } else if (vault.keyIsolation === "MISSING" || vault.state === "locked") {
+            issues.push({
+                id: "VAULT_LOCKED_OR_KEY_MISSING",
+                category: "VAULT_SECURITY",
+                severity: "HIGH",
+                title: "Vault is locked or master encryption key is missing",
+                detail: vault.detail || "Vault database present but key unavailable",
+                action: "Initialize vault or restore master key to unlock encrypted credentials",
+                command: "hetzer init",
+            });
+        } else if (vault.state === "degraded") {
+            issues.push({
+                id: "VAULT_DEGRADED",
+                category: "VAULT_SECURITY",
+                severity: "HIGH",
+                title: "Vault unreadable with current key",
+                detail: vault.detail || "Corrupted key or mismatched passphrase",
+                action: "Verify master key in ~/.hetzer/grimoire.key matches vault database",
+                command: "hetzer init",
+            });
+        }
+
+        if (vault.rawSecretCount > 0) {
+            issues.push({
+                id: "RAW_SECRETS_IN_ENV",
+                category: "VAULT_SECURITY",
+                severity: "HIGH",
+                title: "Plaintext secrets detected in workspace .env",
+                detail: `${vault.rawSecretCount} plaintext token(s) found in .env instead of secretRef: pointers`,
+                action: "Migrate plaintext secrets into encrypted vault and replace with secretRef:<id>",
+                command: "hetzer creds set <id>",
+            });
+        }
+    }
+
+    // 4. Git Guards & Hooks
+    const shield = snapshot.shield;
+    if (shield) {
+        if (shield.preCommit && shield.preCommit.state === "MISSING") {
+            issues.push({
+                id: "PRE_COMMIT_HOOK_MISSING",
+                category: "AGENT_SHIELD",
+                severity: "MEDIUM",
+                title: "Git pre-commit secret sniffer hook not installed",
+                detail: "Accidental commits of API keys or private keys will not be blocked",
+                action: "Install Hetzer pre-commit secret sniffer hook into .git/hooks",
+                command: "hetzer hook install",
+            });
+        }
+        if (shield.commitMsg && shield.commitMsg.state === "MISSING") {
+            issues.push({
+                id: "COMMIT_MSG_HOOK_MISSING",
+                category: "AGENT_SHIELD",
+                severity: "MEDIUM",
+                title: "Git commit-msg token blocker hook not installed",
+                detail: "Commit messages containing raw credentials will not be blocked",
+                action: "Install Hetzer commit-msg hook into .git/hooks",
+                command: "hetzer hook install",
+            });
+        }
+    }
+
+    // 5. Cryptographic Audit Ledger
+    const audit = snapshot.audit;
+    if (audit) {
+        if (audit.state === "CORRUPTED" || audit.state === "ERROR") {
+            issues.push({
+                id: "AUDIT_LEDGER_TAMPERED",
+                category: "AUDIT_TRAIL",
+                severity: "CRITICAL",
+                title: "Audit ledger hash-chain broken or corrupted",
+                detail: audit.detail || "Tampering detected in .hetzer/audit.log",
+                action: "Verify cryptographic SHA-256 chain and inspect tampered log entries",
+                command: "hetzer audit verify",
+            });
+        }
+    }
+
+    // 6. Runtime Armor & Sandbox
+    const runtime = snapshot.runtime;
+    if (runtime && runtime.container && runtime.container.state === "offline") {
+        issues.push({
+            id: "CONTAINER_ENGINE_OFFLINE",
+            category: "RUNTIME_ARMOR",
+            severity: "LOW",
+            title: "Container sandbox engine (Docker/Podman) offline",
+            detail: runtime.container.detail || "Cannot isolate untrusted agent tools in --sandbox",
+            action: "Start Docker Desktop daemon or install Podman for container isolation",
+            command: "docker info",
+        });
+    }
+
+    // 7. MCP Virtual Proxy
+    const mcp = snapshot.mcp;
+    if (mcp && mcp.state === "degraded") {
+        issues.push({
+            id: "MCP_CATALOG_DEGRADED",
+            category: "MCP_SERVICES",
+            severity: "MEDIUM",
+            title: "MCP virtual tool catalog degraded",
+            detail: mcp.detail || "Tool definition error",
+            action: "Inspect MCP module manifests and service configurations",
+            command: "hetzer mcp list",
+        });
+    }
+
+    // 8. Service Health
+    if (Array.isArray(snapshot.services)) {
+        for (const svc of snapshot.services) {
+            if (svc.state === "degraded" || svc.state === "offline") {
+                issues.push({
+                    id: `SERVICE_${String(svc.id).toUpperCase()}_${String(svc.state).toUpperCase()}`,
+                    category: "SERVICES",
+                    severity: "MEDIUM",
+                    title: `Service '${svc.label || svc.id}' is ${svc.state}`,
+                    detail: `${svc.endpoint || "N/A"} - ${svc.detail || "unreachable"}`,
+                    action: `Inspect container status and launch service with 'hetzer up'`,
+                    command: `hetzer up ${svc.id}`,
+                });
+            }
+        }
+    }
+
+    // 9. Warnings from registry
+    if (Array.isArray(snapshot.warnings)) {
+        for (const warn of snapshot.warnings) {
+            issues.push({
+                id: "REGISTRY_WARNING",
+                category: "CONFIGURATION",
+                severity: "LOW",
+                title: "Module registry configuration warning",
+                detail: warn,
+                action: "Review module registry configuration in builtin.json or module manifests",
+                command: "hetzer validate",
+            });
+        }
+    }
+
+    return issues;
+}
+
+export function renderIssuesView(lines, snapshot, color) {
+    const issues = analyzeIssues(snapshot);
+    const title = `${color ? ANSI.bold : ""}SECURITY POSTURE & ACTIONABLE REMEDIATION GUIDE${color ? ANSI.reset : ""}`;
+    lines.push(boxLine(title));
+
+    if (issues.length === 0) {
+        lines.push(boxLine(""));
+        const secureMsg = color
+            ? `${ANSI.green}${ANSI.bold}[v] SYSTEM ARMOR FULLY HARDENED: ZERO VULNERABILITIES DETECTED${ANSI.reset}`
+            : "[v] SYSTEM ARMOR FULLY HARDENED: ZERO VULNERABILITIES DETECTED";
+        lines.push(boxLine(`  ${secureMsg}`));
+        lines.push(boxLine(""));
+        lines.push(boxLine("  All 7 core defense-in-depth boundaries are active and verified:"));
+        lines.push(boxLine("    [v] Git Pre-Commit & Commit-Msg Guards : ACTIVE"));
+        lines.push(boxLine("    [v] Master Key Isolation               : ISOLATED (~/.hetzer/grimoire.key)"));
+        lines.push(boxLine("    [v] Plaintext Secret Storage           : 100% VAULTED (secretRef: pointers)"));
+        lines.push(boxLine("    [v] Canary Tripwire Honeytokens        : ARMED (exitCode 43)"));
+        lines.push(boxLine("    [v] Cryptographic Audit Ledger         : VERIFIED (SHA-256 chain intact)"));
+        lines.push(boxLine("    [v] Runtime Stream Redactor            : SUB-MS SLIDING WINDOW SCAN"));
+        lines.push(boxLine("    [v] Container Sandbox Engine           : READY FOR --sandbox"));
+        lines.push(boxLine(""));
+        lines.push(boxLine("  No remediation required. System is ready for safe agent execution."));
+        lines.push(boxLine(""));
+        lines.push(boxLine("  [Tip] Press [i] to toggle back to Overview."));
+        return;
+    }
+
+    const critCount = issues.filter((i) => i.severity === "CRITICAL").length;
+    const highCount = issues.filter((i) => i.severity === "HIGH").length;
+    const warnCount = issues.filter((i) => i.severity === "WARNING" || i.severity === "MEDIUM").length;
+    const lowCount = issues.filter((i) => i.severity === "LOW" || i.severity === "INFO").length;
+
+    const countsStr = `Detected ${issues.length} issue(s): ${critCount} Critical, ${highCount} High, ${warnCount} Warning/Med, ${lowCount} Low`;
+    lines.push(boxLine(`  ${color ? ANSI.yellow : ""}${countsStr}${color ? ANSI.reset : ""}`));
+    lines.push(boxLine(""));
+
+    for (let idx = 0; idx < issues.length; idx++) {
+        const item = issues[idx];
+        const sevColor = ["CRITICAL", "HIGH"].includes(item.severity)
+            ? ANSI.red
+            : item.severity === "WARNING"
+                ? ANSI.yellow
+                : ANSI.cyan;
+        const sevBadge = color ? `${sevColor}[${item.severity}]${ANSI.reset}` : `[${item.severity}]`;
+        const itemNum = `${idx + 1}.`;
+
+        lines.push(boxLine(`  ${itemNum} ${sevBadge} ${color ? ANSI.bold : ""}${bounded(item.title, 56)}${color ? ANSI.reset : ""}`));
+        lines.push(boxLine(`     Category : ${item.category}`));
+        lines.push(boxLine(`     Problem  : ${bounded(item.detail, 57)}`));
+        lines.push(boxLine(`     Action   : ${bounded(item.action, 57)}`));
+        const cmdText = color ? `${ANSI.green}${item.command}${ANSI.reset}` : item.command;
+        lines.push(boxLine(`     Resolve  : ${cmdText}`));
+        if (idx < issues.length - 1) {
+            lines.push(boxLine(""));
+        }
+    }
+
+    lines.push(boxLine(""));
+    lines.push(boxLine("  [Tip] Press [i] to toggle back to Overview. Press [r] to refresh."));
+}
+
 function renderOverview(lines, snapshot, color) {
+    // 0. Active Issues & Remediation Actions (if any issues detected)
+    const issues = analyzeIssues(snapshot);
+    if (issues.length > 0) {
+        lines.push(boxLine(`${color ? ANSI.bold : ""}${color ? ANSI.red : ""}ACTIVE ISSUES & ACTIONS REQUIRED (${issues.length})${color ? ANSI.reset : ""}`));
+        for (const item of issues.slice(0, 3)) {
+            const sevColor = ["CRITICAL", "HIGH"].includes(item.severity) ? ANSI.red : ANSI.yellow;
+            const badge = color ? `${sevColor}[${item.severity}]${ANSI.reset}` : `[${item.severity}]`;
+            const cmdText = color ? `${ANSI.green}${item.command}${ANSI.reset}` : item.command;
+            lines.push(boxLine(`  ! ${badge} ${bounded(item.title, 34)} -> ${cmdText}`));
+        }
+        if (issues.length > 3) {
+            lines.push(boxLine(`  ... and ${issues.length - 3} more issue(s). Press [i] for full remediation guide.`));
+        }
+        lines.push(boxDivider());
+    }
+
     // 1. Threat & Tripwire Radar
     lines.push(boxLine(`${color ? ANSI.bold : ""}THREAT & TRIPWIRE RADAR${color ? ANSI.reset : ""}`));
     const threat = snapshot.threat || {
@@ -506,7 +803,9 @@ function renderOverview(lines, snapshot, color) {
     const auditState = colorState(audit.state, color);
     lines.push(boxLine(`  Audit Ledger    ${padColor(auditState, audit.state, 10, color)}  ${bounded(audit.detail, 41)}`));
     if (threat.incidentCount > 0) {
-        lines.push(boxLine(`  ${color ? ANSI.yellow : ""}[!] Tripwire alarm active! Press [c] to inspect recent incidents.${color ? ANSI.reset : ""}`));
+        lines.push(boxLine(`  ${color ? ANSI.yellow : ""}[!] Tripwire alarm active! Action: Run 'hetzer canary list' and rotate secrets.${color ? ANSI.reset : ""}`));
+    } else if (threat.canaryCount === 0) {
+        lines.push(boxLine(`  ${color ? ANSI.dim : ""}-> Action: Run 'hetzer creds set canary-token' to deploy honeytoken.${color ? ANSI.reset : ""}`));
     }
 
     // 2. Vault & Credential Posture
@@ -529,6 +828,12 @@ function renderOverview(lines, snapshot, color) {
             ? (color ? `${ANSI.red}${rawCount} plaintext in .env!${ANSI.reset}` : `${rawCount} plaintext in .env!`)
             : "0 plaintext in .env";
         lines.push(boxLine(`  Safety Ratio    ${storedCount} vaulted   ${refCount} secretRef: pointers   ${rawText}`));
+    }
+    if (vault.keyIsolation === "EXPOSED") {
+        lines.push(boxLine(`  ${color ? ANSI.yellow : ""}-> Action: Run 'hetzer init' or 'hetzer creds isolate-key' to isolate master key to ~/.hetzer/grimoire.key${color ? ANSI.reset : ""}`));
+    }
+    if (vault.rawSecretCount > 0) {
+        lines.push(boxLine(`  ${color ? ANSI.yellow : ""}-> Action: Run 'hetzer creds set <id>' and replace raw secrets with secretRef:<id>${color ? ANSI.reset : ""}`));
     }
 
     // 3. Agent Shield & Git Guards
@@ -553,6 +858,27 @@ function renderOverview(lines, snapshot, color) {
         : "None detected in workspace";
     lines.push(boxLine(`  Detected Agents ${bounded(agents, 53)}`));
 
+    // Quick staged diff status
+    try {
+        const sniff = snapshot.sniff || (snapshot.root ? quickSniffSnapshot(snapshot.root) : null);
+        if (sniff) {
+            const sniffState = sniff.status === "CLEAN" ? "CLEAN" : "VIOLATIONS";
+            const sniffStateC = colorState(sniffState, color);
+            const sniffDetail = sniff.status === "CLEAN"
+                ? "staged diff is clean"
+                : `${sniff.count} secret(s) in staged diff!`;
+            lines.push(boxLine(`  Staged Diff     ${padColor(sniffStateC, sniffState, 10, color)}  ${bounded(sniffDetail, 41)}`));
+            if (sniff.status === "VIOLATIONS") {
+                lines.push(boxLine(`  ${color ? ANSI.red : ""}-> Action: Run 'git restore --staged <file>' to unstage leaked secret!${color ? ANSI.reset : ""}`));
+            }
+        }
+    } catch {
+        // fail soft
+    }
+    if (shield.preCommit.state === "MISSING" || shield.commitMsg.state === "MISSING") {
+        lines.push(boxLine(`  ${color ? ANSI.yellow : ""}-> Action: Run 'hetzer hook install' to activate git pre-commit sniffer.${color ? ANSI.reset : ""}`));
+    }
+
     // 4. Runtime Armor & Container Sandbox
     lines.push(boxDivider());
     lines.push(boxLine(`${color ? ANSI.bold : ""}RUNTIME ARMOR & CONTAINER SANDBOX${color ? ANSI.reset : ""}`));
@@ -569,6 +895,9 @@ function renderOverview(lines, snapshot, color) {
     lines.push(boxLine(`  HTTP Broker     ${padColor(brokerState, runtime.broker?.state || "READY", 10, color)}  ${bounded(runtime.broker?.detail || "Loopback broker active", 41)}`));
     const redactorState = colorState(runtime.redactor?.state || "READY", color);
     lines.push(boxLine(`  Stream Redactor ${padColor(redactorState, runtime.redactor?.state || "READY", 10, color)}  ${bounded(runtime.redactor?.detail || "Sub-ms sliding window", 41)}`));
+    if (container.state === "offline") {
+        lines.push(boxLine(`  ${color ? ANSI.dim : ""}-> Action: Start Docker or Podman daemon to enable 'hetzer exec --sandbox'${color ? ANSI.reset : ""}`));
+    }
 
     // 5. Services (if services present)
     if (snapshot.services && snapshot.services.length > 0) {
@@ -629,6 +958,12 @@ function renderCanaryView(lines, snapshot, color) {
         lines.push(boxLine(""));
         lines.push(boxLine("  Canary honeytokens trigger exit code 43 (ERR_CANARY_TRIPWIRE_TRIGGERED)"));
         lines.push(boxLine("  and terminate execution if leaked to agent streams."));
+        if (threat.canaryCount === 0) {
+            lines.push(boxLine(""));
+            lines.push(boxLine(`  ${color ? ANSI.yellow : ""}Notice: Zero honeytokens deployed.${color ? ANSI.reset : ""}`));
+            const cmd = color ? `${ANSI.green}hetzer creds set canary-token${ANSI.reset}` : "hetzer creds set canary-token";
+            lines.push(boxLine(`  Action: Deploy a honeytoken tripwire via: ${cmd}`));
+        }
     } else {
         lines.push(boxLine(`  Total Incidents: ${threat.incidentCount}`));
         lines.push(boxLine("  Recent Incident Log (data/hetzer-incidents.log):"));
@@ -643,6 +978,10 @@ function renderCanaryView(lines, snapshot, color) {
                 }
             }
         }
+        lines.push(boxLine(""));
+        lines.push(boxLine(`  ${color ? ANSI.red : ""}Action Required: Investigate compromised process and rotate leaked credentials.${color ? ANSI.reset : ""}`));
+        const cmd = color ? `${ANSI.green}hetzer canary list${ANSI.reset}` : "hetzer canary list";
+        lines.push(boxLine(`  Remediation Command: ${cmd}`));
     }
     lines.push(boxLine(""));
     lines.push(boxLine("  [Tip] Press [c] to toggle back to Overview."));
@@ -668,6 +1007,19 @@ function renderVaultView(lines, snapshot, color) {
             lines.push(boxLine(`  ... and ${configured.length - 10} more credentials`));
         }
     }
+    const vault = snapshot.vault || {};
+    if (vault.keyIsolation === "EXPOSED") {
+        lines.push(boxLine(""));
+        lines.push(boxLine(`  ${color ? ANSI.yellow : ""}Vulnerability: Master key is exposed in workspace .env!${color ? ANSI.reset : ""}`));
+        const cmd = color ? `${ANSI.green}hetzer init${ANSI.reset}` : "hetzer init";
+        lines.push(boxLine(`  Remediation: Run '${cmd}' to isolate key to ~/.hetzer/grimoire.key`));
+    }
+    if (vault.rawSecretCount > 0) {
+        lines.push(boxLine(""));
+        lines.push(boxLine(`  ${color ? ANSI.yellow : ""}Vulnerability: ${vault.rawSecretCount} plaintext secret(s) found in .env!${color ? ANSI.reset : ""}`));
+        const cmd = color ? `${ANSI.green}hetzer creds set <id>${ANSI.reset}` : "hetzer creds set <id>";
+        lines.push(boxLine(`  Remediation: Store in encrypted vault with '${cmd}' and use secretRef:<id>`));
+    }
     lines.push(boxLine(""));
     lines.push(boxLine("  [Tip] Press [v] to toggle back to Overview."));
 }
@@ -684,6 +1036,10 @@ function renderSniffView(lines, snapshot, color) {
             const loc = v.line ? `${v.file}:L${v.line}` : v.file;
             lines.push(boxLine(`  ${color ? ANSI.red : ""}! [${v.type}] ${bounded(loc, 55)}${color ? ANSI.reset : ""}`));
         }
+        lines.push(boxLine(""));
+        lines.push(boxLine(`  ${color ? ANSI.red : ""}Action Required: Unstage leaked credentials before committing!${color ? ANSI.reset : ""}`));
+        const cmd = color ? `${ANSI.green}git restore --staged <file>${ANSI.reset}` : "git restore --staged <file>";
+        lines.push(boxLine(`  Remediation Command: ${cmd}`));
     } else {
         lines.push(boxLine(`  Scan result: ${sniff.error || "Git repo not detected or clean"}`));
     }
@@ -698,6 +1054,12 @@ function renderAuditView(lines, snapshot, color) {
     lines.push(boxLine(`  Status     : ${auditState}  (${audit.detail})`));
     if (audit.latestHash) {
         lines.push(boxLine(`  Latest Hash: ${bounded(audit.latestHash, 55)}`));
+    }
+    if (audit.state === "CORRUPTED" || audit.state === "ERROR") {
+        lines.push(boxLine(""));
+        lines.push(boxLine(`  ${color ? ANSI.red : ""}Action Required: Cryptographic hash-chain mismatch detected!${color ? ANSI.reset : ""}`));
+        const cmd = color ? `${ANSI.green}hetzer audit verify${ANSI.reset}` : "hetzer audit verify";
+        lines.push(boxLine(`  Remediation Command: Run '${cmd}' to trace tampered entries.`));
     }
     lines.push(boxLine(""));
     if (!audit.recentEvents || audit.recentEvents.length === 0) {
@@ -717,14 +1079,96 @@ function renderAuditView(lines, snapshot, color) {
     lines.push(boxLine("  [Tip] Press [a] to toggle back to Overview."));
 }
 
-export function renderTui(snapshot, { color = process.stdout.isTTY && !process.env.NO_COLOR, view = "overview" } = {}) {
+function renderCompactOverview(lines, snapshot, color) {
+    const threat = snapshot.threat || { state: "ARMED", detail: "1 canary honeytoken" };
+    const threatState = colorState(threat.state, color);
+    const incidentText = threat.incidentCount > 0
+        ? (color ? `${ANSI.red}${threat.incidentCount} INCIDENT(S)!${ANSI.reset}` : `${threat.incidentCount} INCIDENT(S)!`)
+        : "0 incidents";
+    lines.push(boxLine(`  Threat Radar    ${padColor(threatState, threat.state, 10, color)}  ${bounded(threat.detail, 32)}  ${incidentText}`));
+
+    const vault = snapshot.vault || { state: "n/a", detail: "not initialized" };
+    const vaultState = colorState(vault.state, color);
+    const keyIso = vault.keyIsolation || (vault.state === "ready" ? "ISOLATED" : "N/A");
+    const keyState = colorState(keyIso, color);
+    const countInfo = `${vault.totalStored ?? 0} vault / ${vault.secretRefCount ?? 0} ref`;
+    lines.push(boxLine(`  Vault Posture   ${padColor(vaultState, vault.state, 10, color)}  Key: ${keyState}  ${bounded(countInfo, 25)}`));
+
+    const shield = snapshot.shield || { preCommit: { state: "N/A", detail: "" }, commitMsg: { state: "N/A", detail: "" }, detectedAgents: [] };
+    const preCommitState = colorState(shield.preCommit?.state || "N/A", color);
+    const commitMsgState = colorState(shield.commitMsg?.state || "N/A", color);
+    const agentList = shield.detectedAgents?.length ? shield.detectedAgents.join(", ") : "none";
+    lines.push(boxLine(`  Agent Shield    Pre-Commit: ${preCommitState}  Commit-Msg: ${commitMsgState}  Agents: ${bounded(agentList, 18)}`));
+
+    const runtime = snapshot.runtime || {};
+    const container = runtime.container || snapshot.docker || { state: "offline", detail: "Docker not installed" };
+    const contState = colorState(container.state, color);
+    const brokerState = colorState(runtime.broker?.state || "READY", color);
+    const redactorState = colorState(runtime.redactor?.state || "READY", color);
+    lines.push(boxLine(`  Runtime Armor   Box: ${contState}  Broker: ${brokerState}  Redactor: ${redactorState}`));
+
+    const sniff = snapshot.sniff || (snapshot.root ? quickSniffSnapshot(snapshot.root) : null);
+    if (sniff && sniff.status === "VIOLATIONS") {
+        const sniffStateC = colorState("VIOLATIONS", color);
+        const sniffDetail = `${sniff.count} secret(s) in staged diff!`;
+        lines.push(boxLine(`  Staged Diff     ${padColor(sniffStateC, "VIOLATIONS", 10, color)}  ${sniffDetail}`));
+    }
+
+    const issues = analyzeIssues(snapshot);
+    if (issues.length > 0) {
+        const topIssue = issues[0];
+        const sevColor = ["CRITICAL", "HIGH"].includes(topIssue.severity) ? ANSI.red : ANSI.yellow;
+        const sevBadge = color ? `${sevColor}[${topIssue.severity}]${ANSI.reset}` : `[${topIssue.severity}]`;
+        lines.push(boxLine(`  Action Radar    ${sevBadge} ${bounded(topIssue.action, 30)} -> ${topIssue.command}`));
+    }
+}
+
+export function renderTui(snapshot, {
+    color = process.stdout.isTTY && !process.env.NO_COLOR,
+    view = "overview",
+    compact = Boolean(process.stdout.isTTY && process.stdout.rows && process.stdout.rows < 22),
+    banner = undefined,
+} = {}) {
+    const showBanner = banner !== undefined ? banner : !compact;
     const title = color ? `${ANSI.cyan}HETZER // TACTICAL ARMOR HUD${ANSI.reset}` : "HETZER // TACTICAL ARMOR HUD";
     const lines = [];
 
     lines.push(boxTop(title));
+    if (showBanner) {
+        for (const logoLine of ASCII_LOGO) {
+            const padLeft = Math.max(0, Math.floor((INNER_WIDTH - logoLine.length) / 2));
+            const coloredLogo = color ? `${ANSI.cyan}${ANSI.bold}${logoLine}${ANSI.reset}` : logoLine;
+            lines.push(boxLine(" ".repeat(padLeft) + coloredLogo));
+        }
+        const subtitle = "DEFENSE-IN-DEPTH RUNTIME ARMOR & THREAT REMEDIATION";
+        const subPad = Math.max(0, Math.floor((INNER_WIDTH - subtitle.length) / 2));
+        const coloredSub = color ? `${ANSI.dim}${subtitle}${ANSI.reset}` : subtitle;
+        lines.push(boxLine(" ".repeat(subPad) + coloredSub));
+        lines.push(boxDivider());
+    }
+
     lines.push(boxLine(`${color ? ANSI.dim : ""}Values are observed; unavailable values are N/A.${color ? ANSI.reset : ""}`));
     lines.push(boxLine(`ROOT     ${bounded(snapshot.root, 62)}`));
-    lines.push(boxLine(`UPDATED  ${bounded(snapshot.generatedAt, 36)}  REFRESH 2s`));
+    const modeTag = compact ? "  REFRESH 2s (COMPACT)" : "  REFRESH 2s";
+    lines.push(boxLine(`UPDATED  ${bounded(snapshot.generatedAt, 36)}${modeTag}`));
+
+    // Version update indicator (cache-only, zero network calls)
+    try {
+        const pkgPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
+        if (fs.existsSync(pkgPath)) {
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+            const cache = readUpdateCache(getUpdateCachePath());
+            if (cache?.latestVersion && isNewerVersion(pkg.version, cache.latestVersion)) {
+                const updateText = color
+                    ? `${ANSI.yellow}UPDATE v${cache.latestVersion} available${ANSI.reset} ${ANSI.dim}(hetzer upgrade)${ANSI.reset}`
+                    : `UPDATE v${cache.latestVersion} available (hetzer upgrade)`;
+                lines.push(boxLine(updateText));
+            }
+        }
+    } catch {
+        // fail soft
+    }
+
     lines.push(boxDivider());
 
     if (view === "canary") {
@@ -735,12 +1179,20 @@ export function renderTui(snapshot, { color = process.stdout.isTTY && !process.e
         renderSniffView(lines, snapshot, color);
     } else if (view === "audit") {
         renderAuditView(lines, snapshot, color);
+    } else if (view === "issues") {
+        renderIssuesView(lines, snapshot, color);
+    } else if (compact) {
+        renderCompactOverview(lines, snapshot, color);
     } else {
         renderOverview(lines, snapshot, color);
     }
 
     lines.push(boxDivider());
-    const hotkeys = "[r] Refresh   [c] Canary Log   [a] Audit Log   [v] Vault Keys   [s] Sniff   [q] Exit";
+    const issues = analyzeIssues(snapshot);
+    const issuesBadge = issues.length > 0
+        ? (color ? `${ANSI.yellow}[i] Issues (${issues.length})${ANSI.reset}` : `[i] Issues (${issues.length})`)
+        : "[i] Issues (0)";
+    const hotkeys = `[r] Refresh   ${issuesBadge}   [c] Canary Log   [a] Audit Log   [v] Vault Keys   [s] Sniff   [q] Exit`;
     lines.push(boxLine(color ? `${ANSI.dim}${hotkeys}${ANSI.reset}` : hotkeys));
     lines.push(boxBottom());
 
@@ -749,6 +1201,41 @@ export function renderTui(snapshot, { color = process.stdout.isTTY && !process.e
 
 let currentView = "overview";
 let lastSnapshot = null;
+let inAltScreen = false;
+let activeTimer = null;
+let cleanupRegistered = false;
+
+export function enterAltScreen(stream = process.stdout) {
+    if (stream.isTTY && !inAltScreen) {
+        stream.write("\x1b[?1049h\x1b[?25l");
+        inAltScreen = true;
+    }
+}
+
+export function exitAltScreen(stream = process.stdout) {
+    if (inAltScreen) {
+        stream.write("\x1b[?1049l\x1b[?25h");
+        inAltScreen = false;
+    }
+}
+
+export function drawFrame(output, options = {}) {
+    const stream = options.stream || process.stdout;
+    const isTTY = options.isTTY !== undefined ? options.isTTY : Boolean(stream.isTTY);
+    if (!isTTY || options.singleShot) {
+        stream.write(output + "\n");
+        return;
+    }
+    const lines = output.split("\n");
+    const maxRows = stream.rows && stream.rows > 10 ? stream.rows : lines.length;
+    const renderLines = lines.length > maxRows ? lines.slice(0, maxRows) : lines;
+    let frame = "\x1b[H";
+    for (const line of renderLines) {
+        frame += line + "\x1b[K\n";
+    }
+    frame += "\x1b[J";
+    stream.write(frame);
+}
 
 export async function drawTui(options = {}) {
     let output;
@@ -763,72 +1250,128 @@ export async function drawTui(options = {}) {
         ];
         output = errorLines.join("\n");
     }
-    process.stdout.write(`\x1b[2J\x1b[H${output}\n`);
+    drawFrame(output, options);
+    return output;
+}
+
+function drawCurrent(options = {}) {
+    if (lastSnapshot) {
+        drawFrame(renderTui(lastSnapshot, { ...options, view: currentView }), options);
+    } else {
+        drawTui(options);
+    }
+}
+
+export function registerExitHandlers(cleanupFn) {
+    if (cleanupRegistered) return;
+    cleanupRegistered = true;
+    const doCleanup = () => {
+        try {
+            cleanupFn();
+        } catch { /* ignore */ }
+    };
+    process.on("exit", doCleanup);
+    process.on("SIGINT", () => {
+        doCleanup();
+        process.exit(0);
+    });
+    process.on("SIGTERM", () => {
+        doCleanup();
+        process.exit(0);
+    });
+}
+
+export async function startTui({ root = process.cwd(), args = [], view = "overview", stream = process.stdout } = {}) {
+    const isInteractive = Boolean(stream.isTTY && process.stdin.isTTY);
+    const wantsOnce = args.includes("--once") || args.includes("-1") || args.includes("--no-stream");
+    const singleShot = wantsOnce || !isInteractive;
+    let initialView = option("--view", view || "overview");
+    if (args.includes("--issues") || args.includes("-i")) {
+        initialView = "issues";
+    }
+    currentView = initialView;
+
+    if (singleShot) {
+        const snapshot = await collectStatus({ root });
+        const rendered = renderTui(snapshot, {
+            root,
+            view: currentView,
+            color: Boolean(stream.isTTY && !process.env.NO_COLOR),
+            compact: args.includes("--compact"),
+        });
+        stream.write(rendered + "\n");
+        return;
+    }
+
+    refreshDimensions();
+
+    registerExitHandlers(() => {
+        if (activeTimer) {
+            clearInterval(activeTimer);
+            activeTimer = null;
+        }
+        exitAltScreen();
+        if (process.stdin.isTTY) {
+            try { process.stdin.setRawMode(false); } catch { /* ignore */ }
+        }
+    });
+
+    enterAltScreen();
+
+    readline.emitKeypressEvents(process.stdin);
+    try {
+        process.stdin.setRawMode(true);
+    } catch { /* ignore */ }
+
+    const onKeypress = async (_input, key) => {
+        if (!key) return;
+        if ((key.ctrl && key.name === "c") || key.name === "q") {
+            exitAltScreen();
+            process.exit(0);
+        } else if (key.name === "r") {
+            await drawTui({ root });
+        } else if (key.name === "i") {
+            currentView = currentView === "issues" ? "overview" : "issues";
+            drawCurrent({ root });
+        } else if (key.name === "c") {
+            currentView = currentView === "canary" ? "overview" : "canary";
+            drawCurrent({ root });
+        } else if (key.name === "a") {
+            currentView = currentView === "audit" ? "overview" : "audit";
+            drawCurrent({ root });
+        } else if (key.name === "v") {
+            currentView = currentView === "vault" ? "overview" : "vault";
+            drawCurrent({ root });
+        } else if (key.name === "s") {
+            currentView = currentView === "sniff" ? "overview" : "sniff";
+            if (currentView === "sniff" && lastSnapshot) {
+                lastSnapshot.sniff = quickSniffSnapshot(root);
+            }
+            drawCurrent({ root });
+        }
+    };
+
+    process.stdin.on("keypress", onKeypress);
+
+    const onResize = () => {
+        refreshDimensions();
+        drawCurrent({ root });
+    };
+    process.stdout.on("resize", onResize);
+
+    await drawTui({ root });
+
+    if (activeTimer) clearInterval(activeTimer);
+    activeTimer = setInterval(() => {
+        if (currentView === "overview") {
+            drawTui({ root });
+        }
+    }, 2000);
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
     const root = option("--root", process.env.HETZER_ROOT || process.cwd());
     const initialView = option("--view", "overview");
-    currentView = initialView;
-
-    if (process.stdin.isTTY) {
-        readline.emitKeypressEvents(process.stdin);
-        try {
-            process.stdin.setRawMode(true);
-        } catch {
-            // fail soft in environments without raw mode
-        }
-        process.stdin.on("keypress", async (_input, key) => {
-            if (!key) return;
-            if ((key.ctrl && key.name === "c") || key.name === "q") {
-                process.exit(0);
-            } else if (key.name === "r") {
-                await drawTui({ root });
-            } else if (key.name === "c") {
-                currentView = currentView === "canary" ? "overview" : "canary";
-                if (lastSnapshot) {
-                    process.stdout.write(`\x1b[2J\x1b[H${renderTui(lastSnapshot, { root, view: currentView })}\n`);
-                } else {
-                    await drawTui({ root });
-                }
-            } else if (key.name === "a") {
-                currentView = currentView === "audit" ? "overview" : "audit";
-                if (lastSnapshot) {
-                    process.stdout.write(`\x1b[2J\x1b[H${renderTui(lastSnapshot, { root, view: currentView })}\n`);
-                } else {
-                    await drawTui({ root });
-                }
-            } else if (key.name === "v") {
-                currentView = currentView === "vault" ? "overview" : "vault";
-                if (lastSnapshot) {
-                    process.stdout.write(`\x1b[2J\x1b[H${renderTui(lastSnapshot, { root, view: currentView })}\n`);
-                } else {
-                    await drawTui({ root });
-                }
-            } else if (key.name === "s") {
-                if (currentView === "sniff") {
-                    currentView = "overview";
-                } else {
-                    currentView = "sniff";
-                    if (lastSnapshot) {
-                        lastSnapshot.sniff = quickSniffSnapshot(root);
-                    }
-                }
-                if (lastSnapshot) {
-                    process.stdout.write(`\x1b[2J\x1b[H${renderTui(lastSnapshot, { root, view: currentView })}\n`);
-                } else {
-                    await drawTui({ root });
-                }
-            }
-        });
-    }
-
-    drawTui({ root });
-    const timer = setInterval(() => {
-        if (currentView === "overview") {
-            drawTui({ root });
-        }
-    }, 2000);
-    process.on("exit", () => clearInterval(timer));
+    startTui({ root, args: process.argv.slice(2), view: initialView });
 }

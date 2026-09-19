@@ -19,7 +19,7 @@ import { KNOWN_CREDENTIALS, assertInteractiveHumanSession, authorizeCredentialRe
 import { approveCredentialRequest, createCredentialRequest, getCredentialRequest } from "../vault/credential-request.mjs";
 import { isolateMasterKey, resolveMasterKey } from "../vault/hetzer-vault.mjs";
 import { autoIngestPlaintextEnv, migrateEnvCredentials } from "../vault/migrate-env.mjs";
-import { setupCanaryTrap } from "../vault/canary.mjs";
+import { clearCanaryIncidents, getCanaryStatus, setupCanaryTrap } from "../vault/canary.mjs";
 import { readAuditEvents, verifyAuditLedger } from "../vault/audit.mjs";
 import { redactAndVault, scanText, restoreSecrets } from "../vault/sniffer.mjs";
 import { getHetzerAsciiBanner, printHetzerBanner } from "./banner.mjs";
@@ -615,6 +615,19 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         printInitWizard(result);
         return;
     }
+    if (["isolate-key", "key-isolate"].includes(command)) {
+        const res = isolateMasterKey({ root, envFile });
+        process.stdout.write("================================================================================\n");
+        process.stdout.write("  HETZER - GRIMOIRE MASTER KEY ISOLATION\n");
+        process.stdout.write("================================================================================\n");
+        process.stdout.write(`  [v] Master Key moved to : ${res.isolatedFile} (mode 0600)\n`);
+        process.stdout.write(`  [v] Workspace Stripped  : ${res.envFile}\n`);
+        process.stdout.write("--------------------------------------------------------------------------------\n");
+        process.stdout.write("  Result: The workspace .env no longer contains the master key.\n");
+        process.stdout.write("  Note: Processes running as the same OS user may still read the isolated key file.\n");
+        process.stdout.write("================================================================================\n");
+        return;
+    }
 
     if (["protect", "armor", "protec"].includes(command)) {
         const workspaceRoot = rootOption ? path.resolve(rootOption) : process.cwd();
@@ -938,8 +951,8 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         throw new Error(`Unknown sniffer subcommand: '${sub}'. Use 'scan' or 'redact'.`);
     }
     if (command === "canary") {
-        const sub = args[0] || "setup";
-        if (sub === "setup" || sub === "enable") {
+        const sub = args[0] || "status";
+        if (sub === "setup" || sub === "enable" || sub === "add") {
             const trap = setupCanaryTrap({ root, envFile });
             process.stdout.write("================================================================================\n");
             process.stdout.write("  HETZER - CANARY HONEY-TOKEN TRAP DEPLOYED\n");
@@ -951,7 +964,43 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             process.stdout.write("================================================================================\n");
             return;
         }
-        throw new Error(`Unknown canary subcommand: '${sub}'. Use 'setup'.`);
+        if (sub === "list" || sub === "status" || sub === "incidents") {
+            const status = getCanaryStatus({ root });
+            process.stdout.write("================================================================================\n");
+            process.stdout.write("  HETZER - CANARY HONEY-TOKEN TRAP STATUS\n");
+            process.stdout.write("================================================================================\n");
+            process.stdout.write(`  [v] Status         : ${status.state}\n`);
+            process.stdout.write(`  [v] Decoy Binding  : ${status.hasCanaryBinding ? "Active in .env" : "Not configured (run hetzer canary setup)"}\n`);
+            process.stdout.write(`  [v] Total Incidents: ${status.incidentCount}\n`);
+            process.stdout.write(`  [v] Incident Log   : ${status.incidentsFile}\n`);
+            if (status.recentIncidents.length > 0) {
+                process.stdout.write("--------------------------------------------------------------------------------\n");
+                process.stdout.write("  Recent Incidents (last 10):\n");
+                for (const inc of status.recentIncidents) {
+                    process.stdout.write(`    > ${inc}\n`);
+                }
+                process.stdout.write("--------------------------------------------------------------------------------\n");
+                process.stdout.write("  Guidance:\n");
+                process.stdout.write("    * Rotate leaked credentials: hetzer creds set <id>\n");
+                process.stdout.write("    * Reset incident alarm after rotating: hetzer canary clear\n");
+            } else {
+                process.stdout.write("--------------------------------------------------------------------------------\n");
+                process.stdout.write("  Zero security incidents recorded. Honeytoken tripwire is intact.\n");
+            }
+            process.stdout.write("================================================================================\n");
+            return;
+        }
+        if (sub === "clear" || sub === "reset") {
+            clearCanaryIncidents({ root });
+            process.stdout.write("================================================================================\n");
+            process.stdout.write("  HETZER - CANARY INCIDENTS CLEARED\n");
+            process.stdout.write("================================================================================\n");
+            process.stdout.write("  [v] Incident log data/hetzer-incidents.log reset to 0.\n");
+            process.stdout.write("  [v] Threat radar status restored to ARMED.\n");
+            process.stdout.write("================================================================================\n");
+            return;
+        }
+        throw new Error(`Unknown canary subcommand: '${sub}'. Use 'setup', 'list', or 'clear'.`);
     }
     if (command === "modules") {
         warnOrchestrationDeprecated(command);
@@ -1321,7 +1370,8 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         return;
     }
     if (command === "tui") {
-        run(process.execPath, [path.join(cliRoot, "modules", "tui.mjs"), "--root", root, ...args], { cwd: root });
+        const { startTui } = await import("../modules/tui.mjs");
+        await startTui({ root, args });
         return;
     }
     const suggested = suggestCommand(command);
