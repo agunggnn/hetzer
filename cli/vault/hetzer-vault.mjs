@@ -73,8 +73,10 @@ export function resolveVaultPath(root) {
 
 export function getIsolatedKeyPath() {
     try {
-        const home = os.homedir();
-        return path.join(home, ".hetzer", "grimoire.key");
+        const homeDir = process.env.HETZER_HOME
+            ? path.resolve(process.env.HETZER_HOME)
+            : path.join(os.homedir(), ".hetzer");
+        return path.join(homeDir, "grimoire.key");
     } catch {
         return "";
     }
@@ -87,8 +89,14 @@ export function resolveMasterKey({ root = process.cwd(), envValues = {}, baseEnv
         return String(envKey).trim();
     }
 
-    // 2. User-level Home Isolated Store (~/.hetzer/grimoire.key)
-    // Isolated outside project workspace so workspace agents cannot read it!
+    // 2. Local .env file (Explicit workspace configuration)
+    const fileKey = envValues.HETZER_GRIMOIRE_KEY || envValues.SHADOW_GRIMOIRE_KEY;
+    if (fileKey && !String(fileKey).startsWith("secretRef:")) {
+        return String(fileKey).trim();
+    }
+
+    // 3. User-level Home Isolated Store (~/.hetzer/grimoire.key)
+    // Used when key has been stripped from workspace .env for agent isolation!
     const isolatedFile = getIsolatedKeyPath();
     if (isolatedFile && fs.existsSync(isolatedFile)) {
         try {
@@ -99,12 +107,6 @@ export function resolveMasterKey({ root = process.cwd(), envValues = {}, baseEnv
         } catch {
             // Continue to fallback
         }
-    }
-
-    // 3. Local .env file (Legacy workspace fallback)
-    const fileKey = envValues.HETZER_GRIMOIRE_KEY || envValues.SHADOW_GRIMOIRE_KEY;
-    if (fileKey && !String(fileKey).startsWith("secretRef:")) {
-        return String(fileKey).trim();
     }
 
     return "";

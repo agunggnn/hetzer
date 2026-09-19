@@ -564,7 +564,7 @@ export function analyzeIssues(snapshot = {}) {
                 title: "Master encryption key exposed in workspace .env",
                 detail: "HETZER_GRIMOIRE_KEY is in .env; AI agents reading workspace files can exfiltrate it",
                 action: "Migrate master key to ~/.hetzer/grimoire.key with 0600 user-only permissions",
-                command: "hetzer init",
+                command: "hetzer init (or hetzer creds isolate-key)",
             });
         } else if (vault.keyIsolation === "MISSING" || vault.state === "locked") {
             issues.push({
@@ -830,7 +830,7 @@ function renderOverview(lines, snapshot, color) {
         lines.push(boxLine(`  Safety Ratio    ${storedCount} vaulted   ${refCount} secretRef: pointers   ${rawText}`));
     }
     if (vault.keyIsolation === "EXPOSED") {
-        lines.push(boxLine(`  ${color ? ANSI.yellow : ""}-> Action: Run 'hetzer init' to isolate master key to ~/.hetzer/grimoire.key${color ? ANSI.reset : ""}`));
+        lines.push(boxLine(`  ${color ? ANSI.yellow : ""}-> Action: Run 'hetzer init' or 'hetzer creds isolate-key' to isolate master key to ~/.hetzer/grimoire.key${color ? ANSI.reset : ""}`));
     }
     if (vault.rawSecretCount > 0) {
         lines.push(boxLine(`  ${color ? ANSI.yellow : ""}-> Action: Run 'hetzer creds set <id>' and replace raw secrets with secretRef:<id>${color ? ANSI.reset : ""}`));

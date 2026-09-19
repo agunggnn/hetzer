@@ -615,6 +615,19 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         printInitWizard(result);
         return;
     }
+    if (["isolate-key", "key-isolate"].includes(command)) {
+        const res = isolateMasterKey({ root, envFile });
+        process.stdout.write("================================================================================\n");
+        process.stdout.write("  HETZER - GRIMOIRE MASTER KEY ISOLATION\n");
+        process.stdout.write("================================================================================\n");
+        process.stdout.write(`  [v] Master Key moved to : ${res.isolatedFile} (mode 0600)\n`);
+        process.stdout.write(`  [v] Workspace Stripped  : ${res.envFile}\n`);
+        process.stdout.write("--------------------------------------------------------------------------------\n");
+        process.stdout.write("  Result: The workspace .env no longer contains the master key.\n");
+        process.stdout.write("  Note: Processes running as the same OS user may still read the isolated key file.\n");
+        process.stdout.write("================================================================================\n");
+        return;
+    }
 
     if (["protect", "armor", "protec"].includes(command)) {
         const workspaceRoot = rootOption ? path.resolve(rootOption) : process.cwd();
