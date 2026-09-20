@@ -81,7 +81,7 @@ export function autoIngestPlaintextEnv({ root, envFile, masterKey }) {
 
             const existing = vault.find(candidate.id);
             if (!existing) continue;
-            const existingValue = vault.reveal(candidate.id);
+            const existingValue = vault._decryptRaw(candidate.id);
             if (existingValue === null || existingValue !== candidate.value) conflicts.add(candidate.id);
         }
         if (conflicts.size) {

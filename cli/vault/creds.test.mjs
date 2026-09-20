@@ -8,6 +8,8 @@ import test from "node:test";
 import { assertInteractiveHumanSession, authorizeCredentialReveal, checkProcessAncestors, detectAgentAncestor, promptNativeOsConfirmation, listCredentials, promptSecret, revealCredential, setCredential } from "./creds.mjs";
 import { Grimoire, isolateMasterKey, resolveMasterKey } from "./hetzer-vault.mjs";
 
+process.env.HETZER_TEST_BYPASS_GUARD = "1";
+
 test("creds module can list, set, and reveal credentials in Grimoire Vault", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-creds-test-"));
     fs.mkdirSync(path.join(root, "data"));

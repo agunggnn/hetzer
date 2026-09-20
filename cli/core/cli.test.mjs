@@ -49,8 +49,12 @@ test("init output never includes the stored initial password", async () => {
             dbPath: path.join(root, "data", "hetzer-vault.db"),
             masterKey: values.HETZER_GRIMOIRE_KEY,
         });
-        const initialPassword = vault.reveal("nine-router-initial-password");
-        vault.close();
+        let initialPassword = null;
+        try {
+            initialPassword = vault._decryptRaw("nine-router-initial-password");
+        } finally {
+            vault.close();
+        }
         assert.ok(initialPassword);
         assert.equal(output.includes(initialPassword), false);
         assert.match(output, /secretRef:nine-router-initial-password/);

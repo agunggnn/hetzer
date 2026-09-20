@@ -7,6 +7,8 @@ import test from "node:test";
 import { scanText, redactAndVault, restoreSecrets, shannonEntropy } from "./sniffer.mjs";
 import { Grimoire } from "./hetzer-vault.mjs";
 
+process.env.HETZER_TEST_BYPASS_GUARD = "1";
+
 test("sniffer scanText returns a timed clean result", () => {
     const text = "Please analyze the following Postgres database structure and generate an SQL query.";
     const result = scanText(text);

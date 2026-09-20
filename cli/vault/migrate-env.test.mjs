@@ -7,6 +7,8 @@ import test from "node:test";
 import { Grimoire } from "./hetzer-vault.mjs";
 import { autoIngestPlaintextEnv, migrateEnvCredentials } from "./migrate-env.mjs";
 
+process.env.HETZER_TEST_BYPASS_GUARD = "1";
+
 test("Module secret keys move from plaintext to scoped Vault references", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-jwt-key-"));
     const envFile = path.join(root, ".env");

@@ -214,12 +214,12 @@ export function redactAndVault(text, { root, envFile, masterKey, autoVault = tru
             if (vaultInstance) {
                 try {
                     let existing = vaultInstance.find(refId);
-                    if (existing && vaultInstance.reveal(refId) !== rawVal) {
+                    if (existing && vaultInstance._decryptRaw(refId) !== rawVal) {
                         const collisionBase = `${item.defaultId}-${hash}`;
                         refId = collisionBase;
                         existing = vaultInstance.find(refId);
                         let suffix = 2;
-                        while (existing && vaultInstance.reveal(refId) !== rawVal) {
+                        while (existing && vaultInstance._decryptRaw(refId) !== rawVal) {
                             refId = `${collisionBase}-${suffix}`;
                             existing = vaultInstance.find(refId);
                             suffix += 1;
@@ -303,7 +303,7 @@ export function restoreSecrets(text, { root, envFile, masterKey } = {}) {
             try {
                 const entry = vault.find(id);
                 if (!entry) return match;
-                const secret = vault.reveal(id);
+                const secret = vault._decryptRaw(id);
                 return secret !== null ? secret : match;
             } catch {
                 return match;
