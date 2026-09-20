@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -519,3 +519,4 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         process.exitCode = error.exitCode || 1;
     }
 }
+

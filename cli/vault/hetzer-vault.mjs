@@ -1,4 +1,4 @@
-// Canonical Hetzer credential vault.
+﻿// Canonical Hetzer credential vault.
 // Grimoire is the product surface; this SQLite store is the only persistence
 // backend used by CLI services and MCP callers.
 
@@ -543,14 +543,37 @@ export class Grimoire {
         return this.find(id);
     }
 
-    reveal(id, aad) {
+    reveal(id, aad, { allowAgentic = false, auditReason = "" } = {}) {
+        // SAME-USER AGENTIC BLOCK: even if file is readable by same OS user, block non-TTY/agent contexts
+        if (!allowAgentic) {
+            try {
+                assertInteractiveHumanSession({ operation: `'Grimoire.reveal:${String(id)}'` });
+            } catch (e) {
+                // Log blocked attempt for audit
+                try { this.recordAudit({ actor: "vault-guard", action: "vault.reveal-blocked", credential_id: String(id), reason: e.message, outcome: "blocked", metadata: { auditReason, isAgentic: true } }); } catch {}
+                throw e;
+            }
+        } else {
+            // Explicit agentic allow: still audit and require HETZER_ALLOW_AGENTIC_REVEAL=1
+            if (process.env.HETZER_ALLOW_AGENTIC_REVEAL !== "1") {
+                throw new Error(`Access Denied: Grimoire.reveal('${String(id)}') agentic reveal requires HETZER_ALLOW_AGENTIC_REVEAL=1 and allowAgentic:true`);
+            }
+            this.recordAudit({ actor: "vault-guard", action: "vault.reveal-allowed-agentic", credential_id: String(id), reason: auditReason || "explicit allowAgentic", outcome: "allowed", metadata: { agentic: true } });
+        }
         const row = this.db.prepare("SELECT * FROM vault_credentials WHERE id = ? AND is_valid = 1").get(id);
         if (!row) return null;
         const boundAad = aad || credentialAad(id, row.created_at);
         return decryptSecret(this.masterKey, row.encrypted_value, boundAad);
     }
 
-    resolve(id, { targetId = "", action = "" } = {}) {
+    resolve(id, { targetId = "", action = "", allowAgentic = false, auditReason = "" } = {}) {
+        if (!allowAgentic && isAgenticContext()) {
+            // Fast path block before decrypt - same-user agent cannot even attempt decrypt
+            try { assertInteractiveHumanSession({ operation: `'Grimoire.resolve:${String(id)}'` }); } catch (e) {
+                try { this.recordAudit({ actor: "vault-guard", action: "vault.resolve-blocked", credential_id: String(id), reason: e.message, outcome: "blocked", metadata: { targetId, action } }); } catch {}
+                throw e;
+            }
+        }
         const entry = this.find(id);
         if (!entry) return null;
         if (targetId && entry.projectId !== targetId) return null;
@@ -747,3 +770,4 @@ export class Grimoire {
         }
     }
 }
+
