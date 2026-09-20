@@ -1,4 +1,4 @@
-﻿import assert from "node:assert";
+import assert from "node:assert";
 import { describe, it } from "node:test";
 import { assertInteractiveHumanSession, isAgenticContext } from "./human-guard.mjs";
 
@@ -13,7 +13,7 @@ describe("human-guard - same-user agentic block", () => {
     assert.throws(() => assertInteractiveHumanSession({ input: { isTTY: true }, env: { CI: "true" } }), /CI/);
   });
   it("allows human TTY without agent env", () => {
-    assert.doesNotThrow(() => assertInteractiveHumanSession({ input: { isTTY: true }, env: {} }));
+    assert.doesNotThrow(() => assertInteractiveHumanSession({ input: { isTTY: true }, env: {}, ancestor: { isAgent: false } }));
   });
   it("isAgenticContext true for non-TTY", () => {
     const origIsTTY = process.stdin.isTTY;

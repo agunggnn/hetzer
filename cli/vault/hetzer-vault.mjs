@@ -1,4 +1,4 @@
-﻿// Canonical Hetzer credential vault.
+// Canonical Hetzer credential vault.
 // Grimoire is the product surface; this SQLite store is the only persistence
 // backend used by CLI services and MCP callers.
 
@@ -8,6 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { assertInteractiveHumanSession, isAgenticContext } from "./human-guard.mjs";
 
 export function secureFilePermissions(filePath, { run = spawnSync } = {}) {
     if (!filePath || filePath === ":memory:") return;
@@ -543,7 +544,20 @@ export class Grimoire {
         return this.find(id);
     }
 
-    reveal(id, aad, { allowAgentic = false, auditReason = "" } = {}) {
+    reveal(id, aad, options = {}) {
+        // Guard: allow second arg to be options for backward compat
+        let allowAgentic = false;
+        let auditReason = "";
+        let actualAad = aad;
+        if (aad && typeof aad === "object" && !Array.isArray(aad) && !(aad instanceof Buffer)) {
+            // called as reveal(id, {allowAgentic:true})
+            allowAgentic = Boolean(aad.allowAgentic);
+            auditReason = aad.auditReason || "";
+            actualAad = undefined;
+        } else if (options && typeof options === "object") {
+            allowAgentic = Boolean(options.allowAgentic);
+            auditReason = options.auditReason || "";
+        }
         // SAME-USER AGENTIC BLOCK: even if file is readable by same OS user, block non-TTY/agent contexts
         if (!allowAgentic) {
             try {
@@ -562,7 +576,7 @@ export class Grimoire {
         }
         const row = this.db.prepare("SELECT * FROM vault_credentials WHERE id = ? AND is_valid = 1").get(id);
         if (!row) return null;
-        const boundAad = aad || credentialAad(id, row.created_at);
+        const boundAad = actualAad || credentialAad(id, row.created_at);
         return decryptSecret(this.masterKey, row.encrypted_value, boundAad);
     }
 
@@ -579,7 +593,7 @@ export class Grimoire {
         if (targetId && entry.projectId !== targetId) return null;
         if (entry.allowedActions.length && (!action || !entry.allowedActions.includes(action))) return null;
         if (entry.expiresAt && Date.parse(entry.expiresAt) <= Date.now()) return null;
-        const value = this.reveal(id);
+        const value = this.reveal(id, undefined, { allowAgentic, auditReason });
         if (value !== null) this.touch(id);
         return value;
     }
