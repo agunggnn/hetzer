@@ -141,28 +141,42 @@ test("authorizeCredentialReveal always requires native confirmation after TTY ch
 
 test("resolveMasterKey and isolateMasterKey manage key isolation lifecycle", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-key-iso-"));
+    const isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-key-home-"));
     const envFile = path.join(tempDir, ".env");
     const testKey = "isolation-test-key-32-characters-minimum";
-    fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${testKey}\nFOO=BAR\n`);
+    const originalHome = process.env.HETZER_HOME;
+    process.env.HETZER_HOME = isolatedHome;
+    try {
+        fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${testKey}\nFOO=BAR\n`);
 
-    // Resolution from file when runtime env is empty
-    const resolved = resolveMasterKey({
-        root: tempDir,
-        envValues: { HETZER_GRIMOIRE_KEY: testKey },
-        baseEnv: {},
-    });
-    assert.equal(resolved, testKey);
+        // Resolution from file when runtime env is empty
+        const resolved = resolveMasterKey({
+            root: tempDir,
+            envValues: { HETZER_GRIMOIRE_KEY: testKey },
+            baseEnv: {},
+        });
+        assert.equal(resolved, testKey);
 
-    // Resolution from runtime env takes precedence
-    const runtimeKey = "runtime-override-key-32-chars-at-least";
-    const runtimeResolved = resolveMasterKey({
-        root: tempDir,
-        envValues: { HETZER_GRIMOIRE_KEY: testKey },
-        baseEnv: { HETZER_GRIMOIRE_KEY: runtimeKey },
-    });
-    assert.equal(runtimeResolved, runtimeKey);
+        // Resolution from runtime env takes precedence
+        const runtimeKey = "runtime-override-key-32-chars-at-least";
+        const runtimeResolved = resolveMasterKey({
+            root: tempDir,
+            envValues: { HETZER_GRIMOIRE_KEY: testKey },
+            baseEnv: { HETZER_GRIMOIRE_KEY: runtimeKey },
+        });
+        assert.equal(runtimeResolved, runtimeKey);
 
-    fs.rmSync(tempDir, { recursive: true, force: true });
+        // Isolation must preserve dotenv-style quoted values.
+        fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY="${testKey}"\nFOO=BAR\n`);
+        isolateMasterKey({ root: tempDir, envFile });
+        assert.equal(resolveMasterKey({ root: tempDir, envValues: {}, baseEnv: {} }), testKey);
+        assert.doesNotMatch(fs.readFileSync(envFile, "utf8"), /HETZER_GRIMOIRE_KEY=/);
+    } finally {
+        if (originalHome === undefined) delete process.env.HETZER_HOME;
+        else process.env.HETZER_HOME = originalHome;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+        fs.rmSync(isolatedHome, { recursive: true, force: true });
+    }
 });
 
 test("setCredential preserves allowedActions and defaults to MCP-compatible permissions", () => {

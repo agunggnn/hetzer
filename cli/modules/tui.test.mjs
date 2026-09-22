@@ -118,7 +118,7 @@ test("canary view displays incident log and armed honeypot status", () => {
     }, { color: false, view: "canary" });
 
     assert.match(secureOutput, /CANARY HONEYTOKEN & INCIDENT LOG/);
-    assert.match(secureOutput, /No canary incidents recorded\. System secure\./);
+    assert.match(secureOutput, /No canary incidents recorded in the observed log\./);
     assert.match(secureOutput, /Honeytokens armed: 1/);
     assert.match(secureOutput, /ERR_CANARY_TRIPWIRE_TRIGGERED/);
 
@@ -131,7 +131,7 @@ test("canary view displays incident log and armed honeypot status", () => {
             detail: "1 canary active; 1 incident(s) logged!",
             incidentCount: 1,
             recentIncidents: [
-                "[2026-09-14T01:00:00Z] CRITICAL: Canary 'canary-token' triggered by rogue-agent during creds.reveal",
+                "[2026-09-14T01:00:00Z] CRITICAL: Canary 'canary-token' triggered by rogue-agent during creds.reveal\x1b[2J\nspoof",
             ],
             canaryCount: 1,
         },
@@ -139,6 +139,7 @@ test("canary view displays incident log and armed honeypot status", () => {
 
     assert.match(trippedOutput, /Total Incidents: 1/);
     assert.match(trippedOutput, /rogue-agent during creds\.reveal/);
+    assert.doesNotMatch(trippedOutput, /\x1b/);
 });
 
 test("vault view displays inventory metadata without exposing secrets", () => {
@@ -171,7 +172,7 @@ test("sniff view displays clean status and violations accurately", () => {
     }, { color: false, view: "sniff" });
 
     assert.match(cleanOutput, /STAGED DIFF SECRET SNIFFER SCAN/);
-    assert.match(cleanOutput, /CLEAN: Zero secrets or leaked credentials detected/);
+    assert.match(cleanOutput, /CLEAN: No supported secrets detected in staged diff/);
 
     const violationOutput = renderTui({
         root: "/test/project",
@@ -214,6 +215,11 @@ test("threatSnapshot correctly identifies incident logs and canary count", () =>
         const armed = threatSnapshot(tempDir, [{ id: "canary-token" }]);
         assert.equal(armed.state, "ARMED");
         assert.equal(armed.canaryCount, 1);
+
+        // A workspace binding without readable vault metadata is not reported as unarmed.
+        const unknown = threatSnapshot(tempDir, [], { canaryBinding: true });
+        assert.equal(unknown.state, "UNKNOWN");
+        assert.match(unknown.detail, /metadata is unavailable/);
 
         // Add incident log
         fs.mkdirSync(path.join(tempDir, "data"), { recursive: true });
@@ -461,7 +467,7 @@ test("renderIssuesView formats issues guide with problem, action, and resolution
     assert.match(output, /\[Tip\] Press \[i\] to toggle back to Overview/);
 });
 
-test("renderIssuesView displays hardened confirmation checklist when zero issues exist", () => {
+test("renderIssuesView reports only observed posture when zero issues exist", () => {
     const output = renderTui({
         root: "/test/secure",
         generatedAt: "2026-09-18T00:00:00.000Z",
@@ -474,11 +480,9 @@ test("renderIssuesView displays hardened confirmation checklist when zero issues
         sniff: { status: "CLEAN", count: 0, violations: [] },
     }, { color: false, view: "issues" });
 
-    assert.match(output, /ZERO VULNERABILITIES DETECTED/);
-    assert.match(output, /Git Pre-Commit & Commit-Msg Guards\s+:\s+ACTIVE/);
-    assert.match(output, /Master Key Isolation\s+:\s+ISOLATED/);
-    assert.match(output, /Canary Tripwire Honeytokens\s+:\s+ARMED/);
-    assert.match(output, /No remediation required/);
+    assert.match(output, /NO ISSUES OBSERVED IN AVAILABLE POSTURE CHECKS/);
+    assert.match(output, /not proof of absence of vulnerabilities or safe execution/);
+    assert.doesNotMatch(output, /ZERO VULNERABILITIES DETECTED|ready for safe agent execution/);
 });
 
 test("renderOverview displays ACTIVE ISSUES & ACTIONS REQUIRED and contextual actions", () => {

@@ -9,6 +9,8 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { parseEnv } from "../core/env.mjs";
+
 export function secureFilePermissions(filePath, { run = spawnSync } = {}) {
     if (!filePath || filePath === ":memory:") return;
     try {
@@ -118,14 +120,13 @@ export function isolateMasterKey({ root = process.cwd(), envFile } = {}) {
     let envContent = "";
     if (fs.existsSync(targetEnv)) {
         envContent = fs.readFileSync(targetEnv, "utf8");
-        const match = envContent.match(/^HETZER_GRIMOIRE_KEY=(.+)$/m) || envContent.match(/^SHADOW_GRIMOIRE_KEY=(.+)$/m);
-        if (match) {
-            currentKey = match[1].trim();
-        }
+        const values = parseEnv(envContent);
+        currentKey = values.HETZER_GRIMOIRE_KEY || values.SHADOW_GRIMOIRE_KEY || "";
     }
-    if (!currentKey && process.env.HETZER_GRIMOIRE_KEY) {
-        currentKey = process.env.HETZER_GRIMOIRE_KEY.trim();
+    if (!currentKey) {
+        currentKey = process.env.HETZER_GRIMOIRE_KEY || process.env.SHADOW_GRIMOIRE_KEY || "";
     }
+    currentKey = String(currentKey).trim();
     if (!currentKey) {
         throw new Error("No HETZER_GRIMOIRE_KEY found to isolate. Run 'hetzer init' first.");
     }

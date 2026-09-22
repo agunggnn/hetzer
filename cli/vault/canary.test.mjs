@@ -10,6 +10,7 @@ import {
     getCanaryStatus,
     isCanaryCredential,
     isCanaryToken,
+    sanitizeCanaryText,
     setupCanaryTrap,
     triggerCanaryAlert,
 } from "./canary.mjs";
@@ -24,6 +25,12 @@ test("isCanaryCredential accurately detects decoy credential identifiers", () =>
     assert.equal(isCanaryCredential("npm-token"), false);
     assert.equal(isCanaryCredential("github-token"), false);
     assert.equal(isCanaryCredential("nine-router-jwt-secret"), false);
+});
+
+test("sanitizeCanaryText removes terminal controls and collapses log-injection newlines", () => {
+    const sanitized = sanitizeCanaryText("canary-token\x1b[2J\nspoofed", 120);
+    assert.equal(sanitized, "canary-token [2J spoofed");
+    assert.doesNotMatch(sanitized, /\x1b|\n|\r/);
 });
 
 test("setupCanaryTrap stores decoy honey-token and updates .env safely", () => {
@@ -173,4 +180,3 @@ test("getCanaryStatus and clearCanaryIncidents track and reset honeytoken incide
 
     fs.rmSync(root, { recursive: true, force: true });
 });
-

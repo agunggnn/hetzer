@@ -10,7 +10,7 @@ import { parseDockerJson } from "../core/docker.mjs";
 import { parseEnv } from "../core/env.mjs";
 import { findGitDir, checkStagedDiff } from "../core/git-hook.mjs";
 import { createToolCatalog } from "../mcp/catalog.mjs";
-import { isCanaryCredential } from "../vault/canary.mjs";
+import { getCanaryStatus, isCanaryCredential, sanitizeCanaryText } from "../vault/canary.mjs";
 import { listCredentials } from "../vault/creds.mjs";
 import { getIsolatedKeyPath } from "../vault/hetzer-vault.mjs";
 import { scanText } from "../vault/sniffer.mjs";
@@ -52,7 +52,7 @@ export function refreshDimensions() {
 }
 
 export function stripAnsi(text) {
-    return String(text || "").replace(/\x1b\[[0-9;]*m/g, "");
+    return String(text || "").replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g, "");
 }
 
 export function boxTop(title = "") {
@@ -170,7 +170,7 @@ function dockerSnapshot(root, envFile, registry, fileEnv) {
     return { state: "ready", detail: "Compose reachable", rows: parseDockerJson(result.stdout) };
 }
 
-export function threatSnapshot(root, vaultItems = []) {
+export function threatSnapshot(root, vaultItems = [], { canaryBinding = false } = {}) {
     const incidentsFile = path.join(root, "data", "hetzer-incidents.log");
     let incidentCount = 0;
     let recentIncidents = [];
@@ -179,7 +179,7 @@ export function threatSnapshot(root, vaultItems = []) {
             const content = fs.readFileSync(incidentsFile, "utf8");
             const lines = content.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
             incidentCount = lines.length;
-            recentIncidents = lines.slice(-5);
+            recentIncidents = lines.slice(-5).map((line) => sanitizeCanaryText(line));
         } catch {
             // fail soft
         }
@@ -198,6 +198,9 @@ export function threatSnapshot(root, vaultItems = []) {
             state = "ARMED";
             detail = `${canaryCount} canary honeytoken deployed (exitCode 43)`;
         }
+    } else if (canaryBinding) {
+        state = "UNKNOWN";
+        detail = "canary binding detected; vault metadata is unavailable or inconsistent";
     } else if (incidentCount > 0) {
         state = "TRIPPED";
         detail = `${incidentCount} incident(s) recorded in hetzer-incidents.log`;
@@ -403,9 +406,9 @@ export function runtimeArmorSnapshot(root) {
 
     return {
         container,
-        broker: { state: "ready", detail: "Dynamic hop-by-hop stripping, loopback isolated" },
-        redactor: { state: "ready", detail: "Sub-ms 512B sliding window scan" },
-        policy: { state: "ready", detail: "SHA-256 structured argv verification" },
+        broker: { state: "available", detail: "Available for guarded brokered executions" },
+        redactor: { state: "available", detail: "Available for guarded child streams" },
+        policy: { state: "available", detail: "Available for policy-controlled executions" },
     };
 }
 
@@ -485,7 +488,10 @@ export async function collectStatus({ root = process.env.HETZER_ROOT || process.
     }));
 
     const vaultPosture = vaultPostureSnapshot(resolvedRoot, fileEnv);
-    const threat = threatSnapshot(resolvedRoot, vaultPosture.credentials);
+    const canaryStatus = getCanaryStatus({ root: resolvedRoot });
+    const threat = threatSnapshot(resolvedRoot, vaultPosture.credentials, {
+        canaryBinding: canaryStatus.hasCanaryBinding,
+    });
     const audit = auditLedgerSnapshot(resolvedRoot);
     const shield = shieldSnapshot(resolvedRoot);
     const runtime = runtimeArmorSnapshot(resolvedRoot);
@@ -539,6 +545,16 @@ export function analyzeIssues(snapshot = {}) {
                 detail: `${threat.incidentCount} incident(s) recorded in data/hetzer-incidents.log`,
                 action: "Inspect incident log, identify compromised token, and rotate secrets",
                 command: "hetzer canary list",
+            });
+        } else if (threat.state === "UNKNOWN") {
+            issues.push({
+                id: "CANARY_STATUS_UNAVAILABLE",
+                category: "THREAT_RADAR",
+                severity: "MEDIUM",
+                title: "Canary binding detected but status is unavailable",
+                detail: threat.detail,
+                action: "Unlock or repair the vault before relying on canary posture",
+                command: "hetzer creds list",
             });
         } else if (threat.canaryCount === 0 || threat.state === "UNARMED") {
             issues.push({
@@ -715,20 +731,12 @@ export function renderIssuesView(lines, snapshot, color) {
     if (issues.length === 0) {
         lines.push(boxLine(""));
         const secureMsg = color
-            ? `${ANSI.green}${ANSI.bold}[v] SYSTEM ARMOR FULLY HARDENED: ZERO VULNERABILITIES DETECTED${ANSI.reset}`
-            : "[v] SYSTEM ARMOR FULLY HARDENED: ZERO VULNERABILITIES DETECTED";
+            ? `${ANSI.green}${ANSI.bold}[v] NO ISSUES OBSERVED IN AVAILABLE POSTURE CHECKS${ANSI.reset}`
+            : "[v] NO ISSUES OBSERVED IN AVAILABLE POSTURE CHECKS";
         lines.push(boxLine(`  ${secureMsg}`));
         lines.push(boxLine(""));
-        lines.push(boxLine("  All 7 core defense-in-depth boundaries are active and verified:"));
-        lines.push(boxLine("    [v] Git Pre-Commit & Commit-Msg Guards : ACTIVE"));
-        lines.push(boxLine("    [v] Master Key Isolation               : ISOLATED (~/.hetzer/grimoire.key)"));
-        lines.push(boxLine("    [v] Plaintext Secret Storage           : 100% VAULTED (secretRef: pointers)"));
-        lines.push(boxLine("    [v] Canary Tripwire Honeytokens        : ARMED (exitCode 43)"));
-        lines.push(boxLine("    [v] Cryptographic Audit Ledger         : VERIFIED (SHA-256 chain intact)"));
-        lines.push(boxLine("    [v] Runtime Stream Redactor            : SUB-MS SLIDING WINDOW SCAN"));
-        lines.push(boxLine("    [v] Container Sandbox Engine           : READY FOR --sandbox"));
-        lines.push(boxLine(""));
-        lines.push(boxLine("  No remediation required. System is ready for safe agent execution."));
+        lines.push(boxLine("  No remediation is indicated by the checks that completed."));
+        lines.push(boxLine("  This is not proof of absence of vulnerabilities or safe execution."));
         lines.push(boxLine(""));
         lines.push(boxLine("  [Tip] Press [i] to toggle back to Overview."));
         return;
@@ -884,9 +892,9 @@ function renderOverview(lines, snapshot, color) {
     lines.push(boxLine(`${color ? ANSI.bold : ""}RUNTIME ARMOR & CONTAINER SANDBOX${color ? ANSI.reset : ""}`));
     const runtime = snapshot.runtime || {
         container: snapshot.docker || { state: "offline", detail: "Docker not installed" },
-        broker: { state: "ready", detail: "Dynamic hop-by-hop stripping, loopback isolated" },
-        redactor: { state: "ready", detail: "Sub-ms 512B sliding window scan" },
-        policy: { state: "ready", detail: "SHA-256 structured argv verification" },
+        broker: { state: "available", detail: "Available for guarded brokered executions" },
+        redactor: { state: "available", detail: "Available for guarded child streams" },
+        policy: { state: "available", detail: "Available for policy-controlled executions" },
     };
     const container = runtime.container || snapshot.docker || { state: "offline", detail: "Docker not installed" };
     const containerState = colorState(container.state, color);
@@ -952,8 +960,12 @@ function renderCanaryView(lines, snapshot, color) {
         recentIncidents: [],
         canaryCount: 0,
     };
-    if (threat.recentIncidents.length === 0) {
-        lines.push(boxLine("  No canary incidents recorded. System secure."));
+    if (threat.state === "UNKNOWN") {
+        lines.push(boxLine("  Canary binding detected, but vault status is unavailable."));
+        lines.push(boxLine("  Do not rely on the canary posture until the vault is repaired."));
+        lines.push(boxLine("  Remediation: hetzer creds list"));
+    } else if (threat.recentIncidents.length === 0) {
+        lines.push(boxLine("  No canary incidents recorded in the observed log."));
         lines.push(boxLine(`  Honeytokens armed: ${threat.canaryCount || 0}`));
         lines.push(boxLine(""));
         lines.push(boxLine("  Canary honeytokens trigger exit code 43 (ERR_CANARY_TRIPWIRE_TRIGGERED)"));
@@ -968,10 +980,11 @@ function renderCanaryView(lines, snapshot, color) {
         lines.push(boxLine(`  Total Incidents: ${threat.incidentCount}`));
         lines.push(boxLine("  Recent Incident Log (data/hetzer-incidents.log):"));
         for (const inc of threat.recentIncidents) {
-            if (inc.length <= 67) {
-                lines.push(boxLine(`  ${color ? ANSI.red : ""}> ${inc}${color ? ANSI.reset : ""}`));
+            const safeIncident = sanitizeCanaryText(inc, 240);
+            if (safeIncident.length <= 67) {
+                lines.push(boxLine(`  ${color ? ANSI.red : ""}> ${safeIncident}${color ? ANSI.reset : ""}`));
             } else {
-                const parts = wrapText(inc, 65);
+                const parts = wrapText(safeIncident, 65);
                 for (let i = 0; i < parts.length; i++) {
                     const prefix = i === 0 ? "> " : "  ";
                     lines.push(boxLine(`  ${color ? ANSI.red : ""}${prefix}${parts[i]}${color ? ANSI.reset : ""}`));
@@ -1028,8 +1041,8 @@ function renderSniffView(lines, snapshot, color) {
     lines.push(boxLine(`${color ? ANSI.bold : ""}STAGED DIFF SECRET SNIFFER SCAN${color ? ANSI.reset : ""}`));
     const sniff = snapshot.sniff || quickSniffSnapshot(snapshot.root);
     if (sniff.status === "CLEAN") {
-        lines.push(boxLine(`  ${color ? ANSI.green : ""}CLEAN: Zero secrets or leaked credentials detected in staged diff.${color ? ANSI.reset : ""}`));
-        lines.push(boxLine("  Pre-commit diff is clean and safe to commit."));
+        lines.push(boxLine(`  ${color ? ANSI.green : ""}CLEAN: No supported secrets detected in staged diff.${color ? ANSI.reset : ""}`));
+        lines.push(boxLine("  Scanner result is clean; review documented false-negative limits before committing."));
     } else if (sniff.status === "VIOLATIONS") {
         lines.push(boxLine(`  ${color ? ANSI.red : ""}CRITICAL: ${sniff.count} secret violation(s) detected!${color ? ANSI.reset : ""}`));
         for (const v of sniff.violations.slice(0, 8)) {

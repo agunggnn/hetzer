@@ -12,6 +12,14 @@ import { recordAuditEvent } from "./audit.mjs";
 export const CANARY_DEFAULT_ID = "canary-token";
 export const CANARY_TOKEN_PATTERN = /\bcanary_trap_[0-9a-f]{16,64}\b/i;
 
+export function sanitizeCanaryText(value, maxLength = 240) {
+    return String(value ?? "")
+        .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, maxLength);
+}
+
 export function isCanaryToken(text) {
     if (typeof text !== "string") return false;
     return CANARY_TOKEN_PATTERN.test(text);
@@ -34,13 +42,16 @@ export function triggerCanaryAlert({
 } = {}) {
     const timestamp = new Date().toISOString();
     const threatVector = "Unauthorized Credential Scraping / Agent Prompt Injection";
+    const safeId = sanitizeCanaryText(id, 120);
+    const safeActor = sanitizeCanaryText(actor, 120);
+    const safeAction = sanitizeCanaryText(action, 120);
     const alertMessage = [
         "🚨 ============================================================================",
         "🚨 HETZER CRITICAL SECURITY ALERT: CANARY HONEY-TOKEN TRIGGERED!",
         "🚨 ============================================================================",
-        `🚨 Target Decoy    : ${id}`,
+        `🚨 Target Decoy    : ${safeId}`,
         `🚨 Incident Time   : ${timestamp}`,
-        `🚨 Suspected Actor : ${actor} (${action})`,
+        `🚨 Suspected Actor : ${safeActor} (${safeAction})`,
         `🚨 Threat Vector   : ${threatVector}`,
         "🚨 Action Taken    : Guarded operation aborted.",
         "🚨 ============================================================================",
@@ -50,7 +61,7 @@ export function triggerCanaryAlert({
     try {
         const incidentsFile = path.join(root, "data", "hetzer-incidents.log");
         fs.mkdirSync(path.dirname(incidentsFile), { recursive: true });
-        fs.appendFileSync(incidentsFile, `[${timestamp}] CRITICAL: Canary '${id}' triggered by ${actor} during ${action}\n`);
+        fs.appendFileSync(incidentsFile, `[${timestamp}] CRITICAL: Canary '${safeId}' triggered by ${safeActor} during ${safeAction}\n`);
     } catch {
         // Fail soft on disk error
     }
@@ -58,9 +69,9 @@ export function triggerCanaryAlert({
     try {
         recordAuditEvent({
             eventType: "CANARY_TRIGGER",
-            target: id,
+            target: safeId,
             result: "TRIGGERED",
-            actor: { actor, action },
+            actor: { actor: safeActor, action: safeAction },
             details: { threatVector, timestamp },
             root,
         });
@@ -75,10 +86,10 @@ export function triggerCanaryAlert({
             const masterKey = process.env.HETZER_GRIMOIRE_KEY || "incident-audit-mode";
             const vault = new Grimoire({ dbPath, masterKey });
             vault.recordAudit({
-                actor,
+                actor: safeActor,
                 action: "canary.tripwire",
                 target_id: "canary-honeytoken",
-                credential_id: id,
+                credential_id: safeId,
                 reason: "Canary honey-token accessed by untrusted caller",
                 outcome: "blocked_canary_tripped",
                 metadata: { timestamp },
@@ -91,7 +102,7 @@ export function triggerCanaryAlert({
 
     process.stderr.write(`\n${alertMessage}\n\n`);
     const error = new Error(
-        `CRITICAL SECURITY VIOLATION: Accessing canary decoy credential '${id}' is forbidden.\n` +
+        `CRITICAL SECURITY VIOLATION: Accessing canary decoy credential '${safeId}' is forbidden.\n` +
         "This honey-token is a tripwire for detecting prompt injection and automated credential scraping."
     );
     error.code = "ERR_CANARY_TRIPWIRE_TRIGGERED";
@@ -127,7 +138,7 @@ export function getCanaryStatus({ root = process.cwd() } = {}) {
             const content = fs.readFileSync(incidentsFile, "utf8");
             const lines = content.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
             incidentCount = lines.length;
-            recentIncidents = lines.slice(-10);
+            recentIncidents = lines.slice(-10).map((line) => sanitizeCanaryText(line));
         } catch {
             // fail soft
         }
@@ -222,4 +233,3 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         process.exitCode = err.exitCode || 1;
     }
 }
-

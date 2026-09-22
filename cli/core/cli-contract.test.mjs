@@ -226,9 +226,9 @@ test("CONTRACT: TUI radar snapshot and views schema integrity", async () => {
         // 5. runtimeArmorSnapshot
         const armor = runtimeArmorSnapshot(tempDir);
         assert.ok(armor.container && typeof armor.container.state === "string");
-        assert.ok(armor.broker && armor.broker.state === "ready");
-        assert.ok(armor.redactor && armor.redactor.state === "ready");
-        assert.ok(armor.policy && armor.policy.state === "ready");
+        assert.ok(armor.broker && armor.broker.state === "available");
+        assert.ok(armor.redactor && armor.redactor.state === "available");
+        assert.ok(armor.policy && armor.policy.state === "available");
 
         // 6. quickSniffSnapshot
         const sniff = quickSniffSnapshot(tempDir);
