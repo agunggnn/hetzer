@@ -59,6 +59,10 @@ test("creds module can list, set, and reveal credentials in Grimoire Vault", () 
             targetId: entry.projectId,
             action: entry.allowedActions[0],
         }), "updated-password-456");
+        assert.equal(updatedVault.resolve("nine-router-initial-password", {
+            action: entry.allowedActions[0],
+        }), null);
+        assert.equal(updatedVault.resolve("nine-router-initial-password"), null);
         assert.equal("_decryptRaw" in updatedVault, false);
     } finally {
         updatedVault.close();

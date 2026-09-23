@@ -574,7 +574,10 @@ export class Grimoire {
     resolve(id, { targetId = "", action = "" } = {}) {
         const entry = this.find(id);
         if (!entry) return null;
-        if (targetId && entry.projectId !== targetId) return null;
+        // Every non-human resolution must be bound to the target that owns the
+        // credential. An omitted target must not turn the action allowlist into
+        // a global plaintext lookup for same-user callers.
+        if (!targetId || entry.projectId !== targetId) return null;
         if (entry.allowedActions.length && (!action || !entry.allowedActions.includes(action))) return null;
         if (entry.expiresAt && Date.parse(entry.expiresAt) <= Date.now()) return null;
         const value = this.#decryptRaw(id);
