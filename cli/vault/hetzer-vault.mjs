@@ -8,6 +8,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { parseEnv } from "../core/env.mjs";
+import { assertInteractiveHumanSession } from "./human-guard.mjs";
 
 export function secureFilePermissions(filePath, { run = spawnSync } = {}) {
     if (!filePath || filePath === ":memory:") return;
@@ -71,25 +73,32 @@ export function resolveVaultPath(root) {
     return path.isAbsolute(override) ? override : path.join(root || process.cwd(), override);
 }
 
-export function getIsolatedKeyPath() {
+export function getIsolatedKeyPath(homeDir) {
     try {
-        const home = os.homedir();
+        const home = homeDir || os.homedir();
         return path.join(home, ".hetzer", "grimoire.key");
     } catch {
         return "";
     }
 }
 
-export function resolveMasterKey({ root = process.cwd(), envValues = {}, baseEnv = process.env } = {}) {
+export function resolveMasterKey({ root = process.cwd(), envValues = {}, baseEnv = process.env, homeDir } = {}) {
     // 1. Explicit runtime environment variable (highest priority)
     const envKey = baseEnv.HETZER_GRIMOIRE_KEY || baseEnv.SHADOW_GRIMOIRE_KEY;
     if (envKey && !String(envKey).startsWith("secretRef:")) {
         return String(envKey).trim();
     }
 
-    // 2. User-level Home Isolated Store (~/.hetzer/grimoire.key)
+    // 2. Local .env file (explicit workspace configuration)
+    const fileKey = envValues.HETZER_GRIMOIRE_KEY || envValues.SHADOW_GRIMOIRE_KEY;
+    if (fileKey && !String(fileKey).startsWith("secretRef:")) {
+        return String(fileKey).trim();
+    }
+
+    // 3. User-level Home Isolated Store (~/.hetzer/grimoire.key) fallback.
     // Isolated outside project workspace so workspace agents cannot read it!
-    const isolatedFile = getIsolatedKeyPath();
+    const effectiveHome = homeDir || baseEnv.HETZER_INSTALL_HOME || (baseEnv === process.env ? os.homedir() : "");
+    const isolatedFile = effectiveHome ? getIsolatedKeyPath(effectiveHome) : "";
     if (isolatedFile && fs.existsSync(isolatedFile)) {
         try {
             const val = fs.readFileSync(isolatedFile, "utf8").trim();
@@ -101,12 +110,6 @@ export function resolveMasterKey({ root = process.cwd(), envValues = {}, baseEnv
         }
     }
 
-    // 3. Local .env file (Legacy workspace fallback)
-    const fileKey = envValues.HETZER_GRIMOIRE_KEY || envValues.SHADOW_GRIMOIRE_KEY;
-    if (fileKey && !String(fileKey).startsWith("secretRef:")) {
-        return String(fileKey).trim();
-    }
-
     return "";
 }
 
@@ -116,14 +119,13 @@ export function isolateMasterKey({ root = process.cwd(), envFile } = {}) {
     let envContent = "";
     if (fs.existsSync(targetEnv)) {
         envContent = fs.readFileSync(targetEnv, "utf8");
-        const match = envContent.match(/^HETZER_GRIMOIRE_KEY=(.+)$/m) || envContent.match(/^SHADOW_GRIMOIRE_KEY=(.+)$/m);
-        if (match) {
-            currentKey = match[1].trim();
-        }
+        const values = parseEnv(envContent);
+        currentKey = values.HETZER_GRIMOIRE_KEY || values.SHADOW_GRIMOIRE_KEY || "";
     }
-    if (!currentKey && process.env.HETZER_GRIMOIRE_KEY) {
-        currentKey = process.env.HETZER_GRIMOIRE_KEY.trim();
+    if (!currentKey) {
+        currentKey = process.env.HETZER_GRIMOIRE_KEY || process.env.SHADOW_GRIMOIRE_KEY || "";
     }
+    currentKey = String(currentKey).trim();
     if (!currentKey) {
         throw new Error("No HETZER_GRIMOIRE_KEY found to isolate. Run 'hetzer init' first.");
     }
@@ -543,22 +545,49 @@ export class Grimoire {
         return this.find(id);
     }
 
-    reveal(id, aad) {
+    #decryptRaw(id, aad) {
         const row = this.db.prepare("SELECT * FROM vault_credentials WHERE id = ? AND is_valid = 1").get(id);
         if (!row) return null;
         const boundAad = aad || credentialAad(id, row.created_at);
         return decryptSecret(this.masterKey, row.encrypted_value, boundAad);
     }
 
+    reveal(id, aad) {
+        try {
+            assertInteractiveHumanSession({ operation: `'Grimoire.reveal:${String(id)}'` });
+        } catch (error) {
+            try {
+                this.recordAudit({
+                    actor: "vault-guard",
+                    action: "vault.reveal-blocked",
+                    credential_id: String(id),
+                    reason: error.message,
+                    outcome: "blocked",
+                    metadata: { isAgentic: true },
+                });
+            } catch { /* best effort */ }
+            throw error;
+        }
+        return this.#decryptRaw(id, aad);
+    }
+
     resolve(id, { targetId = "", action = "" } = {}) {
         const entry = this.find(id);
         if (!entry) return null;
-        if (targetId && entry.projectId !== targetId) return null;
+        // Every non-human resolution must be bound to the target that owns the
+        // credential. An omitted target must not turn the action allowlist into
+        // a global plaintext lookup for same-user callers.
+        if (!targetId || entry.projectId !== targetId) return null;
         if (entry.allowedActions.length && (!action || !entry.allowedActions.includes(action))) return null;
         if (entry.expiresAt && Date.parse(entry.expiresAt) <= Date.now()) return null;
-        const value = this.reveal(id);
+        const value = this.#decryptRaw(id);
         if (value !== null) this.touch(id);
         return value;
+    }
+
+    matchesSecret(id, expected, aad) {
+        const value = this.#decryptRaw(id, aad);
+        return value !== null && value === String(expected);
     }
 
     resolveRef(reference, context = {}) {

@@ -1,6 +1,6 @@
 # Hetzer Contributor & Agent Guidance
 
-> **Version**: v0.5.6 | **Verify**: `npm run check && npm test && npm run verify`
+> **Version**: v0.5.7 | **Verify**: `npm run check && npm test && npm run verify`
 
 ---
 
@@ -32,9 +32,13 @@
 13. **Cryptographic Audit Ledger (`cli/vault/audit.mjs`)**: Append-only JSONL event log with SHA-256 hash chaining (`prevHash`) recording execution, canary trips, sensitive path denials, SSRF blocks, and credential approvals. Tamper verification via `hetzer audit verify`.
 14. **Anti-SSRF & Reserved IP Containment (`cli/vault/http-broker.mjs`)**: Enforces DNS and IP boundaries rejecting loopback (`127.0.0.0/8`), private RFC 1918 subnets, and cloud instance metadata services (`169.254.169.254`).
 15. **Universal OCI Container Engine (`cli/vault/sandbox.mjs`)**: Auto-probes Docker and Podman with Linux SELinux `:Z` mounts and loopback bridge mapping (`host.docker.internal` / `host.containers.internal`).
+16. **Same-User Agentic Reveal Guard & Ancestry Inspection (`cli/vault/human-guard.mjs`, `cli/vault/hetzer-vault.mjs`)**: Blocks automated agents under the same OS user account from dumping plaintext secrets via direct `Grimoire.reveal()` or programmatic imports, while decoupling `#decryptRaw` and `resolve()` so that `hetzer exec`, HTTP brokers, and MCP proxies operate without human TTY interruption. Caches process ancestry tree scans for sub-ms execution.
+17. **Master Key Isolation Precedence & Separation (`cli/vault/hetzer-vault.mjs`)**: `isolateMasterKey` moves encryption keys from workspace `.env` to `~/.hetzer/grimoire.key` with restrictive ACLs (0600) to protect against agent workspace read operations. `resolveMasterKey` enforces deterministic precedence (runtime env -> local `.env` -> isolated user store fallback).
 
 ---
 
-## 📝 Pending Agent Review (For Codex)
-Review branches sequentially in stack order:
-1. **[PR #10](https://github.com/agunggnn/hetzer/pull/10)** (`feat/mcp-proxy-security-hardening` -> `main`): Security Hardening for MCP Virtual Credential Proxy. (173 tests)
+## 📝 Pending Agent Review & PR Stack
+Review and merge open PRs in order:
+1. **[PR #31](https://github.com/agunggnn/hetzer/pull/31)** (`fix/agent-reveal-block-same-user` -> `main`): Block same-user agentic reveal without breaking internal broker and execution. (282 tests, SEC-23 & SEC-24 resolved)
+2. **[PR #29](https://github.com/agunggnn/hetzer/pull/29)** (`perf/in-process-exec-and-benchmark-calibrations` -> `main`): Execute `hetzer exec` in-process directly and calibrate benchmark claims. (0 merge conflicts with PR #31)
+3. **[PR #30](https://github.com/agunggnn/hetzer/pull/30)** (`feat/tui-flicker-free-refresh-and-alt-screen` -> `main`): Tactical HUD ASCII banner, issue analyzer, and remediation guide. (Requires rebase onto updated `main` to resolve `hetzer-vault.mjs` conflicts)

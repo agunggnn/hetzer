@@ -51,7 +51,10 @@ test("automatic env ingestion refuses to overwrite an existing credential", () =
         /refused to overwrite existing credential/
     );
     const reopened = new Grimoire({ dbPath: path.join(root, "data", "hetzer-vault.db"), masterKey });
-    assert.equal(reopened.reveal("nine-router-initial-password"), originalValue);
+    assert.equal(reopened.resolve("nine-router-initial-password", {
+        targetId: "nine-router",
+        action: "process.start",
+    }), originalValue);
     reopened.close();
     assert.equal(fs.readFileSync(envFile, "utf8").includes(incomingValue), true);
     fs.rmSync(root, { recursive: true, force: true });
