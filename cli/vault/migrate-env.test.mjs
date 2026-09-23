@@ -7,8 +7,6 @@ import test from "node:test";
 import { Grimoire } from "./hetzer-vault.mjs";
 import { autoIngestPlaintextEnv, migrateEnvCredentials } from "./migrate-env.mjs";
 
-process.env.HETZER_TEST_BYPASS_GUARD = "1";
-
 test("Module secret keys move from plaintext to scoped Vault references", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-jwt-key-"));
     const envFile = path.join(root, ".env");
@@ -53,7 +51,10 @@ test("automatic env ingestion refuses to overwrite an existing credential", () =
         /refused to overwrite existing credential/
     );
     const reopened = new Grimoire({ dbPath: path.join(root, "data", "hetzer-vault.db"), masterKey });
-    assert.equal(reopened.reveal("nine-router-initial-password"), originalValue);
+    assert.equal(reopened.resolve("nine-router-initial-password", {
+        targetId: "nine-router",
+        action: "process.start",
+    }), originalValue);
     reopened.close();
     assert.equal(fs.readFileSync(envFile, "utf8").includes(incomingValue), true);
     fs.rmSync(root, { recursive: true, force: true });

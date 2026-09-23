@@ -7,8 +7,6 @@ import test from "node:test";
 import { scanText, redactAndVault, restoreSecrets, shannonEntropy } from "./sniffer.mjs";
 import { Grimoire } from "./hetzer-vault.mjs";
 
-process.env.HETZER_TEST_BYPASS_GUARD = "1";
-
 test("sniffer scanText returns a timed clean result", () => {
     const text = "Please analyze the following Postgres database structure and generate an SQL query.";
     const result = scanText(text);
@@ -94,7 +92,10 @@ test("sniffer redactAndVault replaces raw credentials with secretRef and auto-va
         const vault = new Grimoire({ dbPath: path.join(dataDir, "hetzer-vault.db"), masterKey });
         const entry = vault.find("npm-token");
         assert.ok(entry, "Credential npm-token must be stored in Vault");
-        const revealed = vault.reveal("npm-token");
+        const revealed = vault.resolve("npm-token", {
+            targetId: entry.projectId,
+            action: "process.start",
+        });
         assert.equal(revealed, fakeNpm);
         vault.close();
 
@@ -124,8 +125,8 @@ test("auto-vaulting a new candidate does not overwrite an existing provider cred
         assert.equal(next.vaultedCount, 1);
 
         const vault = new Grimoire({ dbPath: path.join(dataDir, "hetzer-vault.db"), masterKey });
-        assert.equal(vault.reveal("npm-token"), first);
-        assert.equal(vault.reveal(next.detected[0].id), second);
+        assert.equal(vault.resolve("npm-token", { targetId: "sniffed-secrets", action: "process.start" }), first);
+        assert.equal(vault.resolve(next.detected[0].id, { targetId: "sniffed-secrets", action: "process.start" }), second);
         vault.close();
     } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });

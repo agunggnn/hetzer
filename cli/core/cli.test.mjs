@@ -51,7 +51,11 @@ test("init output never includes the stored initial password", async () => {
         });
         let initialPassword = null;
         try {
-            initialPassword = vault._decryptRaw("nine-router-initial-password");
+            const entry = vault.find("nine-router-initial-password");
+            initialPassword = vault.resolve("nine-router-initial-password", {
+                targetId: entry.projectId,
+                action: entry.allowedActions[0],
+            });
         } finally {
             vault.close();
         }
@@ -439,4 +443,3 @@ test("audit verify and tail commands inspect workspace audit ledger", async () =
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });
-

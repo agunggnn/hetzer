@@ -8,7 +8,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { assertInteractiveHumanSession, isAgenticContext } from "./human-guard.mjs";
+import { parseEnv } from "../core/env.mjs";
+import { assertInteractiveHumanSession } from "./human-guard.mjs";
 
 export function secureFilePermissions(filePath, { run = spawnSync } = {}) {
     if (!filePath || filePath === ":memory:") return;
@@ -88,13 +89,13 @@ export function resolveMasterKey({ root = process.cwd(), envValues = {}, baseEnv
         return String(envKey).trim();
     }
 
-    // 2. Local .env file (workspace configured key)
+    // 2. Local .env file (explicit workspace configuration)
     const fileKey = envValues.HETZER_GRIMOIRE_KEY || envValues.SHADOW_GRIMOIRE_KEY;
     if (fileKey && !String(fileKey).startsWith("secretRef:")) {
         return String(fileKey).trim();
     }
 
-    // 3. User-level Home Isolated Store (~/.hetzer/grimoire.key)
+    // 3. User-level Home Isolated Store (~/.hetzer/grimoire.key) fallback.
     // Isolated outside project workspace so workspace agents cannot read it!
     const effectiveHome = homeDir || baseEnv.HETZER_INSTALL_HOME || (baseEnv === process.env ? os.homedir() : "");
     const isolatedFile = effectiveHome ? getIsolatedKeyPath(effectiveHome) : "";
@@ -118,14 +119,13 @@ export function isolateMasterKey({ root = process.cwd(), envFile } = {}) {
     let envContent = "";
     if (fs.existsSync(targetEnv)) {
         envContent = fs.readFileSync(targetEnv, "utf8");
-        const match = envContent.match(/^HETZER_GRIMOIRE_KEY=(.+)$/m) || envContent.match(/^SHADOW_GRIMOIRE_KEY=(.+)$/m);
-        if (match) {
-            currentKey = match[1].trim();
-        }
+        const values = parseEnv(envContent);
+        currentKey = values.HETZER_GRIMOIRE_KEY || values.SHADOW_GRIMOIRE_KEY || "";
     }
-    if (!currentKey && process.env.HETZER_GRIMOIRE_KEY) {
-        currentKey = process.env.HETZER_GRIMOIRE_KEY.trim();
+    if (!currentKey) {
+        currentKey = process.env.HETZER_GRIMOIRE_KEY || process.env.SHADOW_GRIMOIRE_KEY || "";
     }
+    currentKey = String(currentKey).trim();
     if (!currentKey) {
         throw new Error("No HETZER_GRIMOIRE_KEY found to isolate. Run 'hetzer init' first.");
     }
@@ -545,44 +545,30 @@ export class Grimoire {
         return this.find(id);
     }
 
-    _decryptRaw(id, aad) {
+    #decryptRaw(id, aad) {
         const row = this.db.prepare("SELECT * FROM vault_credentials WHERE id = ? AND is_valid = 1").get(id);
         if (!row) return null;
         const boundAad = aad || credentialAad(id, row.created_at);
         return decryptSecret(this.masterKey, row.encrypted_value, boundAad);
     }
 
-    reveal(id, aad, options = {}) {
-        // Guard: allow second arg to be options for backward compat
-        let allowAgentic = false;
-        let auditReason = "";
-        let actualAad = aad;
-        if (aad && typeof aad === "object" && !Array.isArray(aad) && !(aad instanceof Buffer)) {
-            // called as reveal(id, {allowAgentic:true})
-            allowAgentic = Boolean(aad.allowAgentic);
-            auditReason = aad.auditReason || "";
-            actualAad = undefined;
-        } else if (options && typeof options === "object") {
-            allowAgentic = Boolean(options.allowAgentic);
-            auditReason = options.auditReason || "";
-        }
-        // SAME-USER AGENTIC BLOCK: even if file is readable by same OS user, block non-TTY/agent contexts
-        if (!allowAgentic) {
+    reveal(id, aad) {
+        try {
+            assertInteractiveHumanSession({ operation: `'Grimoire.reveal:${String(id)}'` });
+        } catch (error) {
             try {
-                assertInteractiveHumanSession({ operation: `'Grimoire.reveal:${String(id)}'` });
-            } catch (e) {
-                // Log blocked attempt for audit
-                try { this.recordAudit({ actor: "vault-guard", action: "vault.reveal-blocked", credential_id: String(id), reason: e.message, outcome: "blocked", metadata: { auditReason, isAgentic: true } }); } catch {}
-                throw e;
-            }
-        } else {
-            // Explicit agentic allow: still audit and require HETZER_ALLOW_AGENTIC_REVEAL=1
-            if (process.env.HETZER_ALLOW_AGENTIC_REVEAL !== "1") {
-                throw new Error(`Access Denied: Grimoire.reveal('${String(id)}') agentic reveal requires HETZER_ALLOW_AGENTIC_REVEAL=1 and allowAgentic:true`);
-            }
-            this.recordAudit({ actor: "vault-guard", action: "vault.reveal-allowed-agentic", credential_id: String(id), reason: auditReason || "explicit allowAgentic", outcome: "allowed", metadata: { agentic: true } });
+                this.recordAudit({
+                    actor: "vault-guard",
+                    action: "vault.reveal-blocked",
+                    credential_id: String(id),
+                    reason: error.message,
+                    outcome: "blocked",
+                    metadata: { isAgentic: true },
+                });
+            } catch { /* best effort */ }
+            throw error;
         }
-        return this._decryptRaw(id, actualAad);
+        return this.#decryptRaw(id, aad);
     }
 
     resolve(id, { targetId = "", action = "" } = {}) {
@@ -591,9 +577,14 @@ export class Grimoire {
         if (targetId && entry.projectId !== targetId) return null;
         if (entry.allowedActions.length && (!action || !entry.allowedActions.includes(action))) return null;
         if (entry.expiresAt && Date.parse(entry.expiresAt) <= Date.now()) return null;
-        const value = this._decryptRaw(id);
+        const value = this.#decryptRaw(id);
         if (value !== null) this.touch(id);
         return value;
+    }
+
+    matchesSecret(id, expected, aad) {
+        const value = this.#decryptRaw(id, aad);
+        return value !== null && value === String(expected);
     }
 
     resolveRef(reference, context = {}) {
@@ -782,4 +773,3 @@ export class Grimoire {
         }
     }
 }
-

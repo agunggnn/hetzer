@@ -12,6 +12,12 @@ describe("human-guard - same-user agentic block", () => {
   it("blocks when CI is set", () => {
     assert.throws(() => assertInteractiveHumanSession({ input: { isTTY: true }, env: { CI: "true" } }), /CI/);
   });
+  it("does not honor environment bypass flags", () => {
+    assert.throws(() => assertInteractiveHumanSession({
+      input: { isTTY: false },
+      env: { HETZER_TEST_BYPASS_GUARD: "1", HETZER_ALLOW_NON_INTERACTIVE_REVEAL: "1" },
+    }), /TTY/);
+  });
   it("allows human TTY without agent env", () => {
     assert.doesNotThrow(() => assertInteractiveHumanSession({ input: { isTTY: true }, env: {}, ancestor: { isAgent: false } }));
   });

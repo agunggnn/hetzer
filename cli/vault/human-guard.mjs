@@ -87,12 +87,6 @@ export function checkProcessAncestors({ platform = process.platform, pid = proce
 }
 
 export function assertInteractiveHumanSession({ input = process.stdin, env = process.env, ancestor, operation = "'vault reveal'" } = {}) {
-  // Test bypass: allow vault tests to run without TTY/agent block, but still audit
-  // This env is intended for CI/unit tests only; production should not set it.
-  // Agent could set it, but then audit will show bypass-test actor.
-  if (env.HETZER_BYPASS_HUMAN_GUARD === '1' || env.HETZER_TEST_BYPASS_GUARD === '1' || env.HETZER_ALLOW_NON_INTERACTIVE_REVEAL === '1') {
-    return;
-  }
   if (!input.isTTY) {
     throw new Error('Access Denied: ' + operation + ' requires a direct human interactive TTY.\nAutonomous agent / non-interactive programmatic secret revelation is blocked.');
   }

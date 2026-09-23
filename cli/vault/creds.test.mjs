@@ -8,8 +8,6 @@ import test from "node:test";
 import { assertInteractiveHumanSession, authorizeCredentialReveal, checkProcessAncestors, detectAgentAncestor, promptNativeOsConfirmation, listCredentials, promptSecret, revealCredential, setCredential } from "./creds.mjs";
 import { Grimoire, isolateMasterKey, resolveMasterKey } from "./hetzer-vault.mjs";
 
-process.env.HETZER_TEST_BYPASS_GUARD = "1";
-
 test("creds module can list, set, and reveal credentials in Grimoire Vault", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-creds-test-"));
     fs.mkdirSync(path.join(root, "data"));
@@ -38,15 +36,11 @@ test("creds module can list, set, and reveal credentials in Grimoire Vault", () 
     assert.match(envContent, /NINE_ROUTER_INITIAL_PASSWORD=secretRef:nine-router-initial-password/);
     assert.doesNotMatch(envContent, /my-super-secret-password-123/);
 
-    // Reveal credential
-    const revealed = revealCredential({
+    assert.throws(() => revealCredential({
         root,
         envFile,
         id: "nine-router-initial-password",
-    });
-    assert.equal(revealed.secret, "my-super-secret-password-123");
-    assert.equal(revealed.module, "9router");
-    assert.ok(revealed.usage.length > 0);
+    }), /Access Denied/);
 
     // Update credential
     setCredential({
@@ -55,12 +49,20 @@ test("creds module can list, set, and reveal credentials in Grimoire Vault", () 
         id: "nine-router-initial-password",
         secret: "updated-password-456",
     });
-    const updated = revealCredential({
-        root,
-        envFile,
-        id: "nine-router-initial-password",
+    const updatedVault = new Grimoire({
+        dbPath: path.join(root, "data", "hetzer-vault.db"),
+        masterKey,
     });
-    assert.equal(updated.secret, "updated-password-456");
+    try {
+        const entry = updatedVault.find("nine-router-initial-password");
+        assert.equal(updatedVault.resolve("nine-router-initial-password", {
+            targetId: entry.projectId,
+            action: entry.allowedActions[0],
+        }), "updated-password-456");
+        assert.equal("_decryptRaw" in updatedVault, false);
+    } finally {
+        updatedVault.close();
+    }
 
     fs.rmSync(root, { recursive: true, force: true });
 });
@@ -164,7 +166,18 @@ test("resolveMasterKey and isolateMasterKey manage key isolation lifecycle", () 
     });
     assert.equal(runtimeResolved, runtimeKey);
 
+    const isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-home-"));
+    fs.mkdirSync(path.join(isolatedHome, ".hetzer"), { recursive: true });
+    fs.writeFileSync(path.join(isolatedHome, ".hetzer", "grimoire.key"), "isolated-key-32-characters-minimum\n");
+    assert.equal(resolveMasterKey({
+        root: tempDir,
+        envValues: {},
+        baseEnv: {},
+        homeDir: isolatedHome,
+    }), "isolated-key-32-characters-minimum");
+
     fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(isolatedHome, { recursive: true, force: true });
 });
 
 test("setCredential preserves allowedActions and defaults to MCP-compatible permissions", () => {
