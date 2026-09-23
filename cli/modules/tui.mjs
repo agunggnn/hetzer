@@ -717,20 +717,14 @@ export function renderIssuesView(lines, snapshot, color) {
     if (issues.length === 0) {
         lines.push(boxLine(""));
         const secureMsg = color
-            ? `${ANSI.green}${ANSI.bold}[v] SYSTEM ARMOR FULLY HARDENED: ZERO VULNERABILITIES DETECTED${ANSI.reset}`
-            : "[v] SYSTEM ARMOR FULLY HARDENED: ZERO VULNERABILITIES DETECTED";
+            ? `${ANSI.green}${ANSI.bold}[v] NO ACTIONABLE ISSUES DETECTED BY CURRENT CHECKS${ANSI.reset}`
+            : "[v] NO ACTIONABLE ISSUES DETECTED BY CURRENT CHECKS";
         lines.push(boxLine(`  ${secureMsg}`));
         lines.push(boxLine(""));
-        lines.push(boxLine("  All 7 core defense-in-depth boundaries are active and verified:"));
-        lines.push(boxLine("    [v] Git Pre-Commit & Commit-Msg Guards : ACTIVE"));
-        lines.push(boxLine("    [v] Master Key Isolation               : ISOLATED (~/.hetzer/grimoire.key)"));
-        lines.push(boxLine("    [v] Plaintext Secret Storage           : 100% VAULTED (secretRef: pointers)"));
-        lines.push(boxLine("    [v] Canary Tripwire Honeytokens        : ARMED (exitCode 43)"));
-        lines.push(boxLine("    [v] Cryptographic Audit Ledger         : VERIFIED (SHA-256 chain intact)"));
-        lines.push(boxLine("    [v] Runtime Stream Redactor            : SUB-MS SLIDING WINDOW SCAN"));
-        lines.push(boxLine("    [v] Container Sandbox Engine           : READY FOR --sandbox"));
+        lines.push(boxLine("  Current snapshot found no remediation items in the checks it could observe."));
+        lines.push(boxLine("  Unknown or unprobed runtime capabilities remain N/A, not verified."));
         lines.push(boxLine(""));
-        lines.push(boxLine("  No remediation required. System is ready for safe agent execution."));
+        lines.push(boxLine("  No remediation is suggested by this snapshot."));
         lines.push(boxLine(""));
         lines.push(boxLine("  [Tip] Press [i] to toggle back to Overview."));
         return;
@@ -1350,6 +1344,9 @@ export async function startTui({ root = process.cwd(), args = [], view = "overvi
             if (currentView === "sniff" && lastSnapshot) {
                 lastSnapshot.sniff = quickSniffSnapshot(root);
             }
+            drawCurrent({ root });
+        } else if (key.name === "i") {
+            currentView = currentView === "issues" ? "overview" : "issues";
             drawCurrent({ root });
         }
     };

@@ -462,7 +462,7 @@ test("renderIssuesView formats issues guide with problem, action, and resolution
     assert.match(output, /\[Tip\] Press \[i\] to toggle back to Overview/);
 });
 
-test("renderIssuesView displays hardened confirmation checklist when zero issues exist", () => {
+test("renderIssuesView reports an observed snapshot without claiming certification", () => {
     const output = renderTui({
         root: "/test/secure",
         generatedAt: "2026-09-18T00:00:00.000Z",
@@ -475,11 +475,10 @@ test("renderIssuesView displays hardened confirmation checklist when zero issues
         sniff: { status: "CLEAN", count: 0, violations: [] },
     }, { color: false, view: "issues" });
 
-    assert.match(output, /ZERO VULNERABILITIES DETECTED/);
-    assert.match(output, /Git Pre-Commit & Commit-Msg Guards\s+:\s+ACTIVE/);
-    assert.match(output, /Master Key Isolation\s+:\s+ISOLATED/);
-    assert.match(output, /Canary Tripwire Honeytokens\s+:\s+ARMED/);
-    assert.match(output, /No remediation required/);
+    assert.match(output, /NO ACTIONABLE ISSUES DETECTED BY CURRENT CHECKS/);
+    assert.match(output, /Unknown or unprobed runtime capabilities remain N\/A, not verified/);
+    assert.match(output, /No remediation is suggested/);
+    assert.doesNotMatch(output, /FULLY HARDENED|ZERO VULNERABILITIES|All 7 core/);
 });
 
 test("renderOverview displays ACTIVE ISSUES & ACTIONS REQUIRED and contextual actions", () => {
