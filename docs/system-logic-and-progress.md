@@ -25,10 +25,13 @@ sequenceDiagram
 
 | Component | Source | Current behavior |
 |---|---|---|
-| Grimoire vault | `cli/vault/hetzer-vault.mjs` | AES-256-GCM credential values in SQLite with target/action/expiry checks |
+| Grimoire vault | `cli/vault/hetzer-vault.mjs` | AES-256-GCM credential values in SQLite with target/action/expiry checks, private `#decryptRaw` isolation, and `matchesSecret()` |
+| Human guard | `cli/vault/human-guard.mjs` | Same-user agentic reveal block enforcing interactive TTY, agent env denial, and process ancestry inspection with sub-ms caching |
 | Secret scanner | `cli/vault/sniffer.mjs` | Provider regexes, database URLs, bounded PEM keys, and Shannon-entropy candidates |
 | Process runner | `cli/vault/exec.mjs` | Broker-by-default selection, audited raw opt-out, strict base environment, reflection guard, stream sanitizer, subprocess canary stream tripwire, execution timeout guard |
 | Execution policy | `cli/vault/exec-policy.mjs` | Declarative capability policies: command whitelisting, credential boundaries, raw-opt-out boundaries, strict isolation, and timeout limits |
+| Container sandbox | `cli/vault/sandbox.mjs` | Ephemeral OCI container isolation (`--cap-drop=ALL`, `--security-opt=no-new-privileges`, loopback broker translation) |
+| Audit ledger | `cli/vault/audit.mjs` | Cryptographic append-only event ledger with SHA-256 hash chaining (`prevHash`) |
 | Compose runner | `cli/vault/compose-runner.mjs` | Scoped Compose environment and sanitized Docker/containers output pipes |
 | Credential CLI | `cli/vault/creds.mjs` and `cli/vault/credential-request.mjs` | Set/list/reveal plus metadata-only request/approve/status handoff; direct secret entry requires a human TTY and reveal retains native confirmation |
 | Canary | `cli/vault/canary.mjs` | Decoy token injection, aborts guarded reveal/resolution/stream leak with exit code 43, terminates child process tree |
@@ -43,6 +46,10 @@ sequenceDiagram
 - AES-GCM round trips and access restrictions;
 - strict execution excludes unapproved inherited values and the master key;
 - execution policy enforcement restricts commands and credentials to declared JSON manifests;
+- same-user agentic direct Node imports cannot reveal credentials without an interactive human TTY;
+- process ancestry inspection caches results in-process to maintain sub-millisecond execution latency;
+- workspace `.env` master keys take precedence over global isolated stores to prevent multi-project key collisions;
+- non-interactive runners, HTTP brokers, and MCP proxies resolve capability-scoped secrets without TTY blockage;
 - known short values and values divided across output chunks are redacted;
 - multiline PKCS#8 keys and credentialed database URLs are detected;
 - subprocess execution timeout guard terminates runaway/hanging processes within configured budgets and redacts emitted output;

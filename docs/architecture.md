@@ -23,9 +23,9 @@ The package declares no third-party runtime npm dependencies. It depends on Node
 
 Vault metadata is stored in SQLite. Credential values are encrypted separately using AES-256-GCM. Each encryption uses a random 12-byte IV, an authentication tag, and additional authenticated data bound to the credential identifier and creation time. The master key is normalized and expanded with HKDF-SHA-256.
 
-The master key can come from the runtime environment, `~/.hetzer/grimoire.key`, or a legacy workspace `.env` value, in that order. `hetzer creds isolate-key` moves a workspace key into the user-level file and requests POSIX mode `0600`. This separates the key from the workspace; it does not protect against the same OS user, administrators, malware, or backups that can read both files.
+The master key is resolved with deterministic precedence: explicit runtime environment (`HETZER_GRIMOIRE_KEY`), followed by local workspace `.env` configuration, falling back to the user-level isolated file (`~/.hetzer/grimoire.key`). `hetzer creds isolate-key` moves a workspace key into the user-level file and requests POSIX mode `0600` (along with Windows DACL hardening). This separates the key from the workspace to prevent automated agent file-reads; it does not protect against the same OS user executing arbitrary commands outside a container sandbox.
 
-Credential records can restrict target and action. `secretRef:<id>` resolution checks the target, allowed action, validity, and expiry before decryption.
+Credential records can restrict target and action. `secretRef:<id>` resolution checks the target, allowed action, validity, and expiry before decryption. Internal decryption is decoupled into private `#decryptRaw`, capability-scoped `resolve()`, non-revealing equality `matchesSecret()`, and human-guarded `reveal()`.
 
 ## Scanner
 
@@ -56,10 +56,10 @@ Guarded child and Docker Compose stdout/stderr pass through independent UTF-8 ro
 
 Broker v1 blocks redirects, binary responses, over-limit bodies, non-loopback clients, matrix parameters (`;`), and unsupported methods or paths. Fixed-point path canonicalization eliminates nested percent-encoding and directory traversal attacks. It sanitizes the exact credential from supported upstream responses and child output. It is not transparent process or network containment: the child may open unrelated connections, and same-user access to the policy, key, vault, or broker process remains outside this boundary. See [HTTP credential broker](http-credential-broker.md).
 
-## Credential reveal and canaries
-
-The reveal CLI requires an interactive TTY, rejects known agent environment markers, inspects up to five parent processes on Windows, macOS, and Linux, and requires a native modal confirmation. These are heuristics and user-presence safeguards rather than authentication or OS isolation.
-
+## Credential reveal, same-user agentic guard, and canaries
+ 
+Credential revelation (`hetzer creds reveal` and programmatic `Grimoire.reveal()`) enforces `assertInteractiveHumanSession()`: requiring a direct interactive TTY, rejecting known agent environment markers, and inspecting process ancestry trees (with in-process sub-millisecond caching) on Windows, macOS, and Linux. This blocks same-user autonomous agents from dumping plaintext credentials while preserving non-interactive runner and broker execution via decoupled `Grimoire.resolve()`. A native modal confirmation is also enforced on CLI execution. These provide defense-in-depth safeguards rather than an impenetrable OS privilege barrier.
+ 
 Canary IDs are checked by guarded vault reveal and reference-resolution paths. A hit logs an incident, attempts an SQLite audit record, throws `ERR_CANARY_TRIPWIRE_TRIGGERED`, and maps to CLI exit code 43. Arbitrary reads of vault, key, environment, process memory, or incident files are not monitored by the canary.
 
 ## MCP boundary
