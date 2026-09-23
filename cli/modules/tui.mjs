@@ -395,9 +395,9 @@ export function runtimeArmorSnapshot(root) {
 
     return {
         container,
-        broker: { state: "ready", detail: "Dynamic hop-by-hop stripping, loopback isolated" },
-        redactor: { state: "ready", detail: "Sub-ms 512B sliding window scan" },
-        policy: { state: "ready", detail: "SHA-256 structured argv verification" },
+        broker: { state: "unknown", detail: "Guarded broker path available; live broker state not probed" },
+        redactor: { state: "unknown", detail: "Guarded stream path available; live child stream not probed" },
+        policy: { state: "unknown", detail: "Policy path available; no command was evaluated" },
     };
 }
 
@@ -480,6 +480,7 @@ export async function collectStatus({ root = process.env.HETZER_ROOT || process.
     const threat = threatSnapshot(resolvedRoot, vaultPosture.credentials);
     const audit = auditLedgerSnapshot(resolvedRoot);
     const shield = shieldSnapshot(resolvedRoot);
+    const sniff = quickSniffSnapshot(resolvedRoot);
     const runtime = runtimeArmorSnapshot(resolvedRoot);
     const mcp = mcpSnapshot(resolvedRoot);
 
@@ -491,6 +492,7 @@ export async function collectStatus({ root = process.env.HETZER_ROOT || process.
         threat,
         audit,
         shield,
+        sniff,
         runtime,
         mcp,
         services,
@@ -785,7 +787,7 @@ function renderCompactOverview(lines, snapshot, color) {
 export function renderTui(snapshot, {
     color = process.stdout.isTTY && !process.env.NO_COLOR,
     view = "overview",
-    compact = Boolean(process.stdout.isTTY && process.stdout.rows && process.stdout.rows < 36),
+    compact = Boolean(process.stdout.isTTY && process.stdout.rows && process.stdout.rows < 22),
 } = {}) {
     const title = color ? `${ANSI.cyan}HETZER // TACTICAL ARMOR HUD${ANSI.reset}` : "HETZER // TACTICAL ARMOR HUD";
     const lines = [];
@@ -865,8 +867,10 @@ export function drawFrame(output, options = {}) {
         return;
     }
     const lines = output.split("\n");
+    const maxRows = stream.rows && stream.rows > 10 ? stream.rows : lines.length;
+    const renderLines = lines.length > maxRows ? lines.slice(0, maxRows) : lines;
     let frame = "\x1b[H";
-    for (const line of lines) {
+    for (const line of renderLines) {
         frame += line + "\x1b[K\n";
     }
     frame += "\x1b[J";
@@ -930,7 +934,7 @@ export async function startTui({ root = process.cwd(), args = [], view = "overvi
             root,
             view: currentView,
             color: Boolean(stream.isTTY && !process.env.NO_COLOR),
-            compact: args.includes("--compact"),
+            compact: args.includes("--compact") || !isInteractive,
         });
         stream.write(rendered + "\n");
         return;

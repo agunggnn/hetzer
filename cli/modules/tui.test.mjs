@@ -343,5 +343,6 @@ test("startTui single-shot mode runs non-interactively without timer", async () 
 
     await startTui({ root: process.cwd(), args: ["--once"], stream: mockStream });
     assert.match(captured, /HETZER \/\/ TACTICAL ARMOR HUD/);
+    assert.doesNotMatch(captured, / _   _ _____/, "Non-TTY single-shot output must default to compact mode");
     assert.doesNotMatch(captured, /\x1b\[\?1049h/, "Single-shot mode must not enter alternate screen");
 });
