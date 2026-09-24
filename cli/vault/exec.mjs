@@ -535,37 +535,10 @@ export function resolveCommandForSpawn(command, commandArgs = []) {
         }
     }
 
-    // 2. If command has path separators or ends with .exe, execute directly
-    if (cmdLower.endsWith(".exe") || command.includes(path.sep) || command.includes("/")) {
-        return { cmd: command, args: commandArgs };
-    }
-
-    // 3. Search PATH
-    const pathDirs = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
-    for (const dir of pathDirs) {
-        const exePath = path.join(dir, `${command}.exe`);
-        if (fs.existsSync(exePath)) {
-            return { cmd: exePath, args: commandArgs };
-        }
-    }
-    for (const dir of pathDirs) {
-        const exactPath = path.join(dir, command);
-        if (fs.existsSync(exactPath)) {
-            const ext = path.extname(exactPath).toLowerCase();
-            if (ext === ".cmd" || ext === ".bat") {
-                const comspec = process.env.ComSpec || "cmd.exe";
-                return { cmd: comspec, args: ["/d", "/s", "/c", exactPath, ...commandArgs] };
-            }
-            return { cmd: exactPath, args: commandArgs };
-        }
-        for (const ext of [".cmd", ".bat"]) {
-            const scriptPath = path.join(dir, `${command}${ext}`);
-            if (fs.existsSync(scriptPath)) {
-                const comspec = process.env.ComSpec || "cmd.exe";
-                return { cmd: comspec, args: ["/d", "/s", "/c", scriptPath, ...commandArgs] };
-            }
-        }
-    }
+    // 2. Keep command resolution inside the OS spawn API. Do not build an
+    // absolute executable or `cmd.exe /c` command from the caller's PATH.
+    // npm/npx are handled above because their Windows shims require a Node
+    // entrypoint; other commands remain shell-free and PATH-resolved by OS.
     return { cmd: command, args: commandArgs };
 }
 
