@@ -630,12 +630,27 @@ test("resolveCommandForSpawn correctly resolves executables on all platforms", (
         assert.ok(npxRes.args[0].includes("npx-cli.js"), "npx should pass npx-cli.js as first arg");
 
         const nodeRes = resolveCommandForSpawn("node", ["index.js"]);
-        assert.ok(nodeRes.cmd.toLowerCase().includes("node"), "node should resolve");
+        assert.equal(nodeRes.cmd, "node", "node should remain an OS-resolved command");
         assert.deepEqual(nodeRes.args, ["index.js"]);
     } else {
         const res = resolveCommandForSpawn("npm", ["test"]);
         assert.equal(res.cmd, "npm");
         assert.deepEqual(res.args, ["test"]);
+    }
+});
+
+test("resolveCommandForSpawn does not construct shell commands from PATH", () => {
+    if (process.platform !== "win32") return;
+
+    const originalPath = process.env.PATH;
+    try {
+        process.env.PATH = `C:\\untrusted&path;${originalPath || ""}`;
+        const resolved = resolveCommandForSpawn("custom-tool", ["safe-arg"]);
+        assert.equal(resolved.cmd, "custom-tool");
+        assert.deepEqual(resolved.args, ["safe-arg"]);
+    } finally {
+        if (originalPath === undefined) delete process.env.PATH;
+        else process.env.PATH = originalPath;
     }
 });
 
@@ -763,4 +778,3 @@ test("parseArguments parses --policy-hash and executeProcess records policy.load
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });
-
