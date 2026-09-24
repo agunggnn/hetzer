@@ -1289,15 +1289,16 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             effectiveExecOptions.push("--sandbox");
         }
 
-        const passArgs = [
-            path.join(cliRoot, "vault", "exec.mjs"),
+        const { executeProcess, parseArguments } = await import("../vault/exec.mjs");
+        const parsedExecOptions = parseArguments([
             "--root", root,
             "--env-file", envFile,
             ...effectiveExecOptions,
             "--",
             ...args.slice(marker + 1),
-        ];
-        run(process.execPath, passArgs, { cwd: root });
+        ]);
+        const result = await executeProcess(parsedExecOptions);
+        process.exitCode = result.status;
         return;
     }
     if (command === "broker") {

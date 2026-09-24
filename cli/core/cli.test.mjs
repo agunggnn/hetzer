@@ -376,6 +376,41 @@ test("version command reports package version correctly", async () => {
     }
 });
 
+test("exec command runs through the in-process execution path", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-exec-cli-"));
+    const auditPath = path.join(tempDir, "audit.log");
+    const originalStdout = process.stdout.write;
+    const originalExitCode = process.exitCode;
+    const originalAuditPath = process.env.HETZER_AUDIT_LOG_PATH;
+    let output = "";
+    process.stdout.write = (chunk) => {
+        output += String(chunk);
+        return true;
+    };
+    process.env.HETZER_AUDIT_LOG_PATH = auditPath;
+    try {
+        fs.writeFileSync(path.join(tempDir, ".env"), "HETZER_GRIMOIRE_KEY=secretRef:test-master\n", "utf8");
+        await main([
+            "exec",
+            "--host",
+            "--strict",
+            "--allow", "__none__",
+            "--",
+            process.execPath,
+            "-e",
+            "process.stdout.write('exec-ok')",
+        ], { root: tempDir });
+        assert.equal(process.exitCode, 0);
+        assert.equal(output.endsWith("exec-ok"), true);
+    } finally {
+        process.stdout.write = originalStdout;
+        process.exitCode = originalExitCode;
+        if (originalAuditPath === undefined) delete process.env.HETZER_AUDIT_LOG_PATH;
+        else process.env.HETZER_AUDIT_LOG_PATH = originalAuditPath;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
 test("check-update command executes and reports update status", async () => {
     let output = "";
     const originalStdout = process.stdout.write;
