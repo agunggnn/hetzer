@@ -20,6 +20,7 @@ export function strictBaseEnvironment(baseEnv = {}) {
 export function resolveSecretEnvironment({
     root,
     envFile,
+    vaultPath,
     baseEnv = process.env,
     action = "process.start",
     allowNames,
@@ -55,7 +56,7 @@ export function resolveSecretEnvironment({
     if (!masterKey || String(masterKey).startsWith("secretRef:")) {
         throw new Error("HETZER_GRIMOIRE_KEY must be supplied at runtime (or isolated in ~/.hetzer/grimoire.key) to resolve secretRef bindings.");
     }
-    const envVault = resolveVaultPath(root);
+    const envVault = resolveVaultPath(root, vaultPath);
     const vault = new Grimoire({
         dbPath: envVault || path.join(root, "data", "hetzer-vault.db"),
         legacyFile: path.join(root, "data", "vault.json"),

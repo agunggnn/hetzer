@@ -5,6 +5,10 @@
   "bin": {
     "hetzer": "cli/bin/hetzer.js"
   },
+  "exports": {
+    "./sdk": "./sdk/index.mjs",
+    "./package.json": "./package.json"
+  },
   "files": [
     "assets",
     "cli/bin",
@@ -14,6 +18,7 @@
     "cli/templates",
     "cli/vault",
     "cli/skills",
+    "sdk",
     "scripts/check.mjs",
     "scripts/verify-evidence.mjs",
     "scripts/publish.mjs",

@@ -692,7 +692,7 @@ export async function prepareExecutionEnvironment(effectiveOptions, {
             throw new Error("Grimoire master key is unavailable.");
         }
         const vault = new Grimoire({
-            dbPath: resolveVaultPath(effectiveOptions.root) || path.join(effectiveOptions.root, "data", "hetzer-vault.db"),
+            dbPath: resolveVaultPath(effectiveOptions.root, effectiveOptions.vaultPath) || path.join(effectiveOptions.root, "data", "hetzer-vault.db"),
             legacyFile: path.join(effectiveOptions.root, "data", "vault.json"),
             masterKey,
         });
@@ -727,6 +727,7 @@ export async function prepareExecutionEnvironment(effectiveOptions, {
             const opened = await openHttpCredentialBroker({
                 root: effectiveOptions.root,
                 envFile: effectiveOptions.envFile,
+                vaultPath: effectiveOptions.vaultPath,
                 policy: descriptor.policy,
                 baseEnv,
                 fetchFn: brokerFetchFn,
@@ -781,7 +782,7 @@ export async function executeProcess(options, {
             const masterKey = resolveMasterKey({ root: effectiveOptions.root, envValues, baseEnv });
             if (masterKey && !String(masterKey).startsWith("secretRef:")) {
                 const vault = new Grimoire({
-                    dbPath: resolveVaultPath(effectiveOptions.root) || path.join(effectiveOptions.root, "data", "hetzer-vault.db"),
+                    dbPath: resolveVaultPath(effectiveOptions.root, effectiveOptions.vaultPath) || path.join(effectiveOptions.root, "data", "hetzer-vault.db"),
                     legacyFile: path.join(effectiveOptions.root, "data", "vault.json"),
                     masterKey,
                 });
