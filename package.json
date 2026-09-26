@@ -1,9 +1,13 @@
 {
   "name": "@agunggnn/hetzer",
-  "version": "0.5.11",
+  "version": "0.5.12",
   "description": "Local credential safety for AI-assisted workflows with an encrypted vault, scoped injection, output redaction, MCP proxy, and agent guidance.",
   "bin": {
     "hetzer": "cli/bin/hetzer.js"
+  },
+  "exports": {
+    "./sdk": "./sdk/index.mjs",
+    "./package.json": "./package.json"
   },
   "files": [
     "assets",
@@ -14,6 +18,7 @@
     "cli/templates",
     "cli/vault",
     "cli/skills",
+    "sdk",
     "scripts/check.mjs",
     "scripts/verify-evidence.mjs",
     "scripts/publish.mjs",

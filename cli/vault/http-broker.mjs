@@ -850,6 +850,7 @@ export async function startHttpCredentialBroker({
 export async function openHttpCredentialBroker({
     root = process.cwd(),
     envFile = path.join(root, ".env"),
+    vaultPath,
     policy: rawPolicy,
     policyFile,
     baseEnv = process.env,
@@ -870,7 +871,7 @@ export async function openHttpCredentialBroker({
     }
 
     const vault = new Grimoire({
-        dbPath: resolveVaultPath(root) || path.join(root, "data", "hetzer-vault.db"),
+        dbPath: resolveVaultPath(root, vaultPath) || path.join(root, "data", "hetzer-vault.db"),
         legacyFile: path.join(root, "data", "vault.json"),
         masterKey,
     });

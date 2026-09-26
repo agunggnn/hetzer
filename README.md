@@ -78,6 +78,31 @@ For structured navigation and deep architectural insights, explore the dedicated
 | ☣️ **[Agent Threat Model & Sandbox Case Study (`docs/agent-sandbox-threat-model.md`)](docs/agent-sandbox-threat-model.md)** | Incident analysis of un-sandboxed agent session hijacking (*Pass-the-Cookie*), why antivirus fails, and the Sandbox-Credential Paradox. |
 | 🛡️ **[Jagdpanzer Multi-Container Fleet Ops](https://github.com/agunggnn/jagdpanzer)** | Multi-container stack orchestration, persistent cognitive memory (Cognee), and automated agent networks. |
 
+## 📦 Node.js SDK (experimental)
+
+Hetzer now exposes a metadata-first SDK for local Node.js applications and trusted deployment tooling:
+
+```js
+import { createHetzer } from "@agunggnn/hetzer/sdk";
+
+const hetzer = createHetzer({ root: process.cwd() });
+const credentials = hetzer.credentials.list();
+const authorization = hetzer.credentials.validate(
+  "secretRef:service-api-key",
+  { targetId: "my-service", action: "health.check" },
+);
+const result = await hetzer.execution.run({
+  command: "node",
+  args: ["worker.mjs"],
+  allow: ["secretRef:service-api-key"],
+});
+hetzer.close();
+```
+
+The SDK currently exposes credential metadata, metadata-only authorization checks, and strict scoped execution. It does not return decrypted values, replace application authentication, or provide a browser-side vault. Applications should keep references such as `secretRef:service-api-key` in configuration and run from a trusted local/CI process with an explicit allowlist.
+
+This is an experimental public export. The CLI remains the supported human interface while the SDK contract is hardened.
+
 ---
 
 ## ⚡ What is Hetzer?

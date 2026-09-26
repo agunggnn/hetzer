@@ -66,8 +66,10 @@ export function parseSecretRef(reference) {
     return match[1];
 }
 
-export function resolveVaultPath(root) {
-    const override = String(process.env.HETZER_VAULT_PATH || "").trim();
+export function resolveVaultPath(root, configuredPath = undefined) {
+    const override = String(
+        configuredPath === undefined ? process.env.HETZER_VAULT_PATH || "" : configuredPath,
+    ).trim();
     if (!override) return "";
     if (override === ":memory:") return ":memory:";
     return path.isAbsolute(override) ? override : path.join(root || process.cwd(), override);
