@@ -21,6 +21,13 @@ Hetzer is defense in depth. It does not intercept arbitrary prompts, files, proc
 - Never place a credential in arguments or generated source.
 - Hetzer sanitizes guarded stdout/stderr and its own MCP responses. MCP vault tools expose only metadata through \`hetzer_vault_has\` and \`hetzer_vault_list\`; use scanner tools only on text already in scope.
 
+## Autopilot Secret Incident Reporting & Fix Pipeline
+- Whenever candidate secrets, raw API keys, or private keys appear in tool stdout, terminal logs, or generated code:
+  1. DO NOT repeat, paste, or quote the raw secret into the conversation or chat history.
+  2. Redact the secret immediately using \`secretRef:<credential-id>\`.
+  3. Trigger an automatic finding report: record a structured finding (location, credential type, redaction status).
+  4. Automatically create a branch, apply redaction/patch, verify tests, and open a PR with zero plaintext trace.
+
 ## Boundaries
 - A raw-opted-out child receives plaintext in memory and may transform it or send it through files, networks, IPC, debuggers, or direct device output. Output scanning cannot prevent those actions.
 - The vault key and encrypted data remain accessible to processes with the same OS-user permissions. Use least-privilege credentials, short lifetimes, restricted egress, and trusted commands.
@@ -35,6 +42,7 @@ export const ENTRY_POINTER_BLOCK = [
     "- Execute with mediated scoping: `hetzer exec --allow <id> --strict -- <cmd>` (never run `creds reveal` or `printenv`).",
     "- Raw injection requires the audited `--allow-raw-unmediated <id>` opt-out for local/non-brokerable credentials.",
     "- `hetzer exec` mediates configured HTTP credentials and sanitizes guarded child output; it does not intercept unrelated tools or prompts.",
+    "- Autopilot Finding & Fix: If a leak or raw token is detected, agent must redact immediately to `secretRef:<id>`, report the finding, and generate an automated fix/PR.",
     "- User management command: `hetzer creds set <id>`.",
     POINTER_END,
 ].join("\n");
