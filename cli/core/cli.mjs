@@ -911,7 +911,29 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             process.stdout.write("================================================================================\n");
             return;
         }
-        throw new Error(`Unknown creds subcommand: '${subCommand}'. Use 'list', 'request', 'approve', 'status', 'reveal', 'set', or 'isolate-key'.`);
+        if (subCommand === "push" || subCommand === "sync") {
+            const { pushVaultToRemote } = await import("../vault/remote-sync.mjs");
+            const envValues = parseEnv(fs.readFileSync(envFile, "utf8"));
+            const endpointUrl = args[1] || envValues.AEGIS_ENDPOINT || process.env.AEGIS_ENDPOINT || "https://aegis-brain.haturan.workers.dev";
+            const apiKey = envValues.AEGIS_API_KEY || process.env.AEGIS_API_KEY || envValues.API_SECRET_KEY || process.env.API_SECRET_KEY;
+            const masterKey = envValues.HETZER_GRIMOIRE_KEY || process.env.HETZER_GRIMOIRE_KEY;
+            if (!apiKey) throw new Error("AEGIS_API_KEY or API_SECRET_KEY required to push to remote vault.");
+            const res = await pushVaultToRemote({ root, endpointUrl, apiKey, masterKey, hostId: args[2] || "pc" });
+            process.stdout.write(`  [v] Vault pushed successfully to ${endpointUrl}. Synced: ${res.synced || res.pushed}\n`);
+            return;
+        }
+        if (subCommand === "pull") {
+            const { pullVaultFromRemote } = await import("../vault/remote-sync.mjs");
+            const envValues = parseEnv(fs.readFileSync(envFile, "utf8"));
+            const endpointUrl = args[1] || envValues.AEGIS_ENDPOINT || process.env.AEGIS_ENDPOINT || "https://aegis-brain.haturan.workers.dev";
+            const apiKey = envValues.AEGIS_API_KEY || process.env.AEGIS_API_KEY || envValues.API_SECRET_KEY || process.env.API_SECRET_KEY;
+            const masterKey = envValues.HETZER_GRIMOIRE_KEY || process.env.HETZER_GRIMOIRE_KEY;
+            if (!apiKey) throw new Error("AEGIS_API_KEY or API_SECRET_KEY required to pull from remote vault.");
+            const res = await pullVaultFromRemote({ root, endpointUrl, apiKey, masterKey, hostId: args[2] || "vps" });
+            process.stdout.write(`  [v] Vault pulled successfully from ${endpointUrl}. Imported: ${res.imported}/${res.total}\n`);
+            return;
+        }
+        throw new Error(`Unknown creds subcommand: '${subCommand}'. Use 'list', 'request', 'approve', 'status', 'reveal', 'set', 'isolate-key', 'push', or 'pull'.`);
     }
     if (["sniffer", "sniff"].includes(command)) {
         const sub = args[0] || "scan";
