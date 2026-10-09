@@ -76,6 +76,10 @@ Hetzer focuses on single-command, ephemeral process containment via `hetzer exec
  
 Multi-container full-stack operations (such as 9Router AI gateways, PostgreSQL/pgvector memory clusters, and cognitive extractors) are deprecated in the Hetzer core CLI and delegated to [Jagdpanzer](https://github.com/agunggnn/jagdpanzer), allowing Hetzer to maintain a clean, zero-dependency footprint strictly focused on credential safety and agent armor.
 
+## Proposed architecture decisions
+
+- [ADR-0001: Authority model first, then a local-first engine with thin adapters](adr/0001-authority-model-and-engine-boundary.md) — **Proposed.** Based on the [October 2026 architecture and security review](architecture-review-2026-10.md).
+
 ## Closed architecture proposals
 
 - [RFC: Native OS Pinentry & GUI Masked Prompt Bridge](rfc-native-os-pinentry-bridge.md) — **Closed: Will Not Do.** The proposed agent-triggered GUI and loopback handoff does not provide a trustworthy same-user credential boundary.
