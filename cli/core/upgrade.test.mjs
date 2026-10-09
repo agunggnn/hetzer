@@ -258,3 +258,139 @@ test("runCliUpgrade fails closed when release checksum does not match", async ()
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });
+
+test("runCliUpgrade correctly disambiguates hetzer-X.tgz from scoped agunggnn-hetzer-X.tgz in multi-line checksums", async () => {
+    let out = "";
+    const mockStdout = { write: (msg) => { out += msg; return true; } };
+    const mockStderr = { write: () => true };
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-multi-checksum-"));
+
+    const tarballBuffer = Buffer.from("valid-tarball-bytes-0.5.7");
+    const crypto = await import("node:crypto");
+    const expectedSha = crypto.createHash("sha256").update(tarballBuffer).digest("hex");
+    const wrongSha = "0".repeat(64);
+
+    const multiLineChecksum = [
+        "# SHA-256 Checksums",
+        `${wrongSha}  agunggnn-hetzer-0.5.7.tgz`,
+        `${expectedSha}  hetzer-0.5.7.tgz`,
+    ].join("\n");
+
+    const commandsRun = [];
+    const mockSpawn = (cmd, args) => {
+        commandsRun.push(`${cmd} ${args.join(" ")}`);
+        return { status: 0 };
+    };
+
+    const mockFetch = async (url) => {
+        if (url.includes("releases/latest")) {
+            return {
+                ok: true,
+                json: async () => ({ tag_name: "v0.5.7", html_url: "https://github.com/agunggnn/hetzer/releases" }),
+            };
+        }
+        if (url.endsWith(".tgz")) {
+            return {
+                ok: true,
+                arrayBuffer: async () => tarballBuffer,
+            };
+        }
+        if (url.endsWith("SHASUMS256.txt") || url.endsWith("checksums.txt")) {
+            return {
+                ok: true,
+                text: async () => multiLineChecksum,
+            };
+        }
+        return { ok: false, status: 500 };
+    };
+
+    try {
+        const res = await runCliUpgrade(["--yes"], {
+            cliRoot: path.join(tempDir, "cli"),
+            manifest: { version: "0.5.6" },
+            spawnFn: mockSpawn,
+            fetchFn: mockFetch,
+            stdout: mockStdout,
+            stderr: mockStderr,
+        });
+
+        assert.equal(res.ok, true);
+        assert.equal(res.updated, true);
+        assert.match(out, /Release integrity verified via SHA-256/);
+        assert.ok(commandsRun.some((c) => c.includes("install -g")));
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test("runCliUpgrade falls back to checksums.txt when SHASUMS256.txt returns 404", async () => {
+    let out = "";
+    const mockStdout = { write: (msg) => { out += msg; return true; } };
+    const mockStderr = { write: () => true };
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-fallback-checksum-"));
+
+    const tarballBuffer = Buffer.from("legacy-release-tarball-bytes");
+    const crypto = await import("node:crypto");
+    const expectedSha = crypto.createHash("sha256").update(tarballBuffer).digest("hex");
+
+    const legacyChecksumsContent = [
+        "# SHA-256 Checksums",
+        `${expectedSha}  hetzer-0.5.7.tgz`,
+    ].join("\n");
+
+    const commandsRun = [];
+    const mockSpawn = (cmd, args) => {
+        commandsRun.push(`${cmd} ${args.join(" ")}`);
+        return { status: 0 };
+    };
+
+    let shasumsRequested = false;
+    let checksumsRequested = false;
+
+    const mockFetch = async (url) => {
+        if (url.includes("releases/latest")) {
+            return {
+                ok: true,
+                json: async () => ({ tag_name: "v0.5.7", html_url: "https://github.com/agunggnn/hetzer/releases" }),
+            };
+        }
+        if (url.endsWith(".tgz")) {
+            return {
+                ok: true,
+                arrayBuffer: async () => tarballBuffer,
+            };
+        }
+        if (url.endsWith("SHASUMS256.txt")) {
+            shasumsRequested = true;
+            return { ok: false, status: 404 };
+        }
+        if (url.endsWith("checksums.txt")) {
+            checksumsRequested = true;
+            return {
+                ok: true,
+                text: async () => legacyChecksumsContent,
+            };
+        }
+        return { ok: false, status: 500 };
+    };
+
+    try {
+        const res = await runCliUpgrade(["--yes"], {
+            cliRoot: path.join(tempDir, "cli"),
+            manifest: { version: "0.5.6" },
+            spawnFn: mockSpawn,
+            fetchFn: mockFetch,
+            stdout: mockStdout,
+            stderr: mockStderr,
+        });
+
+        assert.equal(res.ok, true);
+        assert.equal(res.updated, true);
+        assert.equal(shasumsRequested, true, "Should have attempted SHASUMS256.txt first");
+        assert.equal(checksumsRequested, true, "Should have fallen back to checksums.txt");
+        assert.match(out, /Release integrity verified via SHA-256/);
+        assert.ok(commandsRun.some((c) => c.includes("install -g")));
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});

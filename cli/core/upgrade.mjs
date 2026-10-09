@@ -156,10 +156,19 @@ export async function runCliUpgrade(args = [], {
         let checksumRes;
         try {
             checksumRes = await fetchFn(checksumUrl);
+            if (!checksumRes || !checksumRes.ok) {
+                const altChecksumUrl = `https://github.com/agunggnn/hetzer/releases/download/v${update.latestVersion}/checksums.txt`;
+                checksumRes = await fetchFn(altChecksumUrl);
+            }
         } catch (err) {
-            stderr.write(`  [!] Failed to reach release checksum URL: ${err.message}\n`);
-            stdout.write("================================================================================\n");
-            return { ok: false, error: "checksum_download_failed" };
+            try {
+                const altChecksumUrl = `https://github.com/agunggnn/hetzer/releases/download/v${update.latestVersion}/checksums.txt`;
+                checksumRes = await fetchFn(altChecksumUrl);
+            } catch {
+                stderr.write(`  [!] Failed to reach release checksum URL: ${err.message}\n`);
+                stdout.write("================================================================================\n");
+                return { ok: false, error: "checksum_download_failed" };
+            }
         }
 
         if (!checksumRes || !checksumRes.ok) {
@@ -170,9 +179,13 @@ export async function runCliUpgrade(args = [], {
         }
 
         const checksumText = await checksumRes.text();
-        const expectedLine = checksumText.split("\n").find((line) => line.includes(`hetzer-${update.latestVersion}.tgz`));
+        const targetFilename = `hetzer-${update.latestVersion}.tgz`;
+        const expectedLine = checksumText.split(/\r?\n/).find((line) => {
+            const parts = line.trim().split(/\s+/);
+            return parts.length >= 2 && parts[1] === targetFilename;
+        });
         if (!expectedLine) {
-            stderr.write(`  [!] Release checksum file missing entry for hetzer-${update.latestVersion}.tgz.\n`);
+            stderr.write(`  [!] Release checksum file missing entry for ${targetFilename}.\n`);
             stderr.write("      Installation aborted due to unverified package integrity.\n");
             stdout.write("================================================================================\n");
             return { ok: false, error: "checksum_entry_missing" };
@@ -190,15 +203,15 @@ export async function runCliUpgrade(args = [], {
 
         fs.writeFileSync(tarballPath, tarballBuffer);
 
-        stdout.write(`  Action            : Installing v${update.latestVersion} via npm...\n`);
-        const installRes = runNpm(["install", "-g", tarballPath], {
+        stdout.write(`  Action            : Installing v${update.latestVersion} via npm (with --force to overwrite existing shims)...\n`);
+        const installRes = runNpm(["install", "-g", "--force", tarballPath], {
             stdio: "inherit",
             windowsHide: true,
         });
 
         if (installRes.status !== 0) {
-            stderr.write("  [!] 'npm install -g' failed. Run manually:\n");
-            stderr.write(`      npm install -g @agunggnn/hetzer@${update.latestVersion} --registry=https://npm.pkg.github.com\n`);
+            stderr.write("  [!] 'npm install -g --force' failed. Run manually:\n");
+            stderr.write(`      npm install -g --force @agunggnn/hetzer@${update.latestVersion} --registry=https://npm.pkg.github.com\n`);
             stdout.write("================================================================================\n");
             return { ok: false, error: "npm_install_failed" };
         }

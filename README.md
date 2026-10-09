@@ -57,6 +57,12 @@ npx hetzer creds set openai-api-key
   npm install -g git+https://github.com/agunggnn/hetzer.git
   ```
 
+> [!TIP]
+> **Upgrade**: Run the built-in upgrade manager to check and install the latest verified release:
+> ```bash
+> hetzer upgrade
+> ```
+
 ---
 
 ## 📑 Modular Documentation
