@@ -445,7 +445,7 @@ export function validateBrokerPolicy(input) {
         allowedMethods: Object.freeze(methods),
         allowedPathPrefixes: Object.freeze(pathPrefixes),
         forwardHeaders: Object.freeze(forwardHeaders),
-        ttlSeconds: integerInRange(input.ttlSeconds, 300, 10, 3600, "ttlSeconds"),
+        ttlSeconds: integerInRange(input.ttlSeconds, 60, 5, 3600, "ttlSeconds"),
         maxRequests: integerInRange(input.maxRequests, 100, 1, 1000, "maxRequests"),
         maxRequestBytes: integerInRange(input.maxRequestBytes, 1048576, 1, 10485760, "maxRequestBytes"),
         maxResponseBytes: integerInRange(input.maxResponseBytes, 8388608, 1, 16777216, "maxResponseBytes"),
@@ -692,6 +692,7 @@ export async function startHttpCredentialBroker({
     randomBytes = crypto.randomBytes,
     host,
     allowSandbox = false,
+    root,
 } = {}) {
     const policy = rawPolicy?.[VALIDATED_POLICY] ? rawPolicy : validateBrokerPolicy(rawPolicy);
     if (typeof secret !== "string" || !secret) throw new Error("Broker credential is required.");
@@ -711,6 +712,22 @@ export async function startHttpCredentialBroker({
     const deadline = Date.now() + (policy.ttlSeconds * 1000);
     let forwardedRequests = 0;
 
+    try {
+        recordAuditEvent({
+            eventType: "BROKER_LEASE_ISSUED",
+            target: policy.credentialId,
+            result: "ALLOW",
+            root,
+            details: {
+                targetOrigin: policy.targetOrigin,
+                basePath: policy.basePath,
+                ttlSeconds: policy.ttlSeconds,
+                maxRequests: policy.maxRequests,
+                expiresAt: new Date(deadline).toISOString(),
+            },
+        });
+    } catch { /* fail soft */ }
+
     const resolvedLookupFn = lookupFn || (fetchFn && fetchFn !== globalThis.fetch ? async (h, opts) => {
         if (String(h).endsWith(".test") || String(h).endsWith(".example")) {
             return [{ address: "93.184.216.34", family: 4 }];
@@ -728,13 +745,56 @@ export async function startHttpCredentialBroker({
             if (!clientAllowed) {
                 return sendJson(response, 403, allowSandbox ? "Loopback or container bridge clients only." : "Loopback clients only.");
             }
-            if (Date.now() >= deadline) return sendJson(response, 410, "Broker capability expired.");
+            if (Date.now() >= deadline) {
+                try {
+                    recordAuditEvent({
+                        eventType: "BROKER_LEASE_EXPIRED",
+                        target: policy.credentialId,
+                        result: "DENY",
+                        root,
+                        details: {
+                            targetOrigin: policy.targetOrigin,
+                            url: request.url,
+                            expiredAt: new Date(deadline).toISOString(),
+                        },
+                    });
+                } catch { /* fail soft */ }
+                return sendJson(response, 410, "Broker capability expired.");
+            }
             if (!matchesCapability(request.headers[policy.clientHeader], expectedAuth)) {
+                try {
+                    recordAuditEvent({
+                        eventType: "BROKER_CAPABILITY_INVALID",
+                        target: policy.credentialId,
+                        result: "DENY",
+                        root,
+                        details: {
+                            targetOrigin: policy.targetOrigin,
+                            url: request.url,
+                            clientHeader: policy.clientHeader,
+                        },
+                    });
+                } catch { /* fail soft */ }
                 return sendJson(response, 401, "Invalid broker capability.");
             }
             const method = String(request.method || "GET").toUpperCase();
             if (!policy.allowedMethods.includes(method)) return sendJson(response, 403, "HTTP method is not allowed by the broker policy.");
-            if (forwardedRequests >= policy.maxRequests) return sendJson(response, 429, "Broker request limit reached.");
+            if (forwardedRequests >= policy.maxRequests) {
+                try {
+                    recordAuditEvent({
+                        eventType: "BROKER_LIMIT_REACHED",
+                        target: policy.credentialId,
+                        result: "DENY",
+                        root,
+                        details: {
+                            targetOrigin: policy.targetOrigin,
+                            maxRequests: policy.maxRequests,
+                            forwardedRequests,
+                        },
+                    });
+                } catch { /* fail soft */ }
+                return sendJson(response, 429, "Broker request limit reached.");
+            }
             forwardedRequests += 1;
             slotReserved = true;
 
@@ -895,7 +955,7 @@ export async function openHttpCredentialBroker({
     }
 
     try {
-        const broker = await startHttpCredentialBroker({ policy, secret, fetchFn, randomBytes, allowSandbox });
+        const broker = await startHttpCredentialBroker({ policy, secret, fetchFn, randomBytes, allowSandbox, root });
         return { broker, policy, secret };
     } catch (error) {
         secret = "";
