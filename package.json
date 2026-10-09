@@ -85,12 +85,17 @@
     "test:verbose": "node --test \"**/*.test.mjs\"",
     "verify": "node scripts/verify-evidence.mjs",
     "build:package": "node scripts/build-package.mjs",
-    "lint": "node scripts/check.mjs",
+    "lint": "eslint .",
     "render:banner": "node scripts/render-banner.mjs",
     "hetzer": "node cli/bin/hetzer.js",
     "publish:github": "node scripts/publish-github.mjs",
     "publish:npm": "node scripts/publish.mjs",
     "publish-pkg": "node scripts/publish-github.mjs"
   },
-  "preferGlobal": true
+  "preferGlobal": true,
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0"
+  }
 }
