@@ -4,6 +4,20 @@ The HTTP credential broker is a bounded alternative to placing a long-lived cred
 
 This feature is not a general network sandbox or a StrongDM-compatible infrastructure proxy. The child can ignore the broker and use other network paths, and a process with sufficient access to the same OS account may read or alter Hetzer files. Use OS-level egress and filesystem controls when those paths are in the threat model.
 
+## Guarantees and non-guarantees
+
+The broker upholds Hetzer's three security invariants (see `docs/architecture.md`):
+
+1. The vault credential is resolved inside the broker process and injected into the upstream request only. The child never receives the plaintext credential — only a random, short-lived capability plus a loopback base URL.
+2. Without a reviewed broker policy, `hetzer exec` fails closed. (The `--allow-raw-unmediated` escape hatch bypasses the broker entirely; it is deprecated, always audited, and will be removed in a future major release.)
+3. Every brokered request is bound to the policy's fixed HTTPS origin, method/path allowlists, and request limits, and broker startup is recorded in the hash-chained audit ledger.
+
+What the broker does **not** guarantee:
+
+- It is not a choke point. A hostile or prompt-injected child can open unrelated network connections and exfiltrate data through any path the allowed methods, paths, request bodies, and upstream account permissions permit. Scope each policy and credential narrowly.
+- Broker policies are unsigned files in v1. Anyone who can write `.hetzer/brokers/<credential-id>.json` can redirect the credential to an origin they control. Signed policies are on the roadmap: warning-first for one release, then enforced.
+- Credential redaction in responses and child output is best-effort hygiene, not a boundary: direct terminal-device writes, files, IPC, debuggers, and unrelated processes are outside the filter.
+
 ## Policy
 
 Create a policy containing references and routing metadata, never plaintext credentials:
@@ -84,7 +98,8 @@ The broker always starts the child with Hetzer's strict base environment. It clo
 
 ## Remaining risks
 
-- The policy determines where the credential is sent. An attacker able to replace trusted policy files can redirect future broker runs.
+- The policy determines where the credential is sent. An attacker able to replace trusted policy files can redirect future broker runs. Policies are unsigned in v1 (signed-policy roadmap: warning-first, then enforced).
+- `--allow-raw-unmediated` bypasses the broker entirely and places the raw credential in the child environment. It is deprecated and will be removed in a future major release; prefer a reviewed broker policy.
 - The authorized upstream receives the real credential.
 - A prompt-injected or hostile child can perform any operation that the allowed HTTP methods, paths, request bodies, and upstream account permissions permit. Keep each policy and upstream credential narrowly scoped.
 - The broker process holds the decrypted credential in memory for its lifetime.

@@ -124,15 +124,27 @@ All built with **0 external npm dependencies** (100% Node.js standard library: `
 
 ## Security boundary
 
+Hetzer guarantees exactly three things — everything else below is defense-in-depth, not a boundary:
+
+1. **Plaintext credentials live in exactly two places**: the sealed Grimoire vault and the memory of the broker process. Never in env vars, CLI args, files, or agent-readable output.
+2. **The broker is the only mediated path into a child process.** Without a reviewed broker policy, `hetzer exec` fails closed. (The `--allow-raw-unmediated` escape hatch is deprecated, always audited, and will be removed in a future major release.)
+3. **Every credential use is scoped and audited** — bound to an HTTPS origin plus method/path allowlists, recorded in the hash-chained audit ledger.
+
 | Control | Covered | Boundary |
 |---|---|---|
 | Vault at rest | AES-256-GCM encryption with a unique random IV and authenticated metadata | A process that can read both the database and master-key file can decrypt entries |
-| `hetzer exec` | Mediates selected HTTP credentials through reviewed broker policies; raw injection requires an explicit audited opt-out | Raw-opted-out values exist in child memory; transformed output, direct device/file/network writes, and unrelated processes remain outside this path |
-| Scanner | Supported patterns, database URLs, private-key blocks up to 16 KiB, and high-entropy candidates | Pattern matching can produce false positives and false negatives |
+| `hetzer exec` | Mediates selected HTTP credentials through reviewed broker policies; the raw opt-out is deprecated and audited | Raw-opted-out values exist in child memory; transformed output, direct device/file/network writes, and unrelated processes remain outside this path |
+| Scanner | Supported patterns, database URLs, private-key blocks up to 16 KiB, and high-entropy candidates | Heuristic pattern matching: false positives and false negatives; a clean scan is not proof of cleanliness |
 | Git hooks | Staged `.env` filenames, diff additions (`pre-commit`), and commit message text (`commit-msg`) | Hooks can be bypassed via `--no-verify` and do not scan past repository history |
 | Canary tripwires | Guarded resolution, reveal, and subprocess stream outputs (`hetzer exec --canary`) | Detects and aborts guarded paths/leaks; does not detect arbitrary out-of-band disk reads by the same OS user |
 | MCP proxy | Resolves `secretRef:<id>` in tool payloads, enforces canary checks, and sanitizes tool outputs | Covers integrated FastMCP requests; does not intercept external or unmanaged tool calls |
 | Agent skills | Instructions and MCP metadata-only vault tools | Instructions do not enforce access control against the local OS user |
+
+**Explicitly not guaranteed:** same-user isolation without the container sandbox (any same-UID process can read the vault, key file, and policies); perfect output redaction (direct TTY/file/IPC writes are outside the filter); perfect secret detection (the scanner is heuristic). The only real isolation boundary is `hetzer exec --sandbox`.
+
+### What Hetzer deliberately does not do
+
+Scope discipline is a security feature. Hetzer will not build: a transparent network sandbox or `CONNECT` proxy; a per-request approval hook / OPA sidecar; a broker daemon with control-socket API (until a consumer needs one); ML-expanded secret detection (heuristics stay heuristics); or hardware root of trust now (roadmap only). See [`docs/architecture.md`](docs/architecture.md).
 
 ---
 
@@ -200,15 +212,17 @@ flowchart TB
 │  ► Known injected values are redacted even when split across output chunks. │
 │  ► Terminal controls and supported long structured values are filtered.     │
 │  ► --strict starts minimal; broker policies replace refs with capabilities. │
+│  ► HYGIENE, NOT A BOUNDARY: direct TTY/file/IPC writes are outside it.     │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  Layer 3: Anti-Reflection Execution Guard                                   │
 │  ► Blocks reflection commands ('printenv', 'env', 'export', 'docker inspect'│
 │    and inline 'os.environ' scripts) before process spawning.                │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  Layer 4: TTY and Process Ancestry Safeguards                               │
+│  Layer 4: TTY and Process Ancestry Safeguards (misuse safeguard)            │
 │  ► Validates process.stdin.isTTY and sniffs autonomous agent env flags.     │
-│  ► Traverses 5 generations of parent processes (PPID) to block autonomous   │
-│    recognized agent processes before allowing 'hetzer creds reveal'.         │
+│  ► Traverses 5 generations of parent processes (PPID) to raise the cost of  │
+│    casual autonomous-agent reveals. NOT a boundary: same-user processes     │
+│    can unset markers, rename binaries, or read vault/key files directly.    │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  Layer 5: Native OS Confirmation                                              │
 │  ► Launches native OS modal dialogs (Windows Forms / AppleScript / Zenity). │
@@ -225,6 +239,8 @@ flowchart TB
 │    with 0600 POSIX permissions. Same-user processes may still read it.       │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+> **Reading this matrix honestly:** layers 1–7 are defense-in-depth. None of them is a security boundary against a determined same-OS-user process — only the ephemeral container sandbox (`hetzer exec --sandbox`) is. The three hard guarantees are listed under [Security boundary](#security-boundary) above.
 
 ### Performance measurement
 
@@ -412,8 +428,9 @@ Hetzer keeps plaintext out of MCP vault-list and vault-existence responses, reso
 - **No `reveal` tool is exposed by Hetzer's MCP server**.
 - **MCP Virtual Credential Proxy**: When an agent invokes an MCP tool, it passes references like `secretRef:<id>`. Hetzer resolves this just-in-time for upstream execution, checks for honeytokens, and recursively sanitizes outgoing tool responses before context delivery.
 - **Canary Tripwires**: Any attempt by an autonomous agent or injected prompt to access canary credentials (`canary-token`, `canary-*`, `decoy-*`) triggers a critical security incident and aborts with `exitCode 43`.
-- Credentials explicitly permitted with `--allow-raw-unmediated` exist in child environment and memory. The opt-out is audited and must also be permitted by a declarative execution policy when one is active. These are application safeguards rather than full OS sandboxing.
-- Agent instructions do not intercept arbitrary prompts, files, debuggers, alternate processes, or tools. Use OS account separation and a centrally managed secret system for hostile-code boundaries.
+- Credentials explicitly permitted with `--allow-raw-unmediated` exist in child environment and memory. The opt-out is deprecated, will be removed in a future major release, is audited, and must also be permitted by a declarative execution policy when one is active. These are application safeguards rather than full OS sandboxing.
+- **Same-user reality check:** an AI agent running as your OS user can read the vault database, the master-key file, and broker policies directly, bypassing every Hetzer guard. Hetzer stops accidents and casual misuse by agents; it does not sandbox them. For hostile or untrusted agent code, use `hetzer exec --sandbox` (container isolation), OS account separation, or a centrally managed secret system.
+- Agent instructions do not intercept arbitrary prompts, files, debuggers, alternate processes, or tools.
 
 ### 3. What credential scenarios does Hetzer support?
 Grimoire Vault can store arbitrary values up to its configured size limit. Automatic scanning recognizes a narrower set:
@@ -434,6 +451,8 @@ If you prefer not to store `HETZER_GRIMOIRE_KEY` on disk, omit it from `.env` an
 export HETZER_GRIMOIRE_KEY="your-private-master-key"
 ```
 Under this model, zero decryption keys exist on disk. Anyone copying the database cannot decrypt its contents without your in-memory master key.
+
+> **Deprecation notice:** resolving the master key from environment variables and `.env` files is deprecated and will be removed in a future major release — env vars are inherited by child processes and are the easiest way for a secret to leak. Prefer `hetzer creds isolate-key` (moves the key to `~/.hetzer/grimoire.key`); OS-keychain-backed storage is on the roadmap.
 
 ---
 
