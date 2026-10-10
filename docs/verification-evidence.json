@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-10-10T04:10:25.424Z",
+  "timestamp": "2026-10-10T13:31:53.423Z",
   "nodeVersion": "v22.22.2",
   "platform": "win32",
   "results": [
@@ -59,7 +59,7 @@
       "input": "Small 30-byte build log line",
       "method": "Measure the median of 25 write-and-flush samples using dynamic retention and the bounded lexical scanner",
       "expected": "Median processing latency stays below 5ms and the complete line is emitted",
-      "observed": "Median processing latency: 0.026 ms. Output delivered: \"Compiling module auth.mjs...\".",
+      "observed": "Median processing latency: 0.029 ms. Output delivered: \"Compiling module auth.mjs...\".",
       "verdict": "PASS",
       "boundary": "Streams with secrets exceeding 128 chars scale buffer to 2x secret length to ensure boundary integrity."
     },
@@ -158,6 +158,18 @@
       "observed": "nullSigNotHonored: true. reopenDidNotSign: true. updateDidNotLaunder: true. alteredApprovalIgnored: true. forgedApprovalIgnored: true. operatorSignRestoresLegacy: true.",
       "verdict": "PASS",
       "boundary": "Signatures are keyed by the master key. A writer who can also read the master key can still forge grants, and a previously valid signed grant can be replayed because signatures carry no version."
+    },
+    {
+      "id": "VERIFY-SEC-013",
+      "name": "Sandbox Containment Defaults (Gate G1)",
+      "target": "cli/vault/sandbox.mjs -> resolveSandboxMount(), buildSandboxDockerArgs(), executeSandboxedProcess()",
+      "threat": "A sandboxed process reads the vault, env file, key or audit log through the mount, or secrets and host variables reach the container engine command line or the container environment",
+      "input": "A workspace holding an env file with the master key, a vault database and an audit log; unsafe mount targets; strict and non-strict host environments with a vault master key and an unrelated host token",
+      "method": "Resolve mounts for unsafe targets and for the workspace; run the sandbox through a stubbed engine in strict and non-strict mode and inspect the engine argv, forwarded variable names, engine process environment, image reference and stderr notice",
+      "expected": "Unsafe mounts refused; Hetzer-owned paths inside the mount hidden while project files are not; no secret, master key or unrelated host value in engine argv; host variables not forwarded; engine environment without the master key; default image pinned by digest; network mode stated",
+      "observed": "unsafeMountsRefused: true. sensitivePathsHidden: true. projectFilesNotHidden: true. argvHasNoSecretMaterial: true. hostVariablesNotForwarded: true. engineEnvHasNoMasterKey: true. imagePinned: true. networkStated: true.",
+      "verdict": "PASS",
+      "boundary": "Builder-level evidence: it does not start a container. Container behaviour of the file and directory masks was checked separately on Docker Desktop for Windows. Outbound network access is still open by default, the broker still binds 0.0.0.0 in sandbox mode, `docker inspect` still shows container environment values, and files that appear after the container starts are not masked."
     }
   ]
 }

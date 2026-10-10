@@ -7,10 +7,12 @@
 
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import { createStreamSanitizer, prepareExecutionEnvironment, sanitizeStreamOutput } from "../cli/vault/exec.mjs";
@@ -22,6 +24,7 @@ import { scanAddedLines } from "../cli/core/git-hook.mjs";
 import { isCanaryCredential, triggerCanaryAlert } from "../cli/vault/canary.mjs";
 import { Grimoire } from "../cli/vault/hetzer-vault.mjs";
 import { createToolCatalog } from "../cli/mcp/catalog.mjs";
+import { DEFAULT_SANDBOX_IMAGE, executeSandboxedProcess, resolveSandboxMount } from "../cli/vault/sandbox.mjs";
 import {
     assertNoSensitivePathAccess,
     assertNoUntrustedDownloader,
@@ -928,6 +931,129 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
         observed: `nullSigNotHonored: ${nullSigNotHonored}. reopenDidNotSign: ${reopenDidNotSign}. updateDidNotLaunder: ${updateDidNotLaunder}. alteredApprovalIgnored: ${alteredApprovalIgnored}. forgedApprovalIgnored: ${forgedApprovalIgnored}. operatorSignRestoresLegacy: ${operatorSignRestoresLegacy}.`,
         pass,
         boundary: "Signatures are keyed by the master key. A writer who can also read the master key can still forge grants, and a previously valid signed grant can be replayed because signatures carry no version.",
+    });
+}
+
+// -----------------------------------------------------------------------------
+// Test 14: Sandbox Containment Defaults (Gate G1)
+// -----------------------------------------------------------------------------
+{
+    const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-verify-sandbox-home-")));
+    const workspace = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-verify-sandbox-ws-")));
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    const secretValue = "sandbox-evidence-secret-value-0123456789";
+    const hostToken = "sandbox-evidence-host-token-0123456789";
+    let unsafeMountsRefused = false;
+    let sensitivePathsHidden = false;
+    let projectFilesNotHidden = false;
+    let argvHasNoSecretMaterial = false;
+    let hostVariablesNotForwarded = false;
+    let engineEnvHasNoMasterKey = false;
+    let imagePinned = false;
+    let networkStated = false;
+
+    try {
+        fs.mkdirSync(path.join(home, ".hetzer"), { recursive: true });
+        fs.mkdirSync(path.join(workspace, "data"), { recursive: true });
+        fs.mkdirSync(path.join(workspace, ".hetzer"), { recursive: true });
+        fs.writeFileSync(path.join(workspace, "README.md"), "project file\n");
+        fs.writeFileSync(path.join(workspace, ".hetzer", "audit.log"), "synthetic\n");
+        const dbPath = path.join(workspace, "data", "hetzer-vault.db");
+        const vault = new Grimoire({ dbPath, masterKey });
+        vault.create({ id: "sandbox-cred", projectId: "sandbox-target", secret: secretValue, allowedActions: ["process.start"], rawInjection: "allow" });
+        vault.close();
+        fs.writeFileSync(path.join(workspace, ".env"), `HETZER_GRIMOIRE_KEY=${masterKey}\nAPI_KEY=secretRef:sandbox-cred\n`);
+
+        const refuse = (mountDir) => {
+            try {
+                resolveSandboxMount({ mountDir, root: workspace, homeDir: home, hetzerHome: path.join(home, ".hetzer") });
+                return false;
+            } catch (error) {
+                return error.code === "ERR_SANDBOX_MOUNT_UNSAFE";
+            }
+        };
+        unsafeMountsRefused = [path.parse(home).root, home, path.join(home, ".hetzer")].every(refuse);
+
+        const plan = resolveSandboxMount({
+            mountDir: workspace,
+            root: workspace,
+            envFile: path.join(workspace, ".env"),
+            homeDir: home,
+            hetzerHome: path.join(home, ".hetzer"),
+        });
+        const hiddenFiles = new Set(plan.masks.files.map((item) => item.containerPath));
+        const hiddenDirs = new Set(plan.masks.dirs.map((item) => item.containerPath));
+        sensitivePathsHidden = hiddenFiles.has("/workspace/.env")
+            && hiddenFiles.has("/workspace/data/hetzer-vault.db")
+            && hiddenFiles.has("/workspace/.hetzer/audit.log")
+            && hiddenDirs.has("/workspace/.hetzer");
+        projectFilesNotHidden = !hiddenFiles.has("/workspace/README.md");
+
+        let captured;
+        let stderrText = "";
+        const errStream = new PassThrough();
+        errStream.on("data", (chunk) => { stderrText += chunk; });
+        const fakeChild = () => {
+            const child = new EventEmitter();
+            child.stdout = new PassThrough();
+            child.stderr = new PassThrough();
+            child.pid = 0;
+            setImmediate(() => {
+                child.stdout.end();
+                child.stderr.end();
+                child.emit("close", 0, null);
+            });
+            return child;
+        };
+        for (const strict of [true, false]) {
+            await executeSandboxedProcess({
+                root: workspace,
+                envFile: path.join(workspace, ".env"),
+                vaultPath: dbPath,
+                allowNames: ["sandbox-cred"],
+                allowRawUnmediated: ["sandbox-cred"],
+                strict,
+                sandbox: true,
+                sandboxMountDir: workspace,
+                command: "/bin/true",
+                commandArgs: [],
+            }, {
+                baseEnv: { PATH: "/usr/bin", USERPROFILE: "/home/x", HETZER_GRIMOIRE_KEY: masterKey, UNRELATED_HOST_TOKEN: hostToken, TERM: "xterm" },
+                execSyncFn: () => ({ status: 0, stdout: "ok" }),
+                spawnFn: (engine, args, options) => { captured = { engine, args, options }; return fakeChild(); },
+                outStream: new PassThrough(),
+                errStream,
+            });
+            const argvText = captured.args.join("\n");
+            const forwarded = captured.args.filter((_, i) => captured.args[i - 1] === "-e");
+            const argvClean = ![secretValue, masterKey, hostToken].some((needle) => argvText.includes(needle));
+            const hostClean = !["PATH", "USERPROFILE", "HETZER_GRIMOIRE_KEY", "UNRELATED_HOST_TOKEN", "HETZER_ROOT"].some((name) => forwarded.includes(name));
+            const engineEnvClean = !Object.hasOwn(captured.options.env, "HETZER_GRIMOIRE_KEY") && !Object.hasOwn(captured.options.env, "UNRELATED_HOST_TOKEN");
+            argvHasNoSecretMaterial = (strict ? true : argvHasNoSecretMaterial) && argvClean && captured.args.includes("API_KEY");
+            hostVariablesNotForwarded = (strict ? true : hostVariablesNotForwarded) && hostClean;
+            engineEnvHasNoMasterKey = (strict ? true : engineEnvHasNoMasterKey) && engineEnvClean;
+        }
+        imagePinned = /@sha256:[0-9a-f]{64}$/.test(DEFAULT_SANDBOX_IMAGE) && captured.args.includes(DEFAULT_SANDBOX_IMAGE);
+        networkStated = /network: engine default \(outbound access is allowed\)/.test(stderrText);
+    } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+        fs.rmSync(workspace, { recursive: true, force: true });
+    }
+
+    const pass = unsafeMountsRefused && sensitivePathsHidden && projectFilesNotHidden && argvHasNoSecretMaterial
+        && hostVariablesNotForwarded && engineEnvHasNoMasterKey && imagePinned && networkStated;
+
+    recordTest({
+        id: "VERIFY-SEC-013",
+        name: "Sandbox Containment Defaults (Gate G1)",
+        target: "cli/vault/sandbox.mjs -> resolveSandboxMount(), buildSandboxDockerArgs(), executeSandboxedProcess()",
+        threat: "A sandboxed process reads the vault, env file, key or audit log through the mount, or secrets and host variables reach the container engine command line or the container environment",
+        input: "A workspace holding an env file with the master key, a vault database and an audit log; unsafe mount targets; strict and non-strict host environments with a vault master key and an unrelated host token",
+        method: "Resolve mounts for unsafe targets and for the workspace; run the sandbox through a stubbed engine in strict and non-strict mode and inspect the engine argv, forwarded variable names, engine process environment, image reference and stderr notice",
+        expected: "Unsafe mounts refused; Hetzer-owned paths inside the mount hidden while project files are not; no secret, master key or unrelated host value in engine argv; host variables not forwarded; engine environment without the master key; default image pinned by digest; network mode stated",
+        observed: `unsafeMountsRefused: ${unsafeMountsRefused}. sensitivePathsHidden: ${sensitivePathsHidden}. projectFilesNotHidden: ${projectFilesNotHidden}. argvHasNoSecretMaterial: ${argvHasNoSecretMaterial}. hostVariablesNotForwarded: ${hostVariablesNotForwarded}. engineEnvHasNoMasterKey: ${engineEnvHasNoMasterKey}. imagePinned: ${imagePinned}. networkStated: ${networkStated}.`,
+        pass,
+        boundary: "Builder-level evidence: it does not start a container. Container behaviour of the file and directory masks was checked separately on Docker Desktop for Windows. Outbound network access is still open by default, the broker still binds 0.0.0.0 in sandbox mode, `docker inspect` still shows container environment values, and files that appear after the container starts are not masked.",
     });
 }
 
