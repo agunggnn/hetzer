@@ -1,6 +1,7 @@
 # Architecture and security review, October 2026
 
 > **Status**: Review findings, input to [ADR-0001](adr/0001-authority-model-and-engine-boundary.md). Not a security audit or certification.
+> **Update**: findings R-01 to R-13 describe the code at the review basis below. [Section 7](#7-resolution-status-after-gate-g0-and-g01-2026-10-10) records which ones the later authority-model work changed.
 > **Date**: 2026-10-10
 > **Review basis**: `main` at `c2e85cd` (v0.5.12) plus uncommitted work-in-progress in `cli/vault/exec.mjs`, `cli/vault/http-broker.mjs` and their tests, and the untracked `docs/rfc-exfil-hardening-backlog.md`. Findings may move as that work lands.
 > **Method**: reading the code and docs, running the existing test suite (302 tests, 301 passed, 1 skipped, 0 failed), and a small number of probes using synthetic credentials in throwaway temp directories. The probe scripts are intentionally not committed.
@@ -40,6 +41,8 @@ Two items below (R-02, R-05) sit inside boundaries the docs already state (same-
 | R-11 | Structural debt: stack-era code, domain bleed, duplicated guard logic, divergent ID grammars | n/a | code |
 | R-12 | Claims and documentation hygiene | n/a | doc |
 | R-13 | The evidence runner proves the filters, not the authority model | n/a | code |
+
+Ratings and evidence above are as of the review basis. See section 7 for current status.
 
 ### R-01 Broker policy authority (High)
 
@@ -211,3 +214,37 @@ This repository is public. The findings above are written at design level and th
 - `install.ps1` & `install.sh`: Maintained safe, standard npm installation flow without unconditional uninstalls or unpinned HEAD git fallbacks, with actionable guidance on error.
 - `README.md`: Pointed upgrade guidance directly to `hetzer upgrade`.
 
+## 7. Resolution status after Gate G0 and G0.1 (2026-10-10)
+
+Sections 1 to 6 describe the repository as reviewed at `c2e85cd` and are kept unchanged so the findings stay traceable. This section records what the follow-up work changed. It was checked by re-running the original probes against the branch that contains `feat(vault): implement Gate G0 authority model...` and `fix(vault): make grant and approval signatures fail closed`, and by reading the code for items that cannot be probed.
+
+| ID | Status | What changed, and what is left |
+|---|---|---|
+| R-01 | **Mitigated** | The broker refuses a policy whose origin is not in the credential's vault grant (`ERR_BROKER_ORIGIN_NOT_GRANTED`) or whose SHA-256 is not an operator-approved policy (`ERR_BROKER_POLICY_NOT_APPROVED`). The self-declared `integrity` hash is no longer a trust input. Grants and approvals are signed with master-key subkeys, so a writer without the master key can neither change them nor clear the signature (`VERIFY-SEC-007`, `-011`, `-012`). **Left:** a writer who can read the master key can still forge grants, and a previously valid signed grant can be replayed from an old copy of the database. |
+| R-02 | **Partly mitigated** | `--allow-raw-unmediated` is now a request that the vault grant must permit (`ERR_RAW_UNMEDIATED_DENIED_BY_GRANT`, `VERIFY-SEC-008`). **Left:** `--policy`, `--host`, `--no-sandbox`, `--allow-sensitive-paths` and `--allow-untrusted-downloaders` are still caller-supplied flags, and no execution policy is mandatory. |
+| R-03 | **Open** | Not addressed (Gate G1). `sandbox.mjs` is unchanged: instance-root mount, key beside the vault from `init`, secrets in the container engine's argument list, default network. |
+| R-04 | **Mitigated** | `hetzer_sniffer_redact` is removed, and `secretRef:` substitution is allowed only when the tool's destination origin is in the credential's grant and the credential has the `mcp.tools/call` action (`VERIFY-SEC-010`). **Left:** the service URL is still read from the environment or workspace `.env`; it is now only usable with credentials already granted to that origin. `hetzer_vault_list` still exposes the credential inventory. |
+| R-05 | **Open (partial mitigation)** | `resolve()` requires an action that the grant lists (`VERIFY-SEC-009`). A caller with the master key that passes a granted action still receives plaintext. Closing this needs the out-of-process boundary planned for Gate G2. |
+| R-06 | **Partly mitigated** | Added `BROKER_LEASE_ISSUED`, `BROKER_LEASE_EXPIRED`, `BROKER_CAPABILITY_INVALID`, `BROKER_LIMIT_REACHED` and `BROKER_REQUEST_ALLOWED`, which also closes the RFC/code mismatch. **Left:** `audit.mjs` is unchanged. A same-user rewrite of the file ledger still verifies, there are still two audit stores, and audit failures are still swallowed on the exec path. |
+| R-07 | **Partly mitigated** | `resolve()` no longer treats an empty action list as "any action". **Left:** `exec`, the broker and `secret-env` still pass the credential's own `projectId` as `targetId`, so the target check is self-referential, and `accessRole` is still never enforced. |
+| R-08 | **Partly mitigated** | `hetzer upgrade` now matches the checksum entry by exact filename and falls back to `checksums.txt` (the earlier substring match selected the scoped tarball's hash). **Left:** the unscoped `hetzer` package on npm is still 0.4.5 when checked on the date above, and the installers and README quickstart still install it. Publishing is a maintainer decision. |
+| R-09 | **Open** | `canary.mjs` is unchanged. |
+| R-10 | **Open** | Broker v1 coverage is unchanged, and the `.test` / `.example` lookup shortcut is still present in `http-broker.mjs`. |
+| R-11 | **Open** | Stack-era code, domain bleed in the vault schema, the duplicated guard logic in `creds.mjs` and the divergent identifier grammars are unchanged (Gate G2 and G3). |
+| R-12 | **Partly addressed** | The git-hook false positive on lockfile integrity digests is fixed. Banking positioning, the threat-model wording and the hardware roadmap are unchanged. |
+| R-13 | **Partly addressed** | Evidence protocols `VERIFY-SEC-007` to `-012` now exercise the authority model: workspace-authored broker policy, caller-supplied raw opt-out, action-granted `resolve()`, MCP destination binding, grant signatures, signature clearing, forged approvals and update laundering. Sandbox mounts and audit rewrite are still not covered. |
+
+### 7.1 Why replay of an old signed grant is not fixed at this layer
+
+A signed grant protects the values it covers. It does not tell the vault that a newer value exists. An attacker holding an earlier copy of the database can restore the whole earlier row, signature included, and the vault will accept it. Adding a version number to the signed payload does not help, because the old version number is restored together with the old row. A fix needs a counter that lives where the attacker cannot roll it back together with the database, for example a hardware-backed or remote monotonic counter. Anything stored on the same machine under the same user can be rolled back as well. This is listed as a known limit and belongs with the OS keyring and out-of-process work in ADR-0001, not with a further schema change.
+
+### 7.2 Operational changes introduced by G0 and G0.1
+
+- Credentials created before grant signing are unusable until an operator runs `hetzer creds grant --sign-existing`, which lists them and asks for a typed confirmation.
+- A broker policy must be approved with `hetzer broker approve <policy-file>` after any edit, because the approval is bound to the policy's hash.
+- `--allow-raw-unmediated` has no effect until `hetzer creds grant <id> --raw allow` has been run by an operator.
+- `hetzer_sniffer_redact` no longer exists in the MCP server.
+
+### 7.3 Not re-checked in this section
+
+The sandbox, the audit ledger, the canary and the human-session guard were confirmed unchanged by comparing them with `main`, not by re-running probes. The Linux and macOS behaviour of the new operator commands was not tested.
