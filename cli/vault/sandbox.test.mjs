@@ -7,12 +7,15 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import { Grimoire } from "./hetzer-vault.mjs";
+import { loadBrokerPolicy } from "./http-broker.mjs";
 import {
     buildContainerCliEnv,
     buildSandboxDockerArgs,
     checkDockerAvailable,
+    DEFAULT_SANDBOX_IMAGE,
     detectContainerEngine,
     executeSandboxedProcess,
+    resolveSandboxImage,
     resolveSandboxMount,
     selectContainerEnv,
 } from "./sandbox.mjs";
@@ -497,4 +500,109 @@ test("executeSandboxedProcess validates the mount before resolving credentials o
         (e) => e.code === "ERR_SANDBOX_MOUNT_REQUIRED",
     );
     assert.equal(spawned, false);
+});
+
+test("resolveSandboxImage defaults to a digest-pinned image and honors option and environment overrides", () => {
+    assert.match(DEFAULT_SANDBOX_IMAGE, /^node:22-alpine@sha256:[0-9a-f]{64}$/);
+    assert.equal(resolveSandboxImage({}, {}), DEFAULT_SANDBOX_IMAGE);
+    assert.equal(resolveSandboxImage({}, { HETZER_SANDBOX_IMAGE: "alpine:3.20" }), "alpine:3.20");
+    assert.equal(resolveSandboxImage({ sandbox: "ubuntu:24.04" }, { HETZER_SANDBOX_IMAGE: "alpine:3.20" }), "ubuntu:24.04");
+    assert.equal(resolveSandboxImage({ sandboxImage: "debian:12", sandbox: true }, {}), "debian:12");
+    // The pinned default must remain a valid image reference for the argument builder.
+    const args = buildSandboxDockerArgs({ mountDir: "/tmp/p", command: "node" });
+    assert.ok(args.includes(DEFAULT_SANDBOX_IMAGE));
+});
+
+test("executeSandboxedProcess states mount, hidden paths and network before starting", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-sandbox-notice-"));
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-sandbox-notice-project-"));
+    try {
+        fs.mkdirSync(path.join(root, "data"), { recursive: true });
+        fs.writeFileSync(path.join(root, ".env"), "PLAIN=value\n");
+        let captured = "";
+        const errStream = new PassThrough();
+        errStream.on("data", (chunk) => { captured += chunk; });
+        await executeSandboxedProcess({
+            root,
+            envFile: path.join(root, ".env"),
+            allowNames: [],
+            strict: true,
+            sandbox: true,
+            sandboxMountDir: project,
+            command: "/bin/true",
+            commandArgs: [],
+        }, {
+            baseEnv: { PATH: "/usr/bin", HETZER_SANDBOX_IMAGE: "alpine:3.20" },
+            execSyncFn: () => ({ status: 0, stdout: "ok" }),
+            spawnFn: () => fakeEngineChild(),
+            outStream: new PassThrough(),
+            errStream,
+        });
+        assert.match(captured, /\[hetzer\] sandbox: mount .* -> \/workspace \(read-write\)/);
+        assert.match(captured, /hidden Hetzer paths: 0/);
+        assert.match(captured, /network: engine default \(outbound access is allowed\)/);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(project, { recursive: true, force: true });
+    }
+});
+
+test("executeSandboxedProcess refuses --sandbox-network none together with a brokered credential", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-sandbox-nonet-"));
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-sandbox-nonet-project-"));
+    const masterKey = "synthetic-master-key-0123456789abcdef0123456789";
+    try {
+        fs.mkdirSync(path.join(root, "data"), { recursive: true });
+        fs.mkdirSync(path.join(root, ".hetzer", "brokers"), { recursive: true });
+        const dbPath = path.join(root, "data", "hetzer-vault.db");
+        fs.writeFileSync(path.join(root, ".env"), "API_KEY=secretRef:brokered-cred\n");
+        const policyFile = path.join(root, ".hetzer", "brokers", "brokered-cred.json");
+        fs.writeFileSync(policyFile, JSON.stringify({
+            version: 1,
+            target: "https://api.corp.test",
+            credential: "secretRef:brokered-cred",
+            allowedPathPrefixes: ["/v1"],
+            basePath: "/v1",
+            baseUrlEnv: "UP_URL",
+            tokenEnv: "UP_TOKEN",
+        }));
+        const vault = new Grimoire({ dbPath, masterKey });
+        vault.create({
+            id: "brokered-cred",
+            projectId: "proj",
+            secret: "synthetic-brokered-secret",
+            allowedActions: ["broker.proxy"],
+            allowedOrigins: ["https://api.corp.test"],
+        });
+        const policy = loadBrokerPolicy(policyFile);
+        vault.approveBrokerPolicy({ credentialId: "brokered-cred", policyHash: policy.policyHash, targetOrigin: policy.targetOrigin });
+        vault.close();
+
+        let spawned = false;
+        await assert.rejects(
+            () => executeSandboxedProcess({
+                root,
+                envFile: path.join(root, ".env"),
+                vaultPath: dbPath,
+                allowNames: ["brokered-cred"],
+                strict: true,
+                sandbox: true,
+                sandboxMountDir: project,
+                sandboxNetwork: "none",
+                command: "/bin/true",
+                commandArgs: [],
+            }, {
+                baseEnv: { PATH: "/usr/bin", HETZER_GRIMOIRE_KEY: masterKey },
+                execSyncFn: () => ({ status: 0, stdout: "ok" }),
+                spawnFn: () => { spawned = true; return fakeEngineChild(); },
+                outStream: new PassThrough(),
+                errStream: new PassThrough(),
+            }),
+            (error) => error.code === "ERR_SANDBOX_NETWORK_BROKER_UNREACHABLE",
+        );
+        assert.equal(spawned, false);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(project, { recursive: true, force: true });
+    }
 });

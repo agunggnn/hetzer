@@ -119,6 +119,18 @@ export const OCI_IMAGE_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.:-]*(?:\/[a-zA-Z0-9_.:
 
 const CONTAINER_WORKDIR = "/workspace";
 
+// Default sandbox image, pinned by its multi-platform index digest so the tag cannot move underneath a run.
+// A pin does not receive base-image security updates on its own. Refresh it deliberately:
+//   docker pull node:22-alpine
+//   docker image inspect node:22-alpine --format '{{index .RepoDigests 0}}'
+// then update the digest below. Override per run with --sandbox <image> or HETZER_SANDBOX_IMAGE.
+export const DEFAULT_SANDBOX_IMAGE = "node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402";
+
+export function resolveSandboxImage(options = {}, env = process.env) {
+    const requested = options.sandboxImage || (typeof options.sandbox === "string" ? options.sandbox : "");
+    return String(requested || env.HETZER_SANDBOX_IMAGE || "").trim() || DEFAULT_SANDBOX_IMAGE;
+}
+
 function sandboxError(code, message) {
     return Object.assign(new Error(message), { code, exitCode: 1 });
 }
@@ -260,7 +272,7 @@ export function buildSandboxDockerArgs({
     maskFile,
     env,
     envNames = [],
-    image = "node:22-alpine",
+    image = DEFAULT_SANDBOX_IMAGE,
     network,
     readOnly = false,
     containerName,
@@ -393,12 +405,23 @@ export async function executeSandboxedProcess(options, {
             fs.writeFileSync(maskFile, "", { mode: 0o600 });
         }
         const containerEnv = selectContainerEnv({ env, injectedNames, brokerUrlNames });
+        const sandboxImage = resolveSandboxImage(effectiveOptions, baseEnv);
+        const networkMode = String(effectiveOptions.sandboxNetwork || "").trim();
+        if (networkMode.toLowerCase() === "none" && brokers.length > 0) {
+            throw sandboxError("ERR_SANDBOX_NETWORK_BROKER_UNREACHABLE",
+                "--sandbox-network none cannot be combined with a brokered credential: the container could not reach the host broker. Use a raw-injection grant or a different network.");
+        }
+        errStream.write(
+            `[hetzer] sandbox: mount ${mountPlan.mountDir} -> ${CONTAINER_WORKDIR}${effectiveOptions.sandboxRo ? " (read-only)" : " (read-write)"}; `
+            + `hidden Hetzer paths: ${mountPlan.masks.files.length + mountPlan.masks.dirs.length}; `
+            + `network: ${networkMode || "engine default (outbound access is allowed)"}\n`,
+        );
         const dockerArgs = buildSandboxDockerArgs({
             mountDir: mountPlan.mountDir,
             masks: mountPlan.masks,
             maskFile,
             envNames: containerEnv.names,
-            image: effectiveOptions.sandboxImage || (typeof effectiveOptions.sandbox === "string" ? effectiveOptions.sandbox : "node:22-alpine"),
+            image: sandboxImage,
             network: effectiveOptions.sandboxNetwork,
             readOnly: Boolean(effectiveOptions.sandboxRo),
             command: effectiveOptions.command,
@@ -413,7 +436,7 @@ export async function executeSandboxedProcess(options, {
                 result: "ALLOW",
                 details: {
                     engine: engineCheck.engine,
-                    image: effectiveOptions.sandboxImage || "node:22-alpine",
+                    image: sandboxImage,
                     command: effectiveOptions.command,
                 },
                 root: effectiveOptions.root,
