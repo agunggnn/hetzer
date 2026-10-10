@@ -13,6 +13,7 @@ import {
     checkDockerAvailable,
     detectContainerEngine,
     executeSandboxedProcess,
+    resolveSandboxMount,
     selectContainerEnv,
 } from "./sandbox.mjs";
 
@@ -20,7 +21,7 @@ test("buildSandboxDockerArgs constructs isolated docker execution parameters", (
     const root = path.resolve("/tmp/test-project");
 
     const args = buildSandboxDockerArgs({
-        root,
+        mountDir: root,
         envNames: ["OPENAI_BASE_URL", "PROJECT_NAME"],
         image: "node:22-alpine",
         network: "bridge",
@@ -62,15 +63,15 @@ test("buildSandboxDockerArgs constructs isolated docker execution parameters", (
 
 test("buildSandboxDockerArgs refuses environment values and invalid variable names", () => {
     assert.throws(
-        () => buildSandboxDockerArgs({ env: { API_KEY: "synthetic-value" }, command: "node" }),
+        () => buildSandboxDockerArgs({ mountDir: "/tmp/p", env: { API_KEY: "synthetic-value" }, command: "node" }),
         /no longer accepts environment values/i,
     );
     assert.throws(
-        () => buildSandboxDockerArgs({ envNames: ["BAD NAME"], command: "node" }),
+        () => buildSandboxDockerArgs({ mountDir: "/tmp/p", envNames: ["BAD NAME"], command: "node" }),
         /Invalid sandbox environment variable name/i,
     );
     assert.throws(
-        () => buildSandboxDockerArgs({ envNames: ["A=B"], command: "node" }),
+        () => buildSandboxDockerArgs({ mountDir: "/tmp/p", envNames: ["A=B"], command: "node" }),
         /Invalid sandbox environment variable name/i,
     );
 });
@@ -149,6 +150,7 @@ function fakeEngineChild() {
 for (const strict of [true, false]) {
     test(`executeSandboxedProcess keeps secrets and the master key off the engine command line (strict=${strict})`, async () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-sandbox-env-"));
+        const project = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-sandbox-env-project-"));
         const masterKey = "synthetic-master-key-0123456789abcdef0123456789";
         const secret = "SYNTH-sandbox-secret-value-0123456789";
         const hostToken = "host-only-token-value-0123456789";
@@ -169,6 +171,7 @@ for (const strict of [true, false]) {
                 allowRawUnmediated: ["raw-cred"],
                 strict,
                 sandbox: true,
+                sandboxMountDir: project,
                 sandboxImage: "alpine:3.20",
                 command: "/bin/true",
                 commandArgs: [],
@@ -202,6 +205,7 @@ for (const strict of [true, false]) {
             assert.equal(Object.hasOwn(captured.options.env, "SOME_OTHER_HOST_TOKEN"), false);
         } finally {
             fs.rmSync(root, { recursive: true, force: true });
+            fs.rmSync(project, { recursive: true, force: true });
         }
     });
 }
@@ -259,7 +263,7 @@ test("detectContainerEngine respects HETZER_CONTAINER_ENGINE override", () => {
 test("buildSandboxDockerArgs adds :Z mount and host.containers.internal for Podman on Linux", () => {
     const root = path.resolve("/tmp/test-project");
     const args = buildSandboxDockerArgs({
-        root,
+        mountDir: root,
         engine: "podman",
         platform: "linux",
         command: "node",
@@ -307,7 +311,7 @@ test("buildSandboxDockerArgs rejects CLI option injection and malformed image na
 
     for (const badImage of dangerousImages) {
         assert.throws(
-            () => buildSandboxDockerArgs({ image: badImage, command: "node" }),
+            () => buildSandboxDockerArgs({ mountDir: "/tmp/p", image: badImage, command: "node" }),
             /Invalid sandbox image/i,
             `Expected '${badImage}' to be rejected`
         );
@@ -324,7 +328,173 @@ test("buildSandboxDockerArgs rejects CLI option injection and malformed image na
     ];
 
     for (const validImage of validImages) {
-        const args = buildSandboxDockerArgs({ image: validImage, command: "node" });
+        const args = buildSandboxDockerArgs({ mountDir: "/tmp/p", image: validImage, command: "node" });
         assert.ok(args.includes(validImage));
     }
+});
+
+function makeTree(prefix, spec) {
+    const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+    for (const [relative, kind] of Object.entries(spec)) {
+        const target = path.join(base, ...relative.split("/"));
+        if (kind === "dir") {
+            fs.mkdirSync(target, { recursive: true });
+        } else {
+            fs.mkdirSync(path.dirname(target), { recursive: true });
+            fs.writeFileSync(target, "synthetic fixture\n");
+        }
+    }
+    return base;
+}
+
+test("resolveSandboxMount requires an existing directory", () => {
+    assert.throws(() => resolveSandboxMount({}), (e) => e.code === "ERR_SANDBOX_MOUNT_REQUIRED");
+    assert.throws(
+        () => resolveSandboxMount({ mountDir: path.join(os.tmpdir(), "hetzer-does-not-exist-xyz") }),
+        (e) => e.code === "ERR_SANDBOX_MOUNT_INVALID",
+    );
+    const file = makeTree("hetzer-mount-file-", { "a.txt": "file" });
+    try {
+        assert.throws(
+            () => resolveSandboxMount({ mountDir: path.join(file, "a.txt") }),
+            (e) => e.code === "ERR_SANDBOX_MOUNT_INVALID",
+        );
+    } finally {
+        fs.rmSync(file, { recursive: true, force: true });
+    }
+});
+
+test("resolveSandboxMount refuses the filesystem root, the home directory, the Hetzer home and their ancestors", () => {
+    const home = makeTree("hetzer-mount-home-", { ".hetzer/grimoire.key": "file", "code/project/readme.md": "file" });
+    try {
+        const unsafe = [
+            path.parse(home).root,
+            path.dirname(home), // an ancestor of the home directory
+            home,
+            path.join(home, ".hetzer"),
+            path.join(home, ".hetzer", "nested-inside-hetzer-home"),
+        ];
+        fs.mkdirSync(path.join(home, ".hetzer", "nested-inside-hetzer-home"), { recursive: true });
+        for (const mountDir of unsafe) {
+            assert.throws(
+                () => resolveSandboxMount({ mountDir, root: mountDir, homeDir: home, hetzerHome: path.join(home, ".hetzer") }),
+                (e) => e.code === "ERR_SANDBOX_MOUNT_UNSAFE",
+                `expected ${mountDir} to be refused`,
+            );
+        }
+        // A project below the home directory is fine.
+        const plan = resolveSandboxMount({ mountDir: path.join(home, "code", "project"), root: path.join(home, ".hetzer"), homeDir: home, hetzerHome: path.join(home, ".hetzer") });
+        assert.equal(plan.mountDir, path.join(home, "code", "project"));
+        assert.deepEqual(plan.masks, { files: [], dirs: [] });
+    } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("resolveSandboxMount hides Hetzer-owned paths that sit inside the mount, and only those that exist", () => {
+    const home = makeTree("hetzer-mount-mask-home-", {});
+    const project = makeTree("hetzer-mount-mask-project-", {
+        "src/index.js": "file",
+        "README.md": "file",
+        ".env": "file",
+        "data/hetzer-vault.db": "file",
+        "data/hetzer-vault.db-wal": "file",
+        "data/hetzer-incidents.log": "file",
+        "data/credential-requests/req.json": "file",
+        ".hetzer/audit.log": "file",
+        ".hetzer/audit.log.head": "file",
+    });
+    try {
+        const plan = resolveSandboxMount({ mountDir: project, root: project, envFile: path.join(project, ".env"), homeDir: home, hetzerHome: path.join(home, ".hetzer") });
+        const files = plan.masks.files.map((item) => item.containerPath).sort();
+        const dirs = plan.masks.dirs.map((item) => item.containerPath).sort();
+        assert.deepEqual(files, [
+            "/workspace/.env",
+            "/workspace/.hetzer/audit.log",
+            "/workspace/.hetzer/audit.log.head",
+            "/workspace/data/hetzer-incidents.log",
+            "/workspace/data/hetzer-vault.db",
+            "/workspace/data/hetzer-vault.db-wal",
+        ]);
+        assert.deepEqual(dirs, ["/workspace/.hetzer", "/workspace/data/credential-requests"]);
+        // Files that are not there are not masked (a bind target would otherwise be created in the project).
+        assert.equal(files.some((item) => item.endsWith("-shm") || item.endsWith("vault.json")), false);
+        // Project files are not masked.
+        assert.equal(files.some((item) => item.includes("src/") || item.endsWith("README.md")), false);
+    } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+        fs.rmSync(project, { recursive: true, force: true });
+    }
+});
+
+test("resolveSandboxMount masks a vault path override and an env file kept inside the project", () => {
+    const home = makeTree("hetzer-mount-override-home-", {});
+    const project = makeTree("hetzer-mount-override-project-", { "secrets/my.db": "file", "config/instance.env": "file", "app.js": "file" });
+    const instance = makeTree("hetzer-mount-override-instance-", { "data/hetzer-vault.db": "file", ".env": "file" });
+    try {
+        const plan = resolveSandboxMount({
+            mountDir: project,
+            root: instance,
+            envFile: path.join(project, "config", "instance.env"),
+            vaultPath: path.join(project, "secrets", "my.db"),
+            homeDir: home,
+        });
+        assert.deepEqual(plan.masks.files.map((item) => item.containerPath).sort(), ["/workspace/config/instance.env", "/workspace/secrets/my.db"]);
+        assert.deepEqual(plan.masks.dirs, []);
+    } finally {
+        for (const dir of [home, project, instance]) fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test("resolveSandboxMount fails closed when a sensitive path cannot be hidden", () => {
+    const home = makeTree("hetzer-mount-wrongtype-home-", {});
+    // A directory where the vault database should be a file.
+    const project = makeTree("hetzer-mount-wrongtype-project-", { "data/hetzer-vault.db/inner.txt": "file" });
+    try {
+        assert.throws(
+            () => resolveSandboxMount({ mountDir: project, root: project, homeDir: home }),
+            (e) => e.code === "ERR_SANDBOX_SENSITIVE_PATH_IN_MOUNT",
+        );
+    } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+        fs.rmSync(project, { recursive: true, force: true });
+    }
+});
+
+test("buildSandboxDockerArgs applies masks after the main mount and needs an explicit mount directory", () => {
+    const mountDir = path.resolve("/tmp/test-project");
+    const args = buildSandboxDockerArgs({
+        mountDir,
+        maskFile: "/tmp/mask/empty",
+        masks: {
+            files: [{ hostPath: "/tmp/test-project/.env", containerPath: "/workspace/.env" }],
+            dirs: [{ hostPath: "/tmp/test-project/.hetzer", containerPath: "/workspace/.hetzer" }],
+        },
+        command: "node",
+    });
+    const mounts = args.filter((_, i) => args[i - 1] === "-v");
+    assert.equal(mounts[0], `${mountDir}:/workspace:rw`);
+    assert.ok(mounts.includes("/tmp/mask/empty:/workspace/.env:ro"));
+    assert.equal(mounts.length, 2);
+    const tmpfsIndex = args.indexOf("--tmpfs");
+    assert.ok(tmpfsIndex > args.indexOf("-v"));
+    assert.equal(args[tmpfsIndex + 1], "/workspace/.hetzer:ro,noexec,nosuid,size=4k");
+
+    assert.throws(() => buildSandboxDockerArgs({ command: "node" }), (e) => e.code === "ERR_SANDBOX_MOUNT_REQUIRED");
+    assert.throws(
+        () => buildSandboxDockerArgs({ mountDir, masks: { files: [{ hostPath: "a", containerPath: "/workspace/a" }], dirs: [] }, command: "node" }),
+        (e) => e.code === "ERR_SANDBOX_MASK_INVALID",
+    );
+});
+
+test("executeSandboxedProcess validates the mount before resolving credentials or starting the engine", async () => {
+    let spawned = false;
+    await assert.rejects(
+        () => executeSandboxedProcess({ root: process.cwd(), command: "node", commandArgs: [] }, {
+            execSyncFn: () => ({ status: 0, stdout: "ok" }),
+            spawnFn: () => { spawned = true; return fakeEngineChild(); },
+        }),
+        (e) => e.code === "ERR_SANDBOX_MOUNT_REQUIRED",
+    );
+    assert.equal(spawned, false);
 });

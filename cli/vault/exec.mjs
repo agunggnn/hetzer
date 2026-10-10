@@ -545,7 +545,7 @@ export function resolveCommandForSpawn(command, commandArgs = []) {
 export function parseArguments(argv) {
     const marker = argv.indexOf("--");
     if (marker === -1 || !argv[marker + 1]) {
-        throw new Error("Usage: exec --root <path> --env-file <path> [--policy <path>] [--policy-hash <sha256>] [--broker-policy <path>] [--allow NAME,NAME] [--allow-raw-unmediated NAME,NAME] [--strict] [--canary] [--sandbox [image]] [--sandbox-network <net>] [--sandbox-ro] [--timeout <duration>] -- <command> [args]");
+        throw new Error("Usage: exec --root <path> --env-file <path> [--policy <path>] [--policy-hash <sha256>] [--broker-policy <path>] [--allow NAME,NAME] [--allow-raw-unmediated NAME,NAME] [--strict] [--canary] [--sandbox [image]] [--sandbox-network <net>] [--sandbox-mount <dir>] [--sandbox-ro] [--timeout <duration>] -- <command> [args]");
     }
     const options = argv.slice(0, marker);
     const value = (name) => {
@@ -561,6 +561,9 @@ export function parseArguments(argv) {
     const rawSandboxVal = value("--sandbox");
     const sandboxImage = value("--sandbox-image") || (rawSandboxVal && !rawSandboxVal.startsWith("-") ? rawSandboxVal : undefined);
     const sandboxNetwork = value("--sandbox-network") || undefined;
+    // The CLI works on the directory it is run from unless told otherwise. This is the project the sandbox
+    // mounts; it is not the Hetzer instance root.
+    const sandboxMountDir = isSandbox ? path.resolve(value("--sandbox-mount") || process.cwd()) : undefined;
     const root = path.resolve(value("--root") || process.cwd());
     const rawEnvFile = value("--env-file");
     const envFile = rawEnvFile ? path.resolve(rawEnvFile) : path.join(root, ".env");
@@ -578,6 +581,7 @@ export function parseArguments(argv) {
         sandbox: isSandbox,
         sandboxImage: sandboxImage || undefined,
         sandboxNetwork,
+        sandboxMountDir,
         sandboxRo: options.includes("--sandbox-ro"),
         strict: options.includes("--strict"),
         canary: options.includes("--canary"),

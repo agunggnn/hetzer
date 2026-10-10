@@ -234,6 +234,10 @@ export function createHetzer(options = {}) {
                     throw invalidSdkConfig("credential-backed execution requires a persistent vault path.");
                 }
 
+                if (executionOptions.sandbox && !executionOptions.sandboxMountDir) {
+                    throw invalidSdkConfig("sandboxMountDir is required when sandbox is enabled; pass the project directory to mount.");
+                }
+
                 const stdout = assertWritableStream(executionOptions.stdout || process.stdout, "stdout");
                 const stderr = assertWritableStream(executionOptions.stderr || process.stderr, "stderr");
                 const effectiveOptions = {
@@ -252,6 +256,7 @@ export function createHetzer(options = {}) {
                     sandbox: executionOptions.sandbox || false,
                     sandboxImage: executionOptions.sandboxImage,
                     sandboxNetwork: executionOptions.sandboxNetwork,
+                    sandboxMountDir: resolveOptionalPath(root, executionOptions.sandboxMountDir, "sandboxMountDir"),
                     sandboxRo: Boolean(executionOptions.sandboxRo),
                     timeout: executionOptions.timeout,
                     timeoutMs: executionOptions.timeoutMs,

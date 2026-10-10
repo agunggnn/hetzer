@@ -2,9 +2,12 @@
 
 import "../core/suppress-warnings.mjs";
 import { spawn, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { recordAuditEvent } from "./audit.mjs";
+import { getAuditLogPath, recordAuditEvent } from "./audit.mjs";
 import { parseDuration, pipeSanitizedChild, prepareExecutionEnvironment } from "./exec.mjs";
+import { getIsolatedKeyPath, resolveVaultPath } from "./hetzer-vault.mjs";
 import { strictBaseEnvironment } from "./secret-env.mjs";
 
 // Variables forwarded to the container besides the ones Hetzer injected itself. Everything else in
@@ -114,8 +117,147 @@ export function checkDockerAvailable(exec = spawnSync) {
 
 export const OCI_IMAGE_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.:-]*(?:\/[a-zA-Z0-9_.:-]+)*(?:@[a-zA-Z0-9_.-]+:[a-fA-F0-9]+)?$/;
 
+const CONTAINER_WORKDIR = "/workspace";
+
+function sandboxError(code, message) {
+    return Object.assign(new Error(message), { code, exitCode: 1 });
+}
+
+function realPathOrResolved(target) {
+    try {
+        return fs.realpathSync.native(target);
+    } catch {
+        return path.resolve(target);
+    }
+}
+
+function isSamePath(a, b) {
+    return path.relative(a, b) === "";
+}
+
+function isInsidePath(child, parent) {
+    const relative = path.relative(parent, child);
+    return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function toContainerPath(mountReal, hostPath) {
+    return `${CONTAINER_WORKDIR}/${path.relative(mountReal, hostPath).split(path.sep).join("/")}`;
+}
+
+/**
+ * Decide what a sandbox may mount and which Hetzer-owned paths inside it must be hidden.
+ *
+ * The mount directory is an explicit input (the project being worked on), never the Hetzer instance root.
+ * It is refused when it is the filesystem root, the home directory, the Hetzer home or any ancestor of
+ * those, or when it lies inside the Hetzer home. Hetzer-owned paths that sit inside the mount (the env
+ * file, vault database and its journals, key file, audit and incident logs, `.hetzer/`, credential
+ * requests) are hidden with an empty read-only file or a read-only tmpfs. Only paths that exist are masked,
+ * because a bind target that does not exist would be created inside the host project.
+ */
+export function resolveSandboxMount({
+    mountDir,
+    root,
+    envFile,
+    vaultPath,
+    homeDir = os.homedir(),
+    hetzerHome: hetzerHomeOverride,
+    platform = process.platform,
+} = {}) {
+    if (typeof mountDir !== "string" || !mountDir.trim()) {
+        throw sandboxError("ERR_SANDBOX_MOUNT_REQUIRED",
+            "A sandbox needs an explicit directory to mount (the project to work on). Pass --sandbox-mount <dir> or run from the project directory.");
+    }
+    const requested = path.resolve(mountDir);
+    let stats;
+    try {
+        stats = fs.statSync(requested);
+    } catch {
+        throw sandboxError("ERR_SANDBOX_MOUNT_INVALID", `Sandbox mount directory does not exist: '${requested}'.`);
+    }
+    if (!stats.isDirectory()) {
+        throw sandboxError("ERR_SANDBOX_MOUNT_INVALID", `Sandbox mount path is not a directory: '${requested}'.`);
+    }
+    const mountReal = realPathOrResolved(requested);
+
+    // `-v host:container` splits on ':' (a Windows drive letter is the only legitimate one) and on newlines.
+    const afterDrive = platform === "win32" ? mountReal.slice(2) : mountReal;
+    if (/[\0\r\n]/.test(mountReal) || afterDrive.includes(":")) {
+        throw sandboxError("ERR_SANDBOX_MOUNT_INVALID",
+            `Sandbox mount path contains characters that change mount semantics: ${JSON.stringify(mountReal)}.`);
+    }
+
+    const resolvedRoot = path.resolve(root || process.cwd());
+    const hetzerHome = realPathOrResolved(hetzerHomeOverride
+        || (process.env.HETZER_HOME ? path.resolve(process.env.HETZER_HOME) : path.join(homeDir, ".hetzer")));
+    const home = realPathOrResolved(homeDir);
+    if (isSamePath(mountReal, path.parse(mountReal).root)) {
+        throw sandboxError("ERR_SANDBOX_MOUNT_UNSAFE", "Refusing to mount the filesystem root into a sandbox.");
+    }
+    for (const [label, protectedPath] of [["the home directory", home], ["the Hetzer home", hetzerHome]]) {
+        if (isSamePath(mountReal, protectedPath) || isInsidePath(protectedPath, mountReal)) {
+            throw sandboxError("ERR_SANDBOX_MOUNT_UNSAFE",
+                `Refusing to mount '${mountReal}' into a sandbox: it is or contains ${label}. Mount the project directory instead.`);
+        }
+    }
+    if (isInsidePath(mountReal, hetzerHome)) {
+        throw sandboxError("ERR_SANDBOX_MOUNT_UNSAFE",
+            `Refusing to mount '${mountReal}' into a sandbox: it lies inside the Hetzer home, which holds the vault and key material.`);
+    }
+
+    const vaultFile = resolveVaultPath(resolvedRoot, vaultPath) || path.join(resolvedRoot, "data", "hetzer-vault.db");
+    const auditLog = getAuditLogPath({ root: resolvedRoot });
+    const sensitiveFiles = new Set();
+    for (const base of [vaultFile === ":memory:" ? "" : vaultFile, ...(envFile ? [envFile] : []), getIsolatedKeyPath(homeDir)]) {
+        if (!base) continue;
+        sensitiveFiles.add(base);
+    }
+    for (const suffix of ["-wal", "-shm", "-journal"]) {
+        if (vaultFile && vaultFile !== ":memory:") sensitiveFiles.add(`${vaultFile}${suffix}`);
+    }
+    for (const suffix of ["", ".head", ".state", ".lock"]) sensitiveFiles.add(`${auditLog}${suffix}`);
+    sensitiveFiles.add(path.join(resolvedRoot, "data", "hetzer-incidents.log"));
+    sensitiveFiles.add(path.join(resolvedRoot, "data", "vault.json"));
+    sensitiveFiles.add(path.join(resolvedRoot, ".env"));
+    const sensitiveDirs = new Set([
+        path.join(resolvedRoot, ".hetzer"),
+        path.join(resolvedRoot, "data", "credential-requests"),
+        hetzerHome,
+    ]);
+
+    const files = [];
+    const dirs = [];
+    const seen = new Set();
+    for (const [candidate, expected] of [...[...sensitiveFiles].map((p) => [p, "file"]), ...[...sensitiveDirs].map((p) => [p, "dir"])]) {
+        let stat;
+        try {
+            stat = fs.statSync(candidate);
+        } catch {
+            continue; // Not present: nothing to hide, and a missing bind target would be created inside the project.
+        }
+        const real = realPathOrResolved(candidate);
+        if (!isInsidePath(real, mountReal) && !isSamePath(real, mountReal)) continue;
+        if (isSamePath(real, mountReal)) {
+            throw sandboxError("ERR_SANDBOX_SENSITIVE_PATH_IN_MOUNT",
+                `The sandbox mount '${mountReal}' is itself a Hetzer-owned location and cannot be hidden. Mount the project directory instead.`);
+        }
+        if (seen.has(real)) continue;
+        seen.add(real);
+        if (stat.isFile() && expected === "file") {
+            files.push({ hostPath: real, containerPath: toContainerPath(mountReal, real) });
+        } else if (stat.isDirectory() && expected === "dir") {
+            dirs.push({ hostPath: real, containerPath: toContainerPath(mountReal, real) });
+        } else {
+            throw sandboxError("ERR_SANDBOX_SENSITIVE_PATH_IN_MOUNT",
+                `Cannot hide '${real}' inside the sandbox mount (unexpected file type). Move it outside '${mountReal}' or mount a different directory.`);
+        }
+    }
+    return { mountDir: mountReal, masks: { files, dirs } };
+}
+
 export function buildSandboxDockerArgs({
-    root = process.cwd(),
+    mountDir,
+    masks = { files: [], dirs: [] },
+    maskFile,
     env,
     envNames = [],
     image = "node:22-alpine",
@@ -136,7 +278,13 @@ export function buildSandboxDockerArgs({
         throw new Error(`Invalid sandbox image: '${image}'. Image name must be a valid OCI reference and cannot start with '-'.`);
     }
 
-    const resolvedRoot = path.resolve(root);
+    if (typeof mountDir !== "string" || !mountDir.trim()) {
+        throw sandboxError("ERR_SANDBOX_MOUNT_REQUIRED", "buildSandboxDockerArgs requires an explicit mountDir.");
+    }
+    if (masks.files?.length && (typeof maskFile !== "string" || !maskFile)) {
+        throw sandboxError("ERR_SANDBOX_MASK_INVALID", "File masks require the path of an empty host file (maskFile).");
+    }
+    const resolvedMount = path.resolve(mountDir);
     const args = ["run", "--rm", "-i"];
 
     if (containerName) {
@@ -167,9 +315,16 @@ export function buildSandboxDockerArgs({
     const isPodmanLinux = engine.toLowerCase().includes("podman") && platform === "linux";
     const mountSuffix = isPodmanLinux ? (readOnly ? ":ro,Z" : ":rw,Z") : (readOnly ? ":ro" : ":rw");
     args.push(
-        "-v", `${resolvedRoot}:/workspace${mountSuffix}`,
-        "-w", "/workspace",
+        "-v", `${resolvedMount}:${CONTAINER_WORKDIR}${mountSuffix}`,
+        "-w", CONTAINER_WORKDIR,
     );
+    // Hide Hetzer-owned paths that sit inside the mount. Masks come after the main mount so they take precedence.
+    for (const file of masks.files || []) {
+        args.push("-v", `${maskFile}:${file.containerPath}:ro`);
+    }
+    for (const dir of masks.dirs || []) {
+        args.push("--tmpfs", `${dir.containerPath}:ro,noexec,nosuid,size=4k`);
+    }
 
     // Forward variables by name only. The engine reads each value from its own process environment.
     for (const name of envNames) {
@@ -217,15 +372,31 @@ export async function executeSandboxedProcess(options, {
     }
 
     const effectiveOptions = { ...options };
+    // Validate the mount before any credential is resolved or any broker is started.
+    const mountPlan = resolveSandboxMount({
+        mountDir: effectiveOptions.sandboxMountDir,
+        root: effectiveOptions.root,
+        envFile: effectiveOptions.envFile,
+        vaultPath: effectiveOptions.vaultPath,
+    });
     const { env, secretsToRedact, brokers, injectedNames, brokerUrlNames } = await prepareExecutionEnvironment(
         effectiveOptions,
         { baseEnv, brokerFetchFn, brokerRandomBytes },
     );
 
+    let maskDir = null;
     try {
+        let maskFile;
+        if (mountPlan.masks.files.length) {
+            maskDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-sandbox-mask-"));
+            maskFile = path.join(maskDir, "empty");
+            fs.writeFileSync(maskFile, "", { mode: 0o600 });
+        }
         const containerEnv = selectContainerEnv({ env, injectedNames, brokerUrlNames });
         const dockerArgs = buildSandboxDockerArgs({
-            root: effectiveOptions.root,
+            mountDir: mountPlan.mountDir,
+            masks: mountPlan.masks,
+            maskFile,
             envNames: containerEnv.names,
             image: effectiveOptions.sandboxImage || (typeof effectiveOptions.sandbox === "string" ? effectiveOptions.sandbox : "node:22-alpine"),
             network: effectiveOptions.sandboxNetwork,
@@ -270,5 +441,8 @@ export async function executeSandboxedProcess(options, {
             await opened.broker.close();
             opened.secret = "";
         }));
+        if (maskDir) {
+            try { fs.rmSync(maskDir, { recursive: true, force: true }); } catch { /* temp dir only */ }
+        }
     }
 }
