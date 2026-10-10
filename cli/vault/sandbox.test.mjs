@@ -1,27 +1,27 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
+import { Grimoire } from "./hetzer-vault.mjs";
 import {
+    buildContainerCliEnv,
     buildSandboxDockerArgs,
     checkDockerAvailable,
     detectContainerEngine,
     executeSandboxedProcess,
+    selectContainerEnv,
 } from "./sandbox.mjs";
 
 test("buildSandboxDockerArgs constructs isolated docker execution parameters", () => {
     const root = path.resolve("/tmp/test-project");
-    const env = {
-        OPENAI_BASE_URL: "http://127.0.0.1:54321/v1",
-        LOCAL_SERVICE: "http://localhost:8080",
-        PROJECT_NAME: "demo",
-    };
 
     const args = buildSandboxDockerArgs({
         root,
-        env,
+        envNames: ["OPENAI_BASE_URL", "PROJECT_NAME"],
         image: "node:22-alpine",
         network: "bridge",
         readOnly: false,
@@ -48,12 +48,10 @@ test("buildSandboxDockerArgs constructs isolated docker execution parameters", (
     assert.ok(mountIndex >= 0);
     assert.equal(args[mountIndex + 1], `${root}:/workspace:rw`);
 
-    // 4. Broker loopback address translation to host.docker.internal
-    assert.ok(args.includes("-e"));
+    // 4. Environment variables are forwarded by name only; values never appear in argv
     const envEntries = args.filter((_, i) => args[i - 1] === "-e");
-    assert.ok(envEntries.includes("OPENAI_BASE_URL=http://host.docker.internal:54321/v1"));
-    assert.ok(envEntries.includes("LOCAL_SERVICE=http://host.docker.internal:8080"));
-    assert.ok(envEntries.includes("PROJECT_NAME=demo"));
+    assert.deepEqual(envEntries, ["OPENAI_BASE_URL", "PROJECT_NAME"]);
+    assert.equal(args.some((arg) => arg.includes("=") && envEntries.includes(arg.split("=")[0])), false);
 
     // 5. Normalization of Windows node.exe to node
     const imageIndex = args.indexOf("node:22-alpine");
@@ -61,6 +59,152 @@ test("buildSandboxDockerArgs constructs isolated docker execution parameters", (
     assert.equal(args[imageIndex + 1], "node");
     assert.equal(args[imageIndex + 2], "index.js");
 });
+
+test("buildSandboxDockerArgs refuses environment values and invalid variable names", () => {
+    assert.throws(
+        () => buildSandboxDockerArgs({ env: { API_KEY: "synthetic-value" }, command: "node" }),
+        /no longer accepts environment values/i,
+    );
+    assert.throws(
+        () => buildSandboxDockerArgs({ envNames: ["BAD NAME"], command: "node" }),
+        /Invalid sandbox environment variable name/i,
+    );
+    assert.throws(
+        () => buildSandboxDockerArgs({ envNames: ["A=B"], command: "node" }),
+        /Invalid sandbox environment variable name/i,
+    );
+});
+
+test("selectContainerEnv forwards only injected variables and a terminal allowlist", () => {
+    const hostEnv = {
+        PATH: "C:/Windows/System32",
+        USERPROFILE: "C:/Users/someone",
+        HETZER_GRIMOIRE_KEY: "synthetic-master-key",
+        HETZER_ROOT: "C:/instance",
+        SOME_OTHER_HOST_TOKEN: "host-only-value",
+        TERM: "xterm",
+        LANG: "en_US.UTF-8",
+        LC_TIME: "C",
+        // Injected by Hetzer:
+        API_KEY: "synthetic-secret-with-localhost-in-value",
+        UP_URL: "http://127.0.0.1:41234/v1",
+        HETZER_BROKER_URL: "http://localhost:41234/v1",
+    };
+    const { values, names } = selectContainerEnv({
+        env: hostEnv,
+        injectedNames: ["API_KEY", "UP_URL", "HETZER_BROKER_URL", "HETZER_GRIMOIRE_KEY"],
+        brokerUrlNames: ["UP_URL", "HETZER_BROKER_URL"],
+    });
+
+    assert.deepEqual(new Set(names), new Set(["API_KEY", "UP_URL", "HETZER_BROKER_URL", "TERM", "LANG", "LC_TIME"]));
+    for (const forbidden of ["PATH", "USERPROFILE", "HETZER_GRIMOIRE_KEY", "HETZER_ROOT", "SOME_OTHER_HOST_TOKEN"]) {
+        assert.equal(Object.hasOwn(values, forbidden), false, `${forbidden} must not reach the container`);
+    }
+    // Loopback is rewritten for broker URL variables only; a credential value is never altered.
+    assert.equal(values.UP_URL, "http://host.docker.internal:41234/v1");
+    assert.equal(values.HETZER_BROKER_URL, "http://host.docker.internal:41234/v1");
+    assert.equal(values.API_KEY, "synthetic-secret-with-localhost-in-value");
+});
+
+test("selectContainerEnv rejects invalid names and NUL bytes", () => {
+    assert.throws(() => selectContainerEnv({ env: { "BAD NAME": "x" }, injectedNames: ["BAD NAME"] }), /invalid environment variable name/i);
+    assert.throws(() => selectContainerEnv({ env: { API_KEY: "a\0b" }, injectedNames: ["API_KEY"] }), /NUL byte/i);
+});
+
+test("buildContainerCliEnv keeps the engine CLI working without the master key or unrelated host variables", () => {
+    const baseEnv = {
+        PATH: "/usr/bin",
+        HOME: "/home/someone",
+        DOCKER_HOST: "unix:///var/run/docker.sock",
+        HETZER_GRIMOIRE_KEY: "synthetic-master-key",
+        SOME_OTHER_HOST_TOKEN: "host-only-value",
+        TERM: "xterm",
+    };
+    const cliEnv = buildContainerCliEnv({ baseEnv, containerValues: { API_KEY: "synthetic-secret", TERM: "xterm" } });
+    assert.equal(cliEnv.PATH, "/usr/bin");
+    assert.equal(cliEnv.DOCKER_HOST, "unix:///var/run/docker.sock");
+    assert.equal(cliEnv.API_KEY, "synthetic-secret");
+    assert.equal(Object.hasOwn(cliEnv, "HETZER_GRIMOIRE_KEY"), false);
+    assert.equal(Object.hasOwn(cliEnv, "SOME_OTHER_HOST_TOKEN"), false);
+
+    assert.throws(
+        () => buildContainerCliEnv({ baseEnv, containerValues: { path: "/malicious" } }),
+        (error) => error.code === "ERR_SANDBOX_ENV_COLLISION",
+    );
+});
+
+function fakeEngineChild() {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.pid = 0;
+    setImmediate(() => {
+        child.stdout.end();
+        child.stderr.end();
+        child.emit("close", 0, null);
+    });
+    return child;
+}
+
+for (const strict of [true, false]) {
+    test(`executeSandboxedProcess keeps secrets and the master key off the engine command line (strict=${strict})`, async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-sandbox-env-"));
+        const masterKey = "synthetic-master-key-0123456789abcdef0123456789";
+        const secret = "SYNTH-sandbox-secret-value-0123456789";
+        const hostToken = "host-only-token-value-0123456789";
+        try {
+            fs.mkdirSync(path.join(root, "data"), { recursive: true });
+            const dbPath = path.join(root, "data", "hetzer-vault.db");
+            const vault = new Grimoire({ dbPath, masterKey });
+            vault.create({ id: "raw-cred", projectId: "proj", secret, allowedActions: ["process.start"], rawInjection: "allow" });
+            vault.close();
+            fs.writeFileSync(path.join(root, ".env"), "API_KEY=secretRef:raw-cred\n");
+
+            let captured;
+            const result = await executeSandboxedProcess({
+                root,
+                envFile: path.join(root, ".env"),
+                vaultPath: dbPath,
+                allowNames: ["raw-cred"],
+                allowRawUnmediated: ["raw-cred"],
+                strict,
+                sandbox: true,
+                sandboxImage: "alpine:3.20",
+                command: "/bin/true",
+                commandArgs: [],
+            }, {
+                baseEnv: { PATH: "/usr/bin", USERPROFILE: "/home/x", HETZER_GRIMOIRE_KEY: masterKey, SOME_OTHER_HOST_TOKEN: hostToken, TERM: "xterm" },
+                execSyncFn: () => ({ status: 0, stdout: "ok" }),
+                spawnFn: (engine, args, options) => {
+                    captured = { engine, args, options };
+                    return fakeEngineChild();
+                },
+                outStream: new PassThrough(),
+                errStream: new PassThrough(),
+            });
+
+            assert.equal(result.status, 0);
+            const argvText = captured.args.join("\n");
+            for (const needle of [secret, masterKey, hostToken]) {
+                assert.equal(argvText.includes(needle), false, "engine argv must not contain secret material");
+            }
+            assert.ok(captured.args.includes("API_KEY"), "the credential variable is forwarded by name");
+            const forwarded = captured.args.filter((_, i) => captured.args[i - 1] === "-e");
+            assert.equal(forwarded.includes("PATH"), false);
+            assert.equal(forwarded.includes("USERPROFILE"), false);
+            assert.equal(forwarded.includes("HETZER_GRIMOIRE_KEY"), false);
+            assert.equal(forwarded.includes("SOME_OTHER_HOST_TOKEN"), false);
+            assert.equal(forwarded.includes("HETZER_ROOT"), false);
+
+            // The value reaches the engine through its own environment, which does not hold the master key.
+            assert.equal(captured.options.env.API_KEY, secret);
+            assert.equal(Object.hasOwn(captured.options.env, "HETZER_GRIMOIRE_KEY"), false);
+            assert.equal(Object.hasOwn(captured.options.env, "SOME_OTHER_HOST_TOKEN"), false);
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+}
 
 test("checkDockerAvailable inspects Docker CLI and daemon connectivity", () => {
     // 1. Successful check

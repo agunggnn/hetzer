@@ -760,6 +760,11 @@ export async function prepareExecutionEnvironment(effectiveOptions, {
     }
     const brokers = [];
     const claimedBrokerEnvNames = new Set();
+    // Names Hetzer itself placed in the child environment. A sandbox forwards only these (plus a small
+    // terminal/locale allowlist), never the rest of the host environment.
+    const injectedNames = new Set(rawBindings.map(({ envName }) => envName));
+    if (Object.hasOwn(env, "HETZER_CANARY_TOKEN")) injectedNames.add("HETZER_CANARY_TOKEN");
+    const brokerUrlNames = new Set();
     try {
         for (const [credentialId, descriptor] of policyByCredential) {
             if (!requestedIds.has(credentialId)) continue;
@@ -785,6 +790,11 @@ export async function prepareExecutionEnvironment(effectiveOptions, {
             const suffix = brokerEnvSuffix(credentialId);
             env[`HETZER_BROKER_URL_${suffix}`] = brokerUrl;
             env[`HETZER_BROKER_CAPABILITY_${suffix}`] = opened.broker.capability;
+            for (const name of [opened.policy.baseUrlEnv, opened.policy.tokenEnv, `HETZER_BROKER_URL_${suffix}`, `HETZER_BROKER_CAPABILITY_${suffix}`]) {
+                injectedNames.add(name);
+            }
+            brokerUrlNames.add(opened.policy.baseUrlEnv);
+            brokerUrlNames.add(`HETZER_BROKER_URL_${suffix}`);
             secretsToRedact.push(
                 { id: credentialId, secret: opened.secret },
                 { id: `broker-capability-${credentialId}`, secret: opened.broker.capability },
@@ -795,8 +805,11 @@ export async function prepareExecutionEnvironment(effectiveOptions, {
             const opened = brokers[0];
             env.HETZER_BROKER_URL = `${opened.broker.url}${opened.policy.basePath === "/" ? "" : opened.policy.basePath}`;
             env.HETZER_BROKER_CAPABILITY = opened.broker.capability;
+            injectedNames.add("HETZER_BROKER_URL");
+            injectedNames.add("HETZER_BROKER_CAPABILITY");
+            brokerUrlNames.add("HETZER_BROKER_URL");
         }
-        return { env, secretsToRedact, brokers };
+        return { env, secretsToRedact, brokers, injectedNames: [...injectedNames], brokerUrlNames: [...brokerUrlNames] };
     } catch (error) {
         await Promise.all(brokers.map(async (opened) => {
             await opened.broker.close();

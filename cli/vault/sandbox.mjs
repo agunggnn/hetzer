@@ -5,6 +5,78 @@ import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
 import { recordAuditEvent } from "./audit.mjs";
 import { parseDuration, pipeSanitizedChild, prepareExecutionEnvironment } from "./exec.mjs";
+import { strictBaseEnvironment } from "./secret-env.mjs";
+
+// Variables forwarded to the container besides the ones Hetzer injected itself. Everything else in
+// the host environment (PATH, USERPROFILE, tokens, the vault master key) stays on the host.
+const CONTAINER_PASSTHROUGH = new Set(["TERM", "COLORTERM", "LANG", "LC_ALL", "LC_CTYPE", "TZ"]);
+const NEVER_IN_CONTAINER = new Set([
+    "HETZER_GRIMOIRE_KEY", "SHADOW_GRIMOIRE_KEY", "HETZER_ROOT", "HETZER_HOME", "HETZER_ENV_FILE",
+    "HETZER_VAULT_PATH", "NODE_OPTIONS",
+]);
+const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+// Host variables the container engine's own CLI process needs to find its daemon and configuration.
+const ENGINE_CLI_PASSTHROUGH = /^(?:DOCKER_|CONTAINER_|PODMAN_|XDG_RUNTIME_DIR$|XDG_CONFIG_HOME$|REGISTRY_AUTH_FILE$)/i;
+
+function translateLoopbackForContainer(value) {
+    return String(value).replace(/\b(?:127\.0\.0\.1|localhost)\b/g, "host.docker.internal");
+}
+
+/**
+ * Choose the environment a sandboxed process receives. Only variables Hetzer injected (raw bindings,
+ * broker URL and capability, canary token) and a small terminal/locale allowlist are forwarded, so host
+ * paths and unrelated host secrets do not enter the container. Loopback addresses are rewritten for the
+ * broker URL variables only, never for credential values.
+ */
+export function selectContainerEnv({ env = {}, injectedNames = [], brokerUrlNames = [] } = {}) {
+    const brokerUrls = new Set(brokerUrlNames);
+    const values = {};
+    const consider = (name, translate) => {
+        if (NEVER_IN_CONTAINER.has(name.toUpperCase())) return;
+        if (!ENV_NAME_PATTERN.test(name)) {
+            throw Object.assign(new Error(`Refusing to pass invalid environment variable name to the sandbox: ${JSON.stringify(name)}.`), {
+                code: "ERR_SANDBOX_ENV_INVALID",
+            });
+        }
+        const raw = env[name];
+        if (raw === undefined || raw === null) return;
+        const value = String(raw);
+        if (value.includes("\0")) {
+            throw Object.assign(new Error(`Environment variable '${name}' contains a NUL byte and cannot be passed to the sandbox.`), {
+                code: "ERR_SANDBOX_ENV_INVALID",
+            });
+        }
+        values[name] = translate ? translateLoopbackForContainer(value) : value;
+    };
+    for (const name of injectedNames) consider(name, brokerUrls.has(name));
+    for (const name of Object.keys(env)) {
+        if (CONTAINER_PASSTHROUGH.has(name.toUpperCase()) || /^LC_[A-Z_]+$/i.test(name)) {
+            if (!Object.hasOwn(values, name)) consider(name, false);
+        }
+    }
+    return { values, names: Object.keys(values) };
+}
+
+/**
+ * Environment for the container engine's CLI process. Values are handed over here and referenced by name
+ * (`-e NAME`) so they never appear in the process command line. The host master key is never included.
+ */
+export function buildContainerCliEnv({ baseEnv = process.env, containerValues = {} } = {}) {
+    const cliEnv = { ...strictBaseEnvironment(baseEnv) };
+    for (const [name, value] of Object.entries(baseEnv)) {
+        if (ENGINE_CLI_PASSTHROUGH.test(name) && typeof value === "string") cliEnv[name] = value;
+    }
+    const reserved = new Set(Object.keys(cliEnv).map((name) => name.toUpperCase()));
+    for (const name of Object.keys(containerValues)) {
+        const isPassthrough = CONTAINER_PASSTHROUGH.has(name.toUpperCase()) || /^LC_[A-Z_]+$/i.test(name);
+        if (!isPassthrough && reserved.has(name.toUpperCase())) {
+            throw Object.assign(new Error(
+                `Environment variable '${name}' collides with a variable the container engine CLI needs and cannot be injected into the sandbox.`,
+            ), { code: "ERR_SANDBOX_ENV_COLLISION" });
+        }
+    }
+    return { ...cliEnv, ...containerValues };
+}
 
 export function detectContainerEngine(exec = spawnSync) {
     const preferred = process.env.HETZER_CONTAINER_ENGINE?.trim();
@@ -44,7 +116,8 @@ export const OCI_IMAGE_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.:-]*(?:\/[a-zA-Z0-9_.:
 
 export function buildSandboxDockerArgs({
     root = process.cwd(),
-    env = {},
+    env,
+    envNames = [],
     image = "node:22-alpine",
     network,
     readOnly = false,
@@ -54,6 +127,10 @@ export function buildSandboxDockerArgs({
     engine = "docker",
     platform = process.platform,
 } = {}) {
+    if (env !== undefined) {
+        // Values on the engine command line are visible to every local process and to `docker inspect`.
+        throw new Error("buildSandboxDockerArgs no longer accepts environment values; pass variable names via envNames and hand the values to the engine CLI process environment.");
+    }
     const rawImage = String(image || "").trim();
     if (!rawImage || rawImage.startsWith("-") || !OCI_IMAGE_PATTERN.test(rawImage)) {
         throw new Error(`Invalid sandbox image: '${image}'. Image name must be a valid OCI reference and cannot start with '-'.`);
@@ -94,16 +171,12 @@ export function buildSandboxDockerArgs({
         "-w", "/workspace",
     );
 
-    // Pass environment variables with loopback translated to host.docker.internal
-    if (env && typeof env === "object") {
-        for (const [key, val] of Object.entries(env)) {
-            if (val === undefined || val === null) continue;
-            let containerVal = String(val);
-            if (containerVal.includes("127.0.0.1") || containerVal.includes("localhost")) {
-                containerVal = containerVal.replace(/\b(?:127\.0\.0\.1|localhost)\b/g, "host.docker.internal");
-            }
-            args.push("-e", `${key}=${containerVal}`);
+    // Forward variables by name only. The engine reads each value from its own process environment.
+    for (const name of envNames) {
+        if (!ENV_NAME_PATTERN.test(String(name))) {
+            throw new Error(`Invalid sandbox environment variable name: ${JSON.stringify(name)}.`);
         }
+        args.push("-e", String(name));
     }
 
     let normalizedCmd = command;
@@ -144,15 +217,16 @@ export async function executeSandboxedProcess(options, {
     }
 
     const effectiveOptions = { ...options };
-    const { env, secretsToRedact, brokers } = await prepareExecutionEnvironment(
+    const { env, secretsToRedact, brokers, injectedNames, brokerUrlNames } = await prepareExecutionEnvironment(
         effectiveOptions,
         { baseEnv, brokerFetchFn, brokerRandomBytes },
     );
 
     try {
+        const containerEnv = selectContainerEnv({ env, injectedNames, brokerUrlNames });
         const dockerArgs = buildSandboxDockerArgs({
             root: effectiveOptions.root,
-            env,
+            envNames: containerEnv.names,
             image: effectiveOptions.sandboxImage || (typeof effectiveOptions.sandbox === "string" ? effectiveOptions.sandbox : "node:22-alpine"),
             network: effectiveOptions.sandboxNetwork,
             readOnly: Boolean(effectiveOptions.sandboxRo),
@@ -179,6 +253,7 @@ export async function executeSandboxedProcess(options, {
 
         const child = spawnFn(engineCheck.engine, dockerArgs, {
             stdio: ["inherit", "pipe", "pipe"],
+            env: buildContainerCliEnv({ baseEnv, containerValues: containerEnv.values }),
             windowsHide: true,
             shell: false,
         });
