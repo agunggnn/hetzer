@@ -848,6 +848,89 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
     });
 }
 
+// -----------------------------------------------------------------------------
+// Test 13: Grant Signatures Cannot Be Cleared, Forged or Laundered (Gate G0.1)
+// -----------------------------------------------------------------------------
+{
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-verify-sig-g01-"));
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    const dbPath = path.join(tempDir, "data", "hetzer-vault.db");
+    let nullSigNotHonored = false;
+    let reopenDidNotSign = false;
+    let forgedApprovalIgnored = false;
+    let alteredApprovalIgnored = false;
+    let updateDidNotLaunder = false;
+    let operatorSignRestoresLegacy = false;
+
+    let vault = new Grimoire({ dbPath, masterKey });
+    try {
+        vault.upsertTarget({ id: "sig-target", name: "sig-target" });
+        vault.create({
+            id: "sig-cred",
+            projectId: "sig-target",
+            secret: "signature-boundary-secret",
+            allowedActions: ["broker.proxy"],
+            allowedOrigins: ["https://trusted.corp.test"],
+        });
+
+        // A writer without the master key forges the grant and clears the signature.
+        vault.db.prepare("UPDATE vault_credentials SET allowed_origins = ?, grant_sig = NULL WHERE id = 'sig-cred'")
+            .run(JSON.stringify(["https://attacker.evil.test"]));
+        vault.close();
+
+        vault = new Grimoire({ dbPath, masterKey });
+        const reopened = vault.find("sig-cred");
+        nullSigNotHonored = reopened.grantValid === false
+            && reopened.allowedOrigins.length === 0
+            && vault.resolve("sig-cred", { targetId: "sig-target", action: "broker.proxy" }) === null;
+        reopenDidNotSign = vault.db.prepare("SELECT grant_sig FROM vault_credentials WHERE id = 'sig-cred'").get().grant_sig === null;
+
+        // Unrelated rewrite must not re-sign the forged values.
+        vault.update("sig-cred", { label: "renamed" });
+        const afterUpdate = vault.find("sig-cred");
+        updateDidNotLaunder = afterUpdate.allowedOrigins.length === 0 && afterUpdate.allowedActions.length === 0;
+
+        // Approval rows are signed: forged and altered rows are ignored.
+        const approvedHash = "ab".repeat(32);
+        vault.approveBrokerPolicy({ credentialId: "sig-cred", policyHash: approvedHash, targetOrigin: "https://trusted.corp.test" });
+        vault.db.prepare("UPDATE vault_approved_policies SET target_origin = 'https://attacker.evil.test' WHERE policy_hash = ?").run(approvedHash);
+        alteredApprovalIgnored = vault.isBrokerPolicyApproved("sig-cred", approvedHash) === false;
+        const forgedHash = "cd".repeat(32);
+        vault.db.prepare(`
+            INSERT INTO vault_approved_policies (id, credential_id, policy_hash, target_origin, policy_path, approved_at, approved_by)
+            VALUES ('forged-verify', 'sig-cred', ?, 'https://attacker.evil.test', NULL, ?, 'operator')
+        `).run(forgedHash, new Date().toISOString());
+        forgedApprovalIgnored = vault.isBrokerPolicyApproved("sig-cred", forgedHash) === false;
+
+        // The operator path signs legacy (unsigned) grants explicitly.
+        vault.create({ id: "legacy-cred", projectId: "sig-target", secret: "legacy-boundary-secret", allowedActions: ["process.start"] });
+        vault.db.prepare("UPDATE vault_credentials SET grant_sig = NULL WHERE id = 'legacy-cred'").run();
+        const beforeSign = vault.find("legacy-cred").grantValid === false;
+        vault.signLegacyGrants(["legacy-cred"]);
+        operatorSignRestoresLegacy = beforeSign
+            && vault.resolve("legacy-cred", { targetId: "sig-target", action: "process.start" }) === "legacy-boundary-secret";
+    } finally {
+        vault.close();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+
+    const pass = nullSigNotHonored && reopenDidNotSign && forgedApprovalIgnored && alteredApprovalIgnored
+        && updateDidNotLaunder && operatorSignRestoresLegacy;
+
+    recordTest({
+        id: "VERIFY-SEC-012",
+        name: "Grant Signatures Cannot Be Cleared, Forged or Laundered (Gate G0.1)",
+        target: "cli/vault/hetzer-vault.mjs -> Grimoire grant and approval signatures",
+        threat: "A writer with database access but without the master key clears the grant signature, inserts approval rows, or relies on an unrelated rewrite to obtain trusted grants",
+        input: "Forged origin with grant_sig cleared, reopen, unrelated update, altered and inserted approval rows, then an operator signing a legacy unsigned grant",
+        method: "Mutate SQLite directly; reopen the vault; assert unsigned grants are not honored and never auto-signed, update() does not carry tampered grants, approval rows without a valid signature are ignored, and signLegacyGrants restores an unsigned legacy grant",
+        expected: "Unsigned or altered grants and approvals are not honored; only the explicit operator signing step makes a legacy grant usable",
+        observed: `nullSigNotHonored: ${nullSigNotHonored}. reopenDidNotSign: ${reopenDidNotSign}. updateDidNotLaunder: ${updateDidNotLaunder}. alteredApprovalIgnored: ${alteredApprovalIgnored}. forgedApprovalIgnored: ${forgedApprovalIgnored}. operatorSignRestoresLegacy: ${operatorSignRestoresLegacy}.`,
+        pass,
+        boundary: "Signatures are keyed by the master key. A writer who can also read the master key can still forge grants, and a previously valid signed grant can be replayed because signatures carry no version.",
+    });
+}
+
 // Output standardized results
 console.log("================================================================================");
 console.log("  HETZER REPOSITORY EMPIRICAL VERIFICATION REPORT");

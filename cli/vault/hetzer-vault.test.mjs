@@ -6,7 +6,7 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
 import { Grimoire } from "./hetzer-vault.mjs";
-import { grantCredentialCommand, setCredential } from "./creds.mjs";
+import { grantCredentialCommand, setCredential, signExistingGrantsCommand } from "./creds.mjs";
 
 test("Grimoire initializes schema with Gate G0 columns and approved policies table", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-vault-g0-init-"));
@@ -343,6 +343,156 @@ test("grantCredentialCommand enforces human TTY session and updates grants with 
         assert.equal(vault2.resolve("my-key", { targetId: "service", action: "process.start" }), "s3cr3t-v4lu3");
     } finally {
         vault2.close();
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+const FAIL_CLOSED_KEY = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+
+function seedVault(prefix) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    const dbPath = path.join(root, "data", "hetzer-vault.db");
+    const vault = new Grimoire({ dbPath, masterKey: FAIL_CLOSED_KEY });
+    vault.upsertTarget({ id: "svc", name: "svc" });
+    vault.create({
+        id: "api-token",
+        projectId: "svc",
+        secret: "synthetic-secret-value",
+        allowedActions: ["broker.proxy"],
+        allowedOrigins: ["https://trusted.corp.test"],
+    });
+    return { root, dbPath, vault };
+}
+
+test("clearing the grant signature does not make forged grants trusted, and reopening never re-signs them", () => {
+    const { root, dbPath, vault } = seedVault("hetzer-vault-sig-null-");
+    try {
+        // A writer without the master key forges the grant and removes the signature.
+        vault.db.prepare("UPDATE vault_credentials SET allowed_origins = ?, grant_sig = NULL WHERE id = 'api-token'")
+            .run(JSON.stringify(["https://attacker.evil.test"]));
+        vault.close();
+
+        const reopened = new Grimoire({ dbPath, masterKey: FAIL_CLOSED_KEY });
+        try {
+            const entry = reopened.find("api-token");
+            assert.equal(entry.grantValid, false);
+            assert.deepEqual(entry.allowedOrigins, []);
+            assert.equal(reopened.resolve("api-token", { targetId: "svc", action: "broker.proxy" }), null);
+            const stored = reopened.db.prepare("SELECT grant_sig FROM vault_credentials WHERE id = 'api-token'").get();
+            assert.equal(stored.grant_sig, null, "opening the vault must not sign unsigned grants");
+        } finally {
+            reopened.close();
+        }
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("signLegacyGrants signs only unsigned rows and leaves mismatched signatures alone", () => {
+    const { root, vault } = seedVault("hetzer-vault-sig-legacy-");
+    try {
+        vault.create({ id: "legacy-token", projectId: "svc", secret: "synthetic-secret-two", allowedActions: ["process.start"] });
+        vault.db.prepare("UPDATE vault_credentials SET grant_sig = NULL WHERE id = 'legacy-token'").run();
+        vault.db.prepare("UPDATE vault_credentials SET raw_injection = 'allow' WHERE id = 'api-token'").run();
+
+        assert.deepEqual(vault.listUnsignedGrants().map((grant) => grant.id), ["legacy-token"]);
+        assert.equal(vault.find("legacy-token").grantValid, false);
+
+        const signed = vault.signLegacyGrants(["legacy-token", "api-token"]);
+        assert.deepEqual(signed, ["legacy-token"]);
+        assert.equal(vault.find("legacy-token").grantValid, true);
+        assert.equal(vault.resolve("legacy-token", { targetId: "svc", action: "process.start" }), "synthetic-secret-two");
+        assert.equal(vault.find("api-token").grantValid, false, "a mismatched signature must not be repaired by signLegacyGrants");
+    } finally {
+        vault.close();
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("broker policy approvals are signed: forged and altered approval rows are ignored", () => {
+    const { root, vault } = seedVault("hetzer-vault-approval-sig-");
+    try {
+        const hash = "ab".repeat(32);
+        vault.approveBrokerPolicy({ credentialId: "api-token", policyHash: hash, targetOrigin: "https://trusted.corp.test" });
+        assert.equal(vault.isBrokerPolicyApproved("api-token", hash), true);
+        assert.equal(vault.listApprovedPolicies("api-token")[0].signatureValid, true);
+
+        // Altering the approved origin invalidates the approval.
+        vault.db.prepare("UPDATE vault_approved_policies SET target_origin = 'https://attacker.evil.test' WHERE policy_hash = ?").run(hash);
+        assert.equal(vault.isBrokerPolicyApproved("api-token", hash), false);
+        assert.equal(vault.listApprovedPolicies("api-token")[0].signatureValid, false);
+
+        // A row inserted without the master key has no valid signature.
+        const forgedHash = "cd".repeat(32);
+        vault.db.prepare(`
+            INSERT INTO vault_approved_policies (id, credential_id, policy_hash, target_origin, policy_path, approved_at, approved_by)
+            VALUES ('forged-1', 'api-token', ?, 'https://attacker.evil.test', NULL, ?, 'operator')
+        `).run(forgedHash, new Date().toISOString());
+        assert.equal(vault.isBrokerPolicyApproved("api-token", forgedHash), false);
+        assert.equal(vault.getApprovedBrokerPolicy("api-token", forgedHash), null);
+    } finally {
+        vault.close();
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("rewriting an unrelated field does not re-sign grants that were modified outside Hetzer", () => {
+    const { root, vault } = seedVault("hetzer-vault-no-launder-");
+    try {
+        vault.db.prepare("UPDATE vault_credentials SET allowed_origins = ? WHERE id = 'api-token'")
+            .run(JSON.stringify(["https://attacker.evil.test"]));
+        vault.update("api-token", { label: "renamed" });
+
+        const entry = vault.find("api-token");
+        assert.equal(entry.label, "renamed");
+        assert.deepEqual(entry.allowedOrigins, [], "tampered origins must not be carried into the rewritten row");
+        assert.deepEqual(entry.allowedActions, []);
+        assert.equal(entry.rawInjection, "deny");
+    } finally {
+        vault.close();
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("signExistingGrantsCommand requires a human session, a typed confirmation, and skips tampered rows", async () => {
+    const { root, dbPath, vault } = seedVault("hetzer-vault-sign-cmd-");
+    const envFile = path.join(root, ".env");
+    fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${FAIL_CLOSED_KEY}\n`);
+    try {
+        vault.create({ id: "legacy-token", projectId: "svc", secret: "synthetic-secret-two", allowedActions: ["process.start"] });
+        vault.db.prepare("UPDATE vault_credentials SET grant_sig = NULL WHERE id = 'legacy-token'").run();
+        vault.db.prepare("UPDATE vault_credentials SET raw_injection = 'allow' WHERE id = 'api-token'").run();
+        vault.close();
+
+        const lines = [];
+        const output = { write: (text) => { lines.push(String(text)); return true; } };
+
+        await assert.rejects(
+            signExistingGrantsCommand({ root, envFile, input: { isTTY: false }, output }),
+            /requires a direct human interactive TTY/i,
+        );
+
+        const declined = await signExistingGrantsCommand({
+            root, envFile, output, input: { isTTY: true }, env: {}, ancestor: { isAgent: false }, confirm: async () => "no",
+        });
+        assert.deepEqual(declined.signed, []);
+        assert.equal(declined.cancelled, true);
+
+        const approved = await signExistingGrantsCommand({
+            root, envFile, output, input: { isTTY: true }, env: {}, ancestor: { isAgent: false }, confirm: async () => "yes",
+        });
+        assert.deepEqual(approved.signed, ["legacy-token"]);
+        assert.deepEqual(approved.tampered, ["api-token"]);
+        assert.match(lines.join(""), /creds grant <id> --reset/);
+
+        const after = new Grimoire({ dbPath, masterKey: FAIL_CLOSED_KEY });
+        try {
+            assert.equal(after.find("legacy-token").grantValid, true);
+            assert.equal(after.find("api-token").grantValid, false);
+        } finally {
+            after.close();
+        }
+    } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }
 });

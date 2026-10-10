@@ -900,7 +900,12 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         }
         if (subCommand === "grant") {
             const id = args[1];
-            if (!id) throw new Error("Usage: hetzer creds grant <id> [--origin <url>] [--raw <allow|deny>] [--host <name>] [--action <name>] [--reset]");
+            if (id === "--sign-existing") {
+                const { signExistingGrantsCommand } = await import("../vault/creds.mjs");
+                await signExistingGrantsCommand({ root, envFile });
+                return;
+            }
+            if (!id) throw new Error("Usage: hetzer creds grant <id> [--origin <url>] [--raw <allow|deny>] [--host <name>] [--action <name>] [--reset] | hetzer creds grant --sign-existing");
             assertInteractiveHumanSession({ operation: "'hetzer creds grant'" });
             const { grantCredentialCommand } = await import("../vault/creds.mjs");
             await grantCredentialCommand({ root, envFile, id, args: args.slice(2) });

@@ -225,6 +225,52 @@ export function verifyGrantSignature(masterKey, row) {
     }
 }
 
+export function computeApprovalSignature(masterKey, { credentialId, policyHash, targetOrigin } = {}) {
+    if (!masterKey) return "";
+    const subkey = crypto.createHmac("sha256", keyBuffer(masterKey))
+        .update("hetzer:policy-approval:v1")
+        .digest();
+    const payload = JSON.stringify({
+        credential: String(credentialId || "").trim().toLowerCase(),
+        hash: String(policyHash || "").trim().toLowerCase(),
+        origin: String(targetOrigin || ""),
+    });
+    return crypto.createHmac("sha256", subkey).update(payload).digest("hex");
+}
+
+export function verifyApprovalSignature(masterKey, row) {
+    if (!masterKey || !row || !row.sig) return false;
+    const expected = computeApprovalSignature(masterKey, {
+        credentialId: row.credential_id,
+        policyHash: row.policy_hash,
+        targetOrigin: row.target_origin,
+    });
+    try {
+        const a = Buffer.from(String(row.sig), "hex");
+        const b = Buffer.from(expected, "hex");
+        return a.length === b.length && a.length > 0 && crypto.timingSafeEqual(a, b);
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Returns an Error with a stable code when a credential's grants are not honored because their
+ * signature is missing or does not verify, or null when the grants can be trusted.
+ */
+export function grantIntegrityError(entry) {
+    if (!entry || entry.grantValid !== false) return null;
+    const error = new Error(
+        `Grants for credential '${entry.id}' are not trusted: the grant signature is missing or does not match.\n`
+        + "A missing signature means the credential predates grant signing; an operator can review and sign it with:\n"
+        + "  hetzer creds grant --sign-existing\n"
+        + "A mismatched signature means the vault was modified outside Hetzer; reset it with:\n"
+        + `  hetzer creds grant ${entry.id} --reset`,
+    );
+    error.code = "ERR_GRANT_SIGNATURE_INVALID";
+    return error;
+}
+
 function safeJsonArray(value, validate = () => true) {
     const source = Array.isArray(value) ? value : [];
     return [...new Set(source.map((item) => String(item || "").trim()).filter((item) => item && validate(item)))];
@@ -264,7 +310,6 @@ export class Grimoire {
         this.db = new DatabaseSync(this.dbPath);
         this._initSchema();
         this.migration = this._migrateLegacy();
-        this._backfillGrantSignatures();
         if (this.dbPath !== ":memory:") {
             secureFilePermissions(this.dbPath);
         }
@@ -358,6 +403,7 @@ export class Grimoire {
                 policy_path TEXT,
                 approved_at TEXT NOT NULL,
                 approved_by TEXT NOT NULL DEFAULT 'operator',
+                sig TEXT,
                 UNIQUE(credential_id, policy_hash)
             );
 
@@ -413,23 +459,61 @@ export class Grimoire {
             if (!cols.has("grant_sig")) {
                 this.db.exec("ALTER TABLE vault_credentials ADD COLUMN grant_sig TEXT;");
             }
+            const approvalCols = new Set(this.db.prepare("PRAGMA table_info(vault_approved_policies)").all().map((c) => c.name));
+            if (!approvalCols.has("sig")) {
+                this.db.exec("ALTER TABLE vault_approved_policies ADD COLUMN sig TEXT;");
+            }
         } catch { /* best effort migration */ }
     }
 
-    _backfillGrantSignatures() {
-        if (!this.unlocked) return;
-        try {
-            const unsigned = this.db.prepare("SELECT * FROM vault_credentials WHERE grant_sig IS NULL AND is_valid = 1").all();
-            for (const row of unsigned) {
-                const sig = computeGrantSignature(this.masterKey, row.id, {
-                    allowedActions: parseJsonArray(row.allowed_actions),
-                    allowedOrigins: parseJsonArray(row.allowed_origins),
-                    rawInjection: row.raw_injection || "deny",
-                    bindHosts: parseJsonArray(row.bind_hosts),
-                });
-                this.db.prepare("UPDATE vault_credentials SET grant_sig = ? WHERE id = ?").run(sig, row.id);
-            }
-        } catch { /* best effort */ }
+    /**
+     * Credentials whose grants have no signature (created before grant signing existed).
+     * Their grants are not honored until an operator reviews and signs them. Signing is never
+     * automatic: a missing signature is exactly what a writer without the master key can produce,
+     * so treating "unsigned" as "trusted" would make the signature meaningless.
+     */
+    listUnsignedGrants() {
+        return this.db.prepare("SELECT * FROM vault_credentials WHERE grant_sig IS NULL AND is_valid = 1 ORDER BY created_at ASC")
+            .all()
+            .map((row) => ({
+                id: row.id,
+                allowedActions: parseJsonArray(row.allowed_actions),
+                allowedOrigins: parseJsonArray(row.allowed_origins),
+                rawInjection: row.raw_injection || "deny",
+                bindHosts: parseJsonArray(row.bind_hosts),
+            }));
+    }
+
+    /** Sign the current stored grants of the given unsigned credentials. Rows that already carry a signature are never touched. */
+    signLegacyGrants(ids) {
+        if (!this.unlocked) throw new Error("Grimoire is locked: HETZER_GRIMOIRE_KEY (master key) is not set.");
+        const wanted = new Set((ids || []).map((id) => String(id)));
+        const signed = [];
+        for (const row of this.db.prepare("SELECT * FROM vault_credentials WHERE grant_sig IS NULL AND is_valid = 1").all()) {
+            if (!wanted.has(row.id)) continue;
+            const sig = computeGrantSignature(this.masterKey, row.id, {
+                allowedActions: parseJsonArray(row.allowed_actions),
+                allowedOrigins: parseJsonArray(row.allowed_origins),
+                rawInjection: row.raw_injection || "deny",
+                bindHosts: parseJsonArray(row.bind_hosts),
+            });
+            this.db.prepare("UPDATE vault_credentials SET grant_sig = ? WHERE id = ? AND grant_sig IS NULL").run(sig, row.id);
+            signed.push(row.id);
+        }
+        return signed;
+    }
+
+    /** Grants of a stored row that may be carried into a rewritten row: only values whose signature verifies. */
+    _trustedGrantsOf(row) {
+        if (!row || !this.unlocked || !verifyGrantSignature(this.masterKey, row)) {
+            return { allowedActions: [], allowedOrigins: [], rawInjection: "deny", bindHosts: [] };
+        }
+        return {
+            allowedActions: parseJsonArray(row.allowed_actions),
+            allowedOrigins: parseJsonArray(row.allowed_origins),
+            rawInjection: row.raw_injection || "deny",
+            bindHosts: parseJsonArray(row.bind_hosts),
+        };
     }
 
     _meta(key) {
@@ -585,12 +669,15 @@ export class Grimoire {
         const accessRole = ACCESS_ROLES.has(input.accessRole)
             ? input.accessRole
             : (existing?.access_role || "operator");
+        // Carry existing grants forward only when their signature verifies. Otherwise a rewrite of an
+        // unrelated field would re-sign values that were modified outside Hetzer.
+        const trusted = this._trustedGrantsOf(existing);
         const allowedActions = safeJsonArray(
-            input.allowedActions === undefined ? parseJsonArray(existing?.allowed_actions) : input.allowedActions,
+            input.allowedActions === undefined ? trusted.allowedActions : input.allowedActions,
             (item) => ALLOWED_ACTION_PATTERN.test(item),
         );
         const allowedOrigins = safeJsonArray(
-            input.allowedOrigins === undefined ? parseJsonArray(existing?.allowed_origins) : input.allowedOrigins,
+            input.allowedOrigins === undefined ? trusted.allowedOrigins : input.allowedOrigins,
             (item) => {
                 try {
                     const u = new URL(item);
@@ -602,9 +689,9 @@ export class Grimoire {
         );
         const rawInjection = ["allow", "deny"].includes(input.rawInjection)
             ? input.rawInjection
-            : (existing?.raw_injection || "deny");
+            : trusted.rawInjection;
         const bindHosts = safeJsonArray(
-            input.bindHosts === undefined ? parseJsonArray(existing?.bind_hosts) : input.bindHosts,
+            input.bindHosts === undefined ? trusted.bindHosts : input.bindHosts,
             (item) => typeof item === "string" && Boolean(item.trim()),
         );
         const encrypted = encryptSecret(this.masterKey, value, credentialAad(id, createdAt));
@@ -878,15 +965,18 @@ export class Grimoire {
         const id = crypto.randomUUID();
         const now = new Date().toISOString();
         const normalizedHash = String(policyHash || "").trim().toLowerCase();
+        if (!this.unlocked) throw new Error("Grimoire is locked: HETZER_GRIMOIRE_KEY (master key) is not set.");
+        const sig = computeApprovalSignature(this.masterKey, { credentialId, policyHash: normalizedHash, targetOrigin });
         this.db.prepare(`
-            INSERT INTO vault_approved_policies (id, credential_id, policy_hash, target_origin, policy_path, approved_at, approved_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO vault_approved_policies (id, credential_id, policy_hash, target_origin, policy_path, approved_at, approved_by, sig)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(credential_id, policy_hash) DO UPDATE SET
                 target_origin = excluded.target_origin,
                 policy_path = excluded.policy_path,
                 approved_at = excluded.approved_at,
-                approved_by = excluded.approved_by
-        `).run(id, credentialId, normalizedHash, targetOrigin, policyPath, now, approvedBy);
+                approved_by = excluded.approved_by,
+                sig = excluded.sig
+        `).run(id, credentialId, normalizedHash, targetOrigin, policyPath, now, approvedBy, sig);
 
         // Ensure credential grants the target origin and broker.proxy action
         const origins = new Set(entry.allowedOrigins);
@@ -910,27 +1000,25 @@ export class Grimoire {
     }
 
     isBrokerPolicyApproved(credentialId, policyHash) {
+        return this.getApprovedBrokerPolicy(credentialId, policyHash) !== null;
+    }
+
+    /** Returns the approval record only when its signature verifies; forged or unsigned rows are ignored. */
+    getApprovedBrokerPolicy(credentialId, policyHash) {
         const normalizedHash = String(policyHash || "").trim().toLowerCase();
         const row = this.db.prepare(`
             SELECT * FROM vault_approved_policies
             WHERE credential_id = ? AND policy_hash = ?
         `).get(credentialId, normalizedHash);
-        return Boolean(row);
-    }
-
-    getApprovedBrokerPolicy(credentialId, policyHash) {
-        const normalizedHash = String(policyHash || "").trim().toLowerCase();
-        return this.db.prepare(`
-            SELECT * FROM vault_approved_policies
-            WHERE credential_id = ? AND policy_hash = ?
-        `).get(credentialId, normalizedHash) || null;
+        if (!row || !this.unlocked || !verifyApprovalSignature(this.masterKey, row)) return null;
+        return row;
     }
 
     listApprovedPolicies(credentialId) {
-        if (credentialId) {
-            return this.db.prepare("SELECT * FROM vault_approved_policies WHERE credential_id = ? ORDER BY approved_at DESC").all(credentialId);
-        }
-        return this.db.prepare("SELECT * FROM vault_approved_policies ORDER BY approved_at DESC").all();
+        const rows = credentialId
+            ? this.db.prepare("SELECT * FROM vault_approved_policies WHERE credential_id = ? ORDER BY approved_at DESC").all(credentialId)
+            : this.db.prepare("SELECT * FROM vault_approved_policies ORDER BY approved_at DESC").all();
+        return rows.map((row) => ({ ...row, signatureValid: this.unlocked ? verifyApprovalSignature(this.masterKey, row) : null }));
     }
 
     recordAuditFinding(targetId, finding) {

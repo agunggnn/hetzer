@@ -16,7 +16,7 @@ import { recordAuditEvent } from "./audit.mjs";
 import { isCanaryCredential, triggerCanaryAlert } from "./canary.mjs";
 import { assertNoShellMetacharacters } from "./exec-policy.mjs";
 import { isReflectionCommand, parseDuration, pipeSanitizedChild, resolveCommandForSpawn } from "./exec.mjs";
-import { Grimoire, parseSecretRef, resolveMasterKey, resolveVaultPath } from "./hetzer-vault.mjs";
+import { Grimoire, grantIntegrityError, parseSecretRef, resolveMasterKey, resolveVaultPath } from "./hetzer-vault.mjs";
 import { strictBaseEnvironment } from "./secret-env.mjs";
 
 const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
@@ -972,6 +972,8 @@ export async function openHttpCredentialBroker({
     try {
         const credential = vault.find(policy.credentialId);
         if (!credential) throw new Error(`Credential '${policy.credentialId}' was not found.`);
+        const integrityError = grantIntegrityError(credential);
+        if (integrityError) throw integrityError;
         if (!credential.allowedOrigins || !credential.allowedOrigins.includes(policy.targetOrigin)) {
             const err = new Error(
                 `Broker policy target origin '${policy.targetOrigin}' is not granted for credential '${policy.credentialId}'.\n` +

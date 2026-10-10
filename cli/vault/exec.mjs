@@ -672,7 +672,7 @@ export async function prepareExecutionEnvironment(effectiveOptions, {
     }
 
     if (rawBindings.length) {
-        const { Grimoire, resolveMasterKey, resolveVaultPath } = await import("./hetzer-vault.mjs");
+        const { Grimoire, grantIntegrityError, resolveMasterKey, resolveVaultPath } = await import("./hetzer-vault.mjs");
         const envValues = effectiveOptions.envFile && fs.existsSync(effectiveOptions.envFile)
             ? parseEnv(fs.readFileSync(effectiveOptions.envFile, "utf8"))
             : {};
@@ -687,6 +687,8 @@ export async function prepareExecutionEnvironment(effectiveOptions, {
             try {
                 for (const binding of rawBindings) {
                     const cred = vault.find(binding.id);
+                    const integrityError = grantIntegrityError(cred);
+                    if (integrityError) throw integrityError;
                     if (cred && cred.rawInjection !== "allow") {
                         const error = new Error(
                             `Credential '${binding.id}' does not have a rawInjection grant in Grimoire Vault (grant status: '${cred.rawInjection || "deny"}').\n`

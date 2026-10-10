@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-10-10T01:03:20.594Z",
+  "timestamp": "2026-10-10T04:10:25.424Z",
   "nodeVersion": "v22.22.2",
   "platform": "win32",
   "results": [
@@ -59,7 +59,7 @@
       "input": "Small 30-byte build log line",
       "method": "Measure the median of 25 write-and-flush samples using dynamic retention and the bounded lexical scanner",
       "expected": "Median processing latency stays below 5ms and the complete line is emitted",
-      "observed": "Median processing latency: 0.032 ms. Output delivered: \"Compiling module auth.mjs...\".",
+      "observed": "Median processing latency: 0.026 ms. Output delivered: \"Compiling module auth.mjs...\".",
       "verdict": "PASS",
       "boundary": "Streams with secrets exceeding 128 chars scale buffer to 2x secret length to ensure boundary integrity."
     },
@@ -146,6 +146,18 @@
       "observed": "legitimateValid: true. p2OriginsTamperBlocked: true. p3bRawTamperBlocked: true.",
       "verdict": "PASS",
       "boundary": "Grant columns are HMAC signed with a subkey derived from the master key. Arbitrary database edits without the master key fail closed."
+    },
+    {
+      "id": "VERIFY-SEC-012",
+      "name": "Grant Signatures Cannot Be Cleared, Forged or Laundered (Gate G0.1)",
+      "target": "cli/vault/hetzer-vault.mjs -> Grimoire grant and approval signatures",
+      "threat": "A writer with database access but without the master key clears the grant signature, inserts approval rows, or relies on an unrelated rewrite to obtain trusted grants",
+      "input": "Forged origin with grant_sig cleared, reopen, unrelated update, altered and inserted approval rows, then an operator signing a legacy unsigned grant",
+      "method": "Mutate SQLite directly; reopen the vault; assert unsigned grants are not honored and never auto-signed, update() does not carry tampered grants, approval rows without a valid signature are ignored, and signLegacyGrants restores an unsigned legacy grant",
+      "expected": "Unsigned or altered grants and approvals are not honored; only the explicit operator signing step makes a legacy grant usable",
+      "observed": "nullSigNotHonored: true. reopenDidNotSign: true. updateDidNotLaunder: true. alteredApprovalIgnored: true. forgedApprovalIgnored: true. operatorSignRestoresLegacy: true.",
+      "verdict": "PASS",
+      "boundary": "Signatures are keyed by the master key. A writer who can also read the master key can still forge grants, and a previously valid signed grant can be replayed because signatures carry no version."
     }
   ]
 }

@@ -69,6 +69,7 @@ sequenceDiagram
 - in-process `Grimoire.resolve()` strictly enforces mandatory action grants, returning null for ungranted or omitted actions (`VERIFY-SEC-009`, note: R-05 remains open until Gate G2 out-of-process boundary);
 - MCP virtual credential proxy binds `secretRef:<id>` to verified tool destination origins, failing closed on ungranted endpoints (`VERIFY-SEC-010`);
 - vault grant columns are HMAC-signed with a subkey derived from the master key, failing closed upon direct SQLite database tampering (`VERIFY-SEC-011`);
+- unsigned or altered grants and broker policy approvals are never honored and never signed automatically; a legacy credential becomes usable only after an operator reviews it with `hetzer creds grant --sign-existing` (`VERIFY-SEC-012`). Signatures carry no version, so a previously valid signed grant can be replayed by a writer who kept an old copy of the database, and a writer who can read the master key can still forge grants;
 - operator `hetzer creds grant <id>` CLI command safely configures grants behind interactive human TTY confirmation;
 - installer tests redirect user-level paths to a temporary home.
 - credential approval requests contain no secret material, expire, and expose status only to the requesting workflow;

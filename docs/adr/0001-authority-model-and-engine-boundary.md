@@ -232,12 +232,12 @@ How the three consumers move:
 Effort figures are planning estimates for one engineer familiar with the code, not commitments.
 
 **G0: Authority model (Completed in G0 / G0.1)**
-1. [x] Add grants to the vault schema (`allowedOrigins`, `rawInjection`, `bindHosts`, mandatory `allowedActions`) with automatic migration and HMAC signature (`grant_sig`) verification derived from master key subkey. Direct SQLite tampering fails closed.
+1. [x] Add grants to the vault schema (`allowedOrigins`, `rawInjection`, `bindHosts`, mandatory `allowedActions`) with HMAC signature (`grant_sig`) verification derived from a master-key subkey. Direct SQLite tampering fails closed, including clearing the signature: unsigned grants are never signed automatically. Credentials that predate signing are reviewed and signed by an operator with `hetzer creds grant --sign-existing`; broker policy approvals are signed the same way. Known limits: signatures carry no version (replay of an old signed grant is possible) and a writer who can read the master key can still forge grants.
 2. [x] Operator path: extend `hetzer creds set` and `hetzer creds grant <id>` to record and sign grants; add `hetzer broker approve <policy>` pinning origin and SHA-256 policy hash in the vault.
 3. [x] Broker: reject any policy whose origin or policy hash is not approved in vault; strictly require `broker.proxy` action grant; record `BROKER_REQUEST_ALLOWED` audit events.
 4. [x] Runner: treat `--allow-raw-unmediated` and policy flags as requests narrowed by vault grants (`ERR_RAW_UNMEDIATED_DENIED_BY_GRANT`).
 5. [x] MCP: bind `secretRef:` substitution to granted origins; remove `hetzer_sniffer_redact`; fix the `instructions` string.
-6. [x] Evidence runner: add empirical protocols VERIFY-SEC-007 through VERIFY-SEC-011 for workspace broker policy origin/hash pinning, raw opt-out gating, in-process action checking, MCP origin binding, and grant HMAC anti-tampering. (Note: R-05 remains open until Gate G2 out-of-process engine extraction).
+6. [x] Evidence runner: add empirical protocols VERIFY-SEC-007 through VERIFY-SEC-012 for workspace broker policy origin/hash pinning, raw opt-out gating, in-process action checking, MCP origin binding, grant HMAC anti-tampering, and signature clearing, forged approvals and update laundering. (Note: R-05 remains open until Gate G2 out-of-process engine extraction).
 
 **G1: Isolation defaults (about 1 week)**
 7. [ ] `init` isolates the key by default; sandbox masks vault, `.env`, key, `.hetzer/` and audit paths and mounts the project, not the instance home.

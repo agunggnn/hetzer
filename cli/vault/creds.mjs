@@ -614,6 +614,88 @@ export async function grantCredentialCommand({
     }
 }
 
+/**
+ * Review and sign the grants of credentials that predate grant signing.
+ *
+ * Unsigned grants are not honored until this runs. It is deliberately an interactive operator step:
+ * a missing signature is also what a writer without the master key produces, so Hetzer never
+ * signs unsigned grants on its own. Rows that carry a signature that does not verify are reported
+ * and left alone; use `hetzer creds grant <id> --reset` for those.
+ */
+export async function signExistingGrantsCommand({
+    root,
+    envFile,
+    input = process.stdin,
+    output = process.stdout,
+    env = process.env,
+    ancestor,
+    confirm,
+} = {}) {
+    assertInteractiveHumanSession({
+        input,
+        env,
+        ancestor,
+        operation: "'hetzer creds grant --sign-existing'",
+    });
+
+    const { vault } = openVault(root, envFile);
+    try {
+        const unsigned = vault.listUnsignedGrants();
+        const tampered = vault.list().filter((entry) => entry.grantValid === false)
+            .map((entry) => entry.id)
+            .filter((id) => !unsigned.some((grant) => grant.id === id));
+
+        if (tampered.length) {
+            output.write(`[!] Grants with a signature that does not verify (not signed here): ${tampered.join(", ")}\n`);
+            output.write("    Reset each with: hetzer creds grant <id> --reset\n");
+        }
+        if (!unsigned.length) {
+            output.write("No credentials with unsigned grants.\n");
+            return { signed: [], tampered };
+        }
+
+        output.write("================================================================================\n");
+        output.write("  HETZER - UNSIGNED CREDENTIAL GRANTS (REVIEW BEFORE SIGNING)\n");
+        output.write("================================================================================\n");
+        for (const grant of unsigned) {
+            output.write(`  ${grant.id}\n`);
+            output.write(`    Actions : ${grant.allowedActions.join(", ") || "(none)"}\n`);
+            output.write(`    Origins : ${grant.allowedOrigins.join(", ") || "(none)"}\n`);
+            output.write(`    Raw     : ${grant.rawInjection}\n`);
+            output.write(`    Hosts   : ${grant.bindHosts.join(", ") || "(unbound)"}\n`);
+        }
+        output.write("================================================================================\n");
+
+        const ask = confirm || (async (question) => {
+            const readline = await import("node:readline/promises");
+            const rl = readline.createInterface({ input, output });
+            try {
+                return await rl.question(question);
+            } finally {
+                rl.close();
+            }
+        });
+        const answer = String(await ask("Sign these grants exactly as shown? Type 'yes' to continue: ")).trim().toLowerCase();
+        if (answer !== "yes") {
+            output.write("Cancelled. No grants were signed.\n");
+            return { signed: [], tampered, cancelled: true };
+        }
+
+        const signed = vault.signLegacyGrants(unsigned.map((grant) => grant.id));
+        vault.recordAudit({
+            actor: "operator",
+            action: "vault.sign-legacy-grants",
+            reason: "Operator reviewed and signed legacy credential grants via hetzer creds grant --sign-existing",
+            outcome: "allowed",
+            metadata: { signed },
+        });
+        output.write(`Signed grants for ${signed.length} credential(s): ${signed.join(", ")}\n`);
+        return { signed, tampered };
+    } finally {
+        vault.close();
+    }
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
     try {
         const args = process.argv.slice(2);
@@ -680,8 +762,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             process.stdout.write("================================================================================\n");
         } else if (action === "grant") {
             const id = args[1];
-            if (!id) throw new Error("Usage: hetzer creds grant <id> [--origin <url>] [--raw <allow|deny>] [--host <name>] [--action <name>] [--reset]");
-            await grantCredentialCommand({ root, envFile, id, args: args.slice(2) });
+            if (id === "--sign-existing") {
+                await signExistingGrantsCommand({ root, envFile });
+            } else {
+                if (!id) throw new Error("Usage: hetzer creds grant <id> [--origin <url>] [--raw <allow|deny>] [--host <name>] [--action <name>] [--reset] | hetzer creds grant --sign-existing");
+                await grantCredentialCommand({ root, envFile, id, args: args.slice(2) });
+            }
         } else {
             throw new Error(`Unknown creds command: '${action}'. Use 'list', 'reveal', 'set', or 'grant'.`);
         }
