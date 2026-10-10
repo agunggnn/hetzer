@@ -105,7 +105,7 @@ export function resolveSecretRefsInPayload(value, resolver, collectedSecrets = [
             return value;
         }
         if (value.includes("secretRef:")) {
-            return value.replace(/secretRef:([a-z0-9]+(?:[._-][a-z0-9]+)*)/g, (match, id) => {
+            return value.replace(/secretRef:([a-z0-9]+(?:-[a-z0-9]+)*)/g, (match, id) => {
                 if (isCanaryCredential(id)) {
                     triggerCanaryAlert({ id, actor: "mcp-agent", action: "mcp.tools/call" });
                 }

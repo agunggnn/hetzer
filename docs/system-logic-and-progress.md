@@ -66,7 +66,7 @@ sequenceDiagram
 - HTTP broker capabilities authenticate scoped requests and reject unpermitted paths;
 - workspace broker policies cannot widen access without explicit vault origin and SHA-256 policy hash approval (`VERIFY-SEC-007`);
 - caller `--allow-raw-unmediated` is rejected with `ERR_RAW_UNMEDIATED_DENIED_BY_GRANT` unless vault grant explicitly permits raw injection (`VERIFY-SEC-008`);
-- in-process `Grimoire.resolve()` strictly enforces mandatory action grants, returning null for ungranted or omitted actions (`VERIFY-SEC-009`, note: R-05 remains open until Gate G2 out-of-process boundary);
+- in-process `Grimoire.resolve()` strictly enforces mandatory action grants, returning null for ungranted or omitted actions (`VERIFY-SEC-009`). The public SDK does not expose plaintext; R-05 remains open for in-process callers holding the master key until out-of-process engine isolation;
 - MCP virtual credential proxy binds `secretRef:<id>` to verified tool destination origins, failing closed on ungranted endpoints (`VERIFY-SEC-010`);
 - the sandbox mounts an explicit project directory, hides Hetzer-owned paths inside it, forwards only injected variables by name (never on the engine command line), and refuses unsafe mount targets (`VERIFY-SEC-013`, builder-level; container behaviour of the masks was checked separately on Docker Desktop for Windows);
 - vault grant columns are HMAC-signed with a subkey derived from the master key, failing closed upon direct SQLite database tampering (`VERIFY-SEC-011`);

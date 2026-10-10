@@ -5,7 +5,7 @@ import path from "node:path";
 import { Writable } from "node:stream";
 import test from "node:test";
 
-import { createHetzer, HetzerSdkError, SDK_ERROR_CODES } from "./index.mjs";
+import { createHetzer, formatSecretRef, HetzerSdkError, isSecretRef, parseSecretRef, SDK_ERROR_CODES } from "./index.mjs";
 import { Grimoire } from "../cli/vault/hetzer-vault.mjs";
 
 test("public SDK export creates a lazy metadata client", () => {
@@ -19,7 +19,10 @@ test("public SDK export creates a lazy metadata client", () => {
     assert.equal(typeof client.credentials.list, "function");
     assert.equal(typeof client.credentials.metadata, "function");
     assert.equal("resolveRaw" in client, false);
+    assert.equal("resolve" in client, false);
     assert.equal("reveal" in client, false);
+    assert.equal("resolve" in client.credentials, false);
+    assert.equal("reveal" in client.credentials, false);
 
     client.close();
     fs.rmSync(root, { recursive: true, force: true });
@@ -203,4 +206,22 @@ test("public SDK requires an explicit sandboxMountDir when sandbox is enabled", 
 
     client.close();
     fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("public SDK exports canonical secretRef grammar helpers", () => {
+    assert.equal(isSecretRef("secretRef:npm-token"), true);
+    assert.equal(isSecretRef("secretRef:my-custom-api-key"), true);
+    assert.equal(isSecretRef("secretRef:my_custom.api-key"), false);
+    assert.equal(isSecretRef("secretRef:UPPERCASE-KEY"), false);
+    assert.equal(isSecretRef("not-a-secret-ref"), false);
+    assert.equal(isSecretRef(""), false);
+
+    assert.equal(parseSecretRef("secretRef:openai-api-key"), "openai-api-key");
+    assert.equal(parseSecretRef("  secretRef:deepseek-key  "), "deepseek-key");
+    assert.throws(() => parseSecretRef("secretRef:my_custom.api-key"), /secretRef must use the form/);
+    assert.throws(() => parseSecretRef("invalid-ref"), /secretRef must use the form/);
+
+    assert.equal(formatSecretRef("npm-token"), "secretRef:npm-token");
+    assert.throws(() => formatSecretRef("my_custom.api-key"), /Invalid credential ID/);
+    assert.throws(() => formatSecretRef("invalid name with spaces"), /Invalid credential ID/);
 });

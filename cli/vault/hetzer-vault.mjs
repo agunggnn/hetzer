@@ -38,7 +38,7 @@ const ALLOWED_ACTION_PATTERN = /^[a-z0-9]+(?:[.:_/-][a-z0-9]+)*$/;
 export const SCOPES = new Set(["header", "query", "env", "basic"]);
 export const REALMS = new Set(["core", "data", "memory", "social", "command", "frontier"]);
 export const ACCESS_ROLES = new Set(["reader", "operator", "admin"]);
-export const SECRET_REF_PATTERN = /^secretRef:([a-z0-9]+(?:[._-][a-z0-9]+)*)$/;
+export const SECRET_REF_PATTERN = /^secretRef:([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 
 function sha256(text) {
     return crypto.createHash("sha256").update(String(text)).digest("hex");
@@ -58,6 +58,18 @@ export function normalizeMasterKey(raw) {
 
 export function generateMasterKey() {
     return crypto.randomBytes(48).toString("base64url");
+}
+
+export function isSecretRef(reference) {
+    return typeof reference === "string" && SECRET_REF_PATTERN.test(reference.trim());
+}
+
+export function formatSecretRef(id) {
+    const trimmed = String(id || "").trim();
+    if (!trimmed || !ID_PATTERN.test(trimmed)) {
+        throw new Error(`Invalid credential ID '${id}' for secretRef formatting (must be lowercase kebab-case).`);
+    }
+    return `secretRef:${trimmed}`;
 }
 
 export function parseSecretRef(reference) {

@@ -83,6 +83,8 @@ Keep `--sandbox` and fix its defaults before adding anything to it.
 ```
 
 - The SDK (`createHetzer`, already metadata-first) is the only supported in-process interface. It gains a documented, versioned contract: grant-checked execution and broker leases, metadata and validation, one audit event schema, one `secretRef` grammar.
+- **The SDK never exposes `resolve()` or returns decrypted secrets in-process.** Raw secret resolution remains private to the internal runner and broker. An application or agent importing the SDK can validate references (`credentials.validate`), request broker leases, or run mediated child processes (`execution.run`), but cannot extract raw plaintext into memory through SDK methods. The public SDK does not expose plaintext; R-05 remains open for in-process callers holding the master key until out-of-process engine isolation.
+- **Same-process threat ceiling**: Within the same Node.js process and OS user account, memory isolation against adversarial code is impossible. Any untrusted code (such as LLM-driven agents or dynamically evaluated tools) must be executed out-of-process via `hetzer exec` or `execution.run()` (with optional container sandbox `--sandbox`). Direct imports of internal modules (`cli/vault/hetzer-vault.mjs`) by same-user code are not an OS privilege boundary.
 - The on-disk vault format gets a version marker and a written format note. Consumers must not decrypt it themselves; AegisBrain's direct decryption script migrates to `hetzer exec` or the SDK once G2 holds.
 - Storage is a replaceable provider behind the engine (the SQLite Grimoire is the default implementation). This keeps Brumm's "provider-agnostic" position viable without building other providers now.
 - **Central planes never resolve.** AegisBrain may store encrypted exports and `secretRef` catalog metadata. Resolution always happens locally on the execution host, through the engine. This reconciles "unify the tools" with the SDK roadmap's "no hosted control plane".
@@ -245,10 +247,10 @@ Effort figures are planning estimates for one engineer familiar with the code, n
 9. [ ] **Deferred (not sandbox work):** README: one package identity and install path; remove `curl | bash` and `irm | iex` as primary options; republish or correct the unscoped package so the quickstart is not eight minors behind.
 
 **G2: Contract (about 1.5 to 2 weeks)**
-10. [ ] SDK `apiVersion` 1 with the grant-checked execution and lease interfaces; one `secretRef` grammar; one audit event schema; vault format version and format note.
+10. [ ] SDK `apiVersion` 1 with grant-checked execution and lease interfaces; public SDK does not expose `resolve()` (R-05 remains open for in-process callers); one `secretRef` grammar (`parseSecretRef`); one audit event schema; vault format version and format note.
 11. [ ] Consolidate audit into one stream with an optional keyed MAC or external anchor; fail closed in strict mode.
 12. [ ] Remove the duplicate guard logic and the vault schema leftovers (schema v2 migration).
-13. [ ] Narrow SEC-23 wording in `docs/audit-batch-5.md` and `docs/system-logic-and-progress.md`; revise the threat-model matrix wording (see review R-05, R-12).
+13. [ ] Narrow SEC-23 and R-05 wording in `docs/audit-batch-5.md`, `AGENTS.md`, and `docs/system-logic-and-progress.md` (clarifying that `reveal()` blocks naive TTY/CLI dumps, while internal `resolve()` and direct SQLite reads operate under same-user trust; untrusted agents must run out-of-process in a sandbox).
 
 **G3: Cut (about 1 week, mostly deletion)**
 14. [ ] Move or archive the module system, Compose runner, 9Router helpers, TUI placement and release tooling per the Cut table; keep a one-release deprecation pointer for removed commands.
