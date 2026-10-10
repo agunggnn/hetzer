@@ -315,6 +315,10 @@ export function listCredentials({ root, envFile }) {
                 configured: true,
                 description: known?.description || item.notes || item.label || "Stored credential",
                 usage: known?.usage || "",
+                allowedOrigins: item.allowedOrigins || [],
+                rawInjection: item.rawInjection || "deny",
+                bindHosts: item.bindHosts || [],
+                allowedActions: item.allowedActions || [],
             });
         }
 
@@ -361,6 +365,10 @@ export function revealCredential({ root, envFile, id }) {
             usage: known?.usage || "",
             createdAt: entry.createdAt,
             updatedAt: entry.updatedAt,
+            allowedOrigins: entry.allowedOrigins || [],
+            rawInjection: entry.rawInjection || "deny",
+            bindHosts: entry.bindHosts || [],
+            allowedActions: entry.allowedActions || [],
         };
     } finally {
         vault.close();
@@ -387,7 +395,16 @@ export async function ensureCredential({ root, envFile, id, promptMessage }) {
     return secret;
 }
 
-export function setCredential({ root, envFile, id, secret, allowedActions }) {
+export function setCredential({
+    root,
+    envFile,
+    id,
+    secret,
+    allowedActions,
+    allowedOrigins,
+    rawInjection,
+    bindHosts,
+}) {
     if (!id || typeof id !== "string") throw new Error("Credential ID is required.");
     if (typeof secret !== "string" || !secret) throw new Error("Secret value is required.");
 
@@ -398,12 +415,22 @@ export function setCredential({ root, envFile, id, secret, allowedActions }) {
         const keyName = known?.keyName || id;
         const authType = known?.authType || (id.includes("password") ? "password" : "api-key");
         const label = known?.label || id;
-        const DEFAULT_ALLOWED_ACTIONS = ["compose.start", "process.start", "mcp.tools/call", "mcp.tools.call"];
+        const DEFAULT_ALLOWED_ACTIONS = ["compose.start", "process.start", "broker.proxy", "mcp.tools/call", "mcp.tools.call"];
         vault.upsertTarget({ id: targetId, name: targetId, target_type: "hetzer-module" });
         const existing = vault.find(id);
         const resolvedAllowedActions = allowedActions || (existing?.allowedActions?.length ? existing.allowedActions : DEFAULT_ALLOWED_ACTIONS);
+        const resolvedAllowedOrigins = allowedOrigins !== undefined ? allowedOrigins : (existing?.allowedOrigins || []);
+        const resolvedRawInjection = rawInjection !== undefined ? rawInjection : (existing?.rawInjection || "deny");
+        const resolvedBindHosts = bindHosts !== undefined ? bindHosts : (existing?.bindHosts || []);
+
         if (existing) {
-            vault.update(id, { secret, allowedActions: resolvedAllowedActions });
+            vault.update(id, {
+                secret,
+                allowedActions: resolvedAllowedActions,
+                allowedOrigins: resolvedAllowedOrigins,
+                rawInjection: resolvedRawInjection,
+                bindHosts: resolvedBindHosts,
+            });
         } else {
             vault.create({
                 id,
@@ -414,6 +441,9 @@ export function setCredential({ root, envFile, id, secret, allowedActions }) {
                 scope: "env",
                 accessRole: "operator",
                 allowedActions: resolvedAllowedActions,
+                allowedOrigins: resolvedAllowedOrigins,
+                rawInjection: resolvedRawInjection,
+                bindHosts: resolvedBindHosts,
                 secret,
                 source: "cli-creds-set",
             });
@@ -432,7 +462,7 @@ export function setCredential({ root, envFile, id, secret, allowedActions }) {
             credential_id: id,
             reason: "User updated credential via hetzer creds set",
             outcome: "allowed",
-            metadata: { envVar },
+            metadata: { envVar, rawInjection: resolvedRawInjection },
         });
 
         return {
@@ -441,7 +471,144 @@ export function setCredential({ root, envFile, id, secret, allowedActions }) {
             module: known?.moduleId || targetId,
             description: known?.description || label,
             usage: known?.usage || "",
+            allowedOrigins: resolvedAllowedOrigins,
+            rawInjection: resolvedRawInjection,
+            bindHosts: resolvedBindHosts,
+            allowedActions: resolvedAllowedActions,
         };
+    } finally {
+        vault.close();
+    }
+}
+
+export async function approveBrokerPolicyCommand({
+    root,
+    envFile,
+    policyFile,
+    input = process.stdin,
+    env = process.env,
+    ancestor,
+} = {}) {
+    assertInteractiveHumanSession({
+        input,
+        env,
+        ancestor,
+        operation: "'hetzer broker approve'",
+    });
+
+    const { loadBrokerPolicy } = await import("./http-broker.mjs");
+    const policy = loadBrokerPolicy(policyFile);
+    const { vault } = openVault(root, envFile);
+    try {
+        const result = vault.approveBrokerPolicy({
+            credentialId: policy.credentialId,
+            policyHash: policy.policyHash,
+            targetOrigin: policy.targetOrigin,
+            policyPath: policy.policyFile,
+            approvedBy: "operator",
+        });
+        process.stdout.write("================================================================================\n");
+        process.stdout.write("  HETZER - BROKER POLICY APPROVED\n");
+        process.stdout.write("================================================================================\n");
+        process.stdout.write(`  Policy File   : ${policy.policyFile}\n`);
+        process.stdout.write(`  Credential    : ${policy.credentialId}\n`);
+        process.stdout.write(`  Target Origin : ${result.targetOrigin}\n`);
+        process.stdout.write(`  Policy Hash   : ${result.policyHash}\n`);
+        process.stdout.write(`  Approved At   : ${result.approvedAt}\n`);
+        process.stdout.write("================================================================================\n");
+        return result;
+    } finally {
+        vault.close();
+    }
+}
+
+export async function grantCredentialCommand({
+    root,
+    envFile,
+    id,
+    args = [],
+    origin = null,
+    raw = null,
+    host = null,
+    action = null,
+    reset = false,
+    input = process.stdin,
+    output = process.stdout,
+    env = process.env,
+    ancestor,
+} = {}) {
+    assertInteractiveHumanSession({
+        input,
+        env,
+        ancestor,
+        operation: "'hetzer creds grant'",
+    });
+
+    const originsToAdd = [];
+    if (origin) originsToAdd.push(...(Array.isArray(origin) ? origin : [origin]));
+    let rawInjection = raw ? String(raw).toLowerCase() : undefined;
+    const hostsToAdd = [];
+    if (host) hostsToAdd.push(...(Array.isArray(host) ? host : [host]));
+    const actionsToAdd = [];
+    if (action) actionsToAdd.push(...(Array.isArray(action) ? action : [action]));
+    let isReset = reset;
+
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === "--origin" && args[i + 1]) {
+            originsToAdd.push(args[++i]);
+        } else if (arg === "--raw" && args[i + 1]) {
+            const val = String(args[++i]).toLowerCase();
+            if (val !== "allow" && val !== "deny") throw new Error("Flag --raw must be 'allow' or 'deny'.");
+            rawInjection = val;
+        } else if (arg === "--host" && args[i + 1]) {
+            hostsToAdd.push(args[++i]);
+        } else if (arg === "--action" && args[i + 1]) {
+            actionsToAdd.push(args[++i]);
+        } else if (arg === "--reset") {
+            isReset = true;
+        }
+    }
+
+    const { vault } = openVault(root, envFile);
+    try {
+        const existing = vault.find(id);
+        if (!existing) throw new Error(`Credential '${id}' was not found in Grimoire Vault.`);
+
+        const allowedOrigins = isReset ? originsToAdd : [...new Set([...(existing.allowedOrigins || []), ...originsToAdd])];
+        const rawVal = rawInjection !== undefined ? rawInjection : (isReset ? "deny" : existing.rawInjection);
+        const bindHosts = isReset ? hostsToAdd : [...new Set([...(existing.bindHosts || []), ...hostsToAdd])];
+        const allowedActions = isReset
+            ? (actionsToAdd.length ? actionsToAdd : ["process.start"])
+            : [...new Set([...(existing.allowedActions || []), ...actionsToAdd])];
+
+        vault.update(id, {
+            allowedOrigins,
+            rawInjection: rawVal,
+            bindHosts,
+            allowedActions,
+        });
+
+        vault.recordAudit({
+            actor: "operator",
+            action: "vault.grant-credential",
+            target_id: existing.projectId,
+            credential_id: id,
+            reason: "Operator updated credential grants via hetzer creds grant",
+            outcome: "allowed",
+            metadata: { allowedOrigins, rawInjection: raw, bindHosts, allowedActions },
+        });
+
+        output.write("================================================================================\n");
+        output.write(`  HETZER - CREDENTIAL GRANTS UPDATED: ${id}\n`);
+        output.write("================================================================================\n");
+        output.write(`  Allowed Origins : ${allowedOrigins.length ? allowedOrigins.join(", ") : "(none)"}\n`);
+        output.write(`  Raw Injection   : ${raw}\n`);
+        output.write(`  Bind Hosts      : ${bindHosts.length ? bindHosts.join(", ") : "(unbound)"}\n`);
+        output.write(`  Allowed Actions : ${allowedActions.join(", ")}\n`);
+        output.write("================================================================================\n");
+
+        return { id, allowedOrigins, rawInjection: raw, bindHosts, allowedActions };
     } finally {
         vault.close();
     }
@@ -511,8 +678,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
                 process.stdout.write(`  Apply       : Run '${upTarget}' (or 'hetzer up') to reload services.\n`);
             }
             process.stdout.write("================================================================================\n");
+        } else if (action === "grant") {
+            const id = args[1];
+            if (!id) throw new Error("Usage: hetzer creds grant <id> [--origin <url>] [--raw <allow|deny>] [--host <name>] [--action <name>] [--reset]");
+            await grantCredentialCommand({ root, envFile, id, args: args.slice(2) });
         } else {
-            throw new Error(`Unknown creds command: '${action}'. Use 'list', 'reveal', or 'set'.`);
+            throw new Error(`Unknown creds command: '${action}'. Use 'list', 'reveal', 'set', or 'grant'.`);
         }
     } catch (error) {
         process.stderr.write(`[hetzer creds error] ${error.message}\n`);

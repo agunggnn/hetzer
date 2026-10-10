@@ -285,6 +285,7 @@ test("synthesized service tools enforce traversal defense, header safety, creden
             authType: "api-key",
             secret: "permitted-inner-secret-123",
             allowedActions: ["mcp.tools/call"],
+            allowedOrigins: ["http://127.0.0.1:9876"],
         });
         vault.create({
             id: "forbidden-tool-cred",

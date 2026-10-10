@@ -898,6 +898,14 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             process.stdout.write("================================================================================\n");
             return;
         }
+        if (subCommand === "grant") {
+            const id = args[1];
+            if (!id) throw new Error("Usage: hetzer creds grant <id> [--origin <url>] [--raw <allow|deny>] [--host <name>] [--action <name>] [--reset]");
+            assertInteractiveHumanSession({ operation: "'hetzer creds grant'" });
+            const { grantCredentialCommand } = await import("../vault/creds.mjs");
+            await grantCredentialCommand({ root, envFile, id, args: args.slice(2) });
+            return;
+        }
         if (subCommand === "isolate-key" || subCommand === "key-isolate") {
             const res = isolateMasterKey({ root, envFile });
             process.stdout.write("================================================================================\n");
@@ -911,7 +919,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             process.stdout.write("================================================================================\n");
             return;
         }
-        throw new Error(`Unknown creds subcommand: '${subCommand}'. Use 'list', 'request', 'approve', 'status', 'reveal', 'set', or 'isolate-key'.`);
+        throw new Error(`Unknown creds subcommand: '${subCommand}'. Use 'list', 'request', 'approve', 'status', 'reveal', 'set', 'grant', or 'isolate-key'.`);
     }
     if (["sniffer", "sniff"].includes(command)) {
         const sub = args[0] || "scan";
@@ -1302,6 +1310,15 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         return;
     }
     if (command === "broker") {
+        if (args[0] === "approve") {
+            const policyFile = args[1];
+            if (!policyFile) {
+                throw new Error("Usage: hetzer broker approve <policy-file>");
+            }
+            const { approveBrokerPolicyCommand } = await import("../vault/creds.mjs");
+            await approveBrokerPolicyCommand({ root, envFile, policyFile });
+            return;
+        }
         const marker = args.indexOf("--");
         if (marker === -1 || !args[marker + 1]) {
             throw new Error("Usage: hetzer broker --policy <file> -- <command> [args]");

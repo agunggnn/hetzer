@@ -453,6 +453,24 @@ export function validateBrokerPolicy(input) {
     });
 }
 
+export function computeBrokerPolicyHash(policy) {
+    if (policy?.policyHash) return policy.policyHash;
+    const canonical = {
+        version: policy.version || 1,
+        target: policy.targetOrigin || policy.target,
+        credential: policy.credential || `secretRef:${policy.credentialId}`,
+        baseUrlEnv: policy.baseUrlEnv,
+        tokenEnv: policy.tokenEnv,
+        basePath: policy.basePath,
+        clientAuth: { header: policy.clientHeader, scheme: policy.clientScheme },
+        upstreamAuth: { header: policy.upstreamHeader, scheme: policy.upstreamScheme },
+        allowedMethods: policy.allowedMethods ? [...policy.allowedMethods].sort() : [],
+        allowedPathPrefixes: policy.allowedPathPrefixes ? [...policy.allowedPathPrefixes].sort() : [],
+        forwardHeaders: policy.forwardHeaders ? [...policy.forwardHeaders].sort() : [],
+    };
+    return crypto.createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
+
 export function loadBrokerPolicy(policyFile, { expectedHash } = {}) {
     const resolved = path.resolve(policyFile);
     if (!fs.existsSync(resolved)) {
@@ -492,7 +510,7 @@ export function loadBrokerPolicy(policyFile, { expectedHash } = {}) {
 
     const validated = validateBrokerPolicy(parsed);
 
-    const requiredHash = expectedHash || parsed.integrity?.sha256;
+    const requiredHash = expectedHash;
     if (requiredHash && requiredHash.toLowerCase() !== policyHash.toLowerCase()) {
         const err = new Error(
             `Broker policy integrity verification failed for '${resolved}'.\n` +
@@ -871,6 +889,21 @@ export async function startHttpCredentialBroker({
             responseHeaders["cache-control"] ||= "no-store";
             response.writeHead(upstream.status, responseHeaders);
             response.end(sanitizedBody);
+
+            try {
+                recordAuditEvent({
+                    eventType: "BROKER_REQUEST_ALLOWED",
+                    target: policy.credentialId,
+                    result: "ALLOW",
+                    root,
+                    details: {
+                        targetOrigin: policy.targetOrigin,
+                        method,
+                        path: target.pathname,
+                        status: upstream.status,
+                    },
+                });
+            } catch { /* fail soft */ }
         } catch (error) {
             if (slotReserved && !requestDispatched) {
                 forwardedRequests = Math.max(0, forwardedRequests - 1);
@@ -939,7 +972,44 @@ export async function openHttpCredentialBroker({
     try {
         const credential = vault.find(policy.credentialId);
         if (!credential) throw new Error(`Credential '${policy.credentialId}' was not found.`);
-        secret = vault.resolve(policy.credentialId, { targetId: credential.projectId, action: "process.start" });
+        if (!credential.allowedOrigins || !credential.allowedOrigins.includes(policy.targetOrigin)) {
+            const err = new Error(
+                `Broker policy target origin '${policy.targetOrigin}' is not granted for credential '${policy.credentialId}'.\n` +
+                `Grants live in the vault; workspace policy files cannot grant access.\n` +
+                `To approve this policy, an operator must run: hetzer broker approve ${policy.policyFile || "<policy-file>"}`
+            );
+            err.code = "ERR_BROKER_ORIGIN_NOT_GRANTED";
+            throw err;
+        }
+
+        const policyHash = policy.policyHash || computeBrokerPolicyHash(policy);
+        const approvedRecord = vault.getApprovedBrokerPolicy(policy.credentialId, policyHash);
+        if (!approvedRecord) {
+            const err = new Error(
+                `Broker policy '${policy.policyFile || "<in-memory>"}' (SHA-256: ${policyHash}) is not approved for credential '${policy.credentialId}' in Grimoire Vault.\n` +
+                `Workspace policy pinning is enforced; arbitrary or modified policy files cannot open the broker.\n` +
+                `To approve this policy, an operator must run: hetzer broker approve ${policy.policyFile || "<policy-file>"}`
+            );
+            err.code = "ERR_BROKER_POLICY_NOT_APPROVED";
+            throw err;
+        }
+        if (approvedRecord.target_origin !== policy.targetOrigin) {
+            const err = new Error(
+                `Approved broker policy origin mismatch: policy targets '${policy.targetOrigin}', but approval was for '${approvedRecord.target_origin}'.`
+            );
+            err.code = "ERR_BROKER_ORIGIN_MISMATCH";
+            throw err;
+        }
+
+        const hasBrokerAction = credential.allowedActions && credential.allowedActions.includes("broker.proxy");
+        if (!hasBrokerAction) {
+            const err = new Error(
+                `Credential '${policy.credentialId}' does not have the 'broker.proxy' action grant in Grimoire Vault.`
+            );
+            err.code = "ERR_BROKER_ACTION_NOT_GRANTED";
+            throw err;
+        }
+        secret = vault.resolve(policy.credentialId, { targetId: credential.projectId, action: "broker.proxy" });
         if (secret === null) throw new Error(`Credential '${policy.credentialId}' is not allowed for broker execution.`);
         vault.recordAudit({
             actor: "hetzer-cli",

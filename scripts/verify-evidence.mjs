@@ -13,14 +13,15 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 
-import { createStreamSanitizer, sanitizeStreamOutput } from "../cli/vault/exec.mjs";
-import { startHttpCredentialBroker, validateBrokerPolicy } from "../cli/vault/http-broker.mjs";
+import { createStreamSanitizer, prepareExecutionEnvironment, sanitizeStreamOutput } from "../cli/vault/exec.mjs";
+import { loadBrokerPolicy, openHttpCredentialBroker, startHttpCredentialBroker, validateBrokerPolicy } from "../cli/vault/http-broker.mjs";
 import { resolveSecretEnvironment } from "../cli/vault/secret-env.mjs";
 import { detectAgentAncestor } from "../cli/vault/creds.mjs";
 import { scanText, redactAndVault } from "../cli/vault/sniffer.mjs";
 import { scanAddedLines } from "../cli/core/git-hook.mjs";
 import { isCanaryCredential, triggerCanaryAlert } from "../cli/vault/canary.mjs";
 import { Grimoire } from "../cli/vault/hetzer-vault.mjs";
+import { createToolCatalog } from "../cli/mcp/catalog.mjs";
 import {
     assertNoSensitivePathAccess,
     assertNoUntrustedDownloader,
@@ -415,6 +416,435 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
         observed: `cookieBlocked: ${cookieBlocked}. awsBlocked: ${awsBlocked}. walletBlocked: ${walletBlocked}. certutilBlocked: ${certutilBlocked}. irmIexBlocked: ${irmIexBlocked}. cleanAllowed: ${cleanAllowed}.`,
         pass,
         boundary: "Enforced by 'hetzer exec' structured command arguments. Bare commands launched directly in host terminals outside Hetzer remain bounded by OS user privileges.",
+    });
+}
+
+// -----------------------------------------------------------------------------
+// Test 8: Workspace-Authored Broker Policy Authority Boundary (Gate G0)
+// -----------------------------------------------------------------------------
+{
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-verify-broker-g0-"));
+    const envFile = path.join(tempDir, ".env");
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    fs.mkdirSync(path.join(tempDir, "data"), { recursive: true });
+    fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${masterKey}\n`);
+
+    const policyFile = path.join(tempDir, "policy.json");
+    fs.writeFileSync(policyFile, JSON.stringify({
+        version: 1,
+        target: "https://unapproved.api.test",
+        credential: "secretRef:g0-broker-cred",
+        baseUrlEnv: "SERVICE_BASE_URL",
+        tokenEnv: "SERVICE_API_KEY",
+        basePath: "/v1",
+        clientAuth: { header: "authorization", scheme: "Bearer" },
+        upstreamAuth: { header: "x-api-key", scheme: "" },
+        allowedMethods: ["GET", "POST"],
+        allowedPathPrefixes: ["/v1"],
+        forwardHeaders: ["content-type"],
+    }));
+
+    const vault = new Grimoire({ dbPath: path.join(tempDir, "data", "hetzer-vault.db"), masterKey });
+    vault.upsertTarget({ id: "g0", name: "g0" });
+    vault.create({
+        id: "g0-broker-cred",
+        projectId: "g0",
+        keyName: "key",
+        authType: "api-key",
+        allowedActions: ["broker.proxy"],
+        allowedOrigins: ["https://approved.api.test"],
+        secret: "synthetic-secret-value-broker-g0",
+    });
+    vault.close();
+
+    let unapprovedOriginBlocked = false;
+    let modifiedPolicyBlocked = false;
+    let approvedOpened = false;
+
+    try {
+        try {
+            await openHttpCredentialBroker({
+                root: tempDir,
+                envFile,
+                policyFile,
+            });
+        } catch (err) {
+            unapprovedOriginBlocked = err.code === "ERR_BROKER_ORIGIN_NOT_GRANTED";
+        }
+
+        // Operator approves policy in vault
+        const loadedPolicy = loadBrokerPolicy(policyFile);
+        const vaultOp = new Grimoire({ dbPath: path.join(tempDir, "data", "hetzer-vault.db"), masterKey });
+        try {
+            vaultOp.approveBrokerPolicy({
+                credentialId: "g0-broker-cred",
+                policyHash: loadedPolicy.policyHash,
+                targetOrigin: "https://unapproved.api.test",
+            });
+        } finally {
+            vaultOp.close();
+        }
+
+        // Probe P6 check: Adversarial agent modifies policy for same origin (e.g. adding DELETE method)
+        const modifiedPolicyFile = path.join(tempDir, "policy-modified.json");
+        fs.writeFileSync(modifiedPolicyFile, JSON.stringify({
+            ...JSON.parse(fs.readFileSync(policyFile, "utf8")),
+            allowedMethods: ["GET", "POST", "DELETE"],
+        }));
+        try {
+            await openHttpCredentialBroker({
+                root: tempDir,
+                envFile,
+                policyFile: modifiedPolicyFile,
+            });
+        } catch (err) {
+            modifiedPolicyBlocked = err.code === "ERR_BROKER_POLICY_NOT_APPROVED";
+        }
+
+        const opened = await openHttpCredentialBroker({
+            root: tempDir,
+            envFile,
+            policyFile,
+            fetchFn: async () => new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } }),
+        });
+        if (opened?.broker?.url) {
+            approvedOpened = true;
+            await opened.broker.close();
+        }
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+
+    const pass = unapprovedOriginBlocked && modifiedPolicyBlocked && approvedOpened;
+    recordTest({
+        id: "VERIFY-SEC-007",
+        name: "Workspace-Authored Broker Policy Authority & Hash Pinning Boundary",
+        target: "cli/vault/http-broker.mjs -> openHttpCredentialBroker()",
+        threat: "Adversarial agent points broker to unapproved upstream origin or widens policy rules (methods/paths) via workspace file edits to exfiltrate secrets",
+        input: "Unapproved origin policy, modified policy for approved origin, and exact operator-approved policy hash",
+        method: "Attempt broker with unapproved origin (expect ERR_BROKER_ORIGIN_NOT_GRANTED); approve origin/hash; attempt modified policy (expect ERR_BROKER_POLICY_NOT_APPROVED); attempt approved policy (expect success)",
+        expected: "Unapproved origin and tampered policy hashes are blocked; only exact operator-approved policy hash opens broker",
+        observed: `unapprovedOriginBlocked: ${unapprovedOriginBlocked}. modifiedPolicyBlocked: ${modifiedPolicyBlocked}. approvedOpened: ${approvedOpened}.`,
+        pass,
+        boundary: "Broker origins and SHA-256 policy hashes are pinned in the vault. Workspace policy tampering fails closed.",
+    });
+}
+
+// -----------------------------------------------------------------------------
+// Test 9: Caller-Supplied Raw Injection Request Boundary (Gate G0)
+// -----------------------------------------------------------------------------
+{
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-verify-raw-inj-"));
+    const envFile = path.join(tempDir, ".env");
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    fs.mkdirSync(path.join(tempDir, "data"), { recursive: true });
+    fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${masterKey}\nMY_TOKEN=secretRef:denied-raw-cred\n`);
+
+    const vault = new Grimoire({ dbPath: path.join(tempDir, "data", "hetzer-vault.db"), masterKey });
+    vault.upsertTarget({ id: "g0", name: "g0" });
+    vault.create({
+        id: "denied-raw-cred",
+        projectId: "g0",
+        keyName: "key",
+        authType: "api-key",
+        allowedActions: ["process.start"],
+        rawInjection: "deny",
+        secret: "synthetic-secret-raw-val",
+    });
+    vault.close();
+
+    let rawDeniedBlocked = false;
+    let rawAllowedPrepared = false;
+
+    try {
+        try {
+            await prepareExecutionEnvironment({
+                root: tempDir,
+                envFile,
+                allowNames: ["denied-raw-cred"],
+                allowRawUnmediated: ["denied-raw-cred"],
+                brokerPolicyFiles: [],
+            }, {
+                baseEnv: { HETZER_GRIMOIRE_KEY: masterKey },
+            });
+        } catch (err) {
+            rawDeniedBlocked = err.code === "ERR_RAW_UNMEDIATED_DENIED_BY_GRANT";
+        }
+
+        // Operator updates rawInjection grant to allow
+        const vaultOp = new Grimoire({ dbPath: path.join(tempDir, "data", "hetzer-vault.db"), masterKey });
+        try {
+            vaultOp.update("denied-raw-cred", { rawInjection: "allow" });
+        } finally {
+            vaultOp.close();
+        }
+
+        const envResult = await prepareExecutionEnvironment({
+            root: tempDir,
+            envFile,
+            allowNames: ["denied-raw-cred"],
+            allowRawUnmediated: ["denied-raw-cred"],
+            command: "node",
+            brokerPolicyFiles: [],
+        }, {
+            baseEnv: { HETZER_GRIMOIRE_KEY: masterKey },
+        });
+
+        rawAllowedPrepared = envResult?.env?.MY_TOKEN === "synthetic-secret-raw-val";
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+
+    const pass = rawDeniedBlocked && rawAllowedPrepared;
+    recordTest({
+        id: "VERIFY-SEC-008",
+        name: "Caller-Supplied Raw Injection Request Boundary",
+        target: "cli/vault/exec.mjs -> prepareExecutionEnvironment()",
+        threat: "Untrusted agent requests unmediated raw plaintext secret injection via --allow-raw-unmediated without operator vault grant",
+        input: "Execution request with --allow-raw-unmediated for credential with rawInjection: 'deny', followed by operator granting rawInjection: 'allow'",
+        method: "Attempt prepareExecutionEnvironment with raw injection on ungranted credential; assert ERR_RAW_UNMEDIATED_DENIED_BY_GRANT; update grant to allow and assert success",
+        expected: "Request rejected with ERR_RAW_UNMEDIATED_DENIED_BY_GRANT when vault grant is deny; succeeds only when vault grant has rawInjection: 'allow'",
+        observed: `rawDeniedBlocked: ${rawDeniedBlocked}. rawAllowedPrepared: ${rawAllowedPrepared}.`,
+        pass,
+        boundary: "--allow-raw-unmediated is a caller request that is strictly gated by operator-configured vault grants.",
+    });
+}
+
+// -----------------------------------------------------------------------------
+// Test 10: In-Process Grimoire resolve() Action Grant Enforcement (Gate G0)
+// -----------------------------------------------------------------------------
+{
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-verify-resolve-g0-"));
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    const dbPath = path.join(tempDir, "data", "hetzer-vault.db");
+
+    const vault = new Grimoire({ dbPath, masterKey });
+    let pass = false;
+    let observedMsg = "";
+    try {
+        vault.upsertTarget({ id: "action-target", name: "action-target" });
+        vault.create({
+            id: "proc-only-key",
+            projectId: "action-target",
+            secret: "secret-action-token-42",
+            allowedActions: ["process.start"],
+        });
+
+        const missingAction = vault.resolve("proc-only-key");
+        const missingActionWithTarget = vault.resolve("proc-only-key", { targetId: "action-target" });
+        const ungrantedAction = vault.resolve("proc-only-key", { targetId: "action-target", action: "broker.proxy" });
+        const grantedAction = vault.resolve("proc-only-key", { targetId: "action-target", action: "process.start" });
+
+        const checkMissing = missingAction === null && missingActionWithTarget === null;
+        const checkUngranted = ungrantedAction === null;
+        const checkGranted = grantedAction === "secret-action-token-42";
+
+        pass = checkMissing && checkUngranted && checkGranted;
+        observedMsg = `checkMissing: ${checkMissing}. checkUngranted: ${checkUngranted}. checkGranted: ${checkGranted}.`;
+    } finally {
+        vault.close();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+
+    recordTest({
+        id: "VERIFY-SEC-009",
+        name: "In-Process Grimoire resolve() Action Grant Enforcement (Partial R-05 Mitigation)",
+        target: "cli/vault/hetzer-vault.mjs -> Grimoire.resolve()",
+        threat: "Confused deputy or programmatic caller invokes resolve() without action or with un-granted action to extract plaintext secret",
+        input: "Credential granting allowedActions: ['process.start']; calls with no action, broker.proxy action, and process.start action",
+        method: "Invoke Grimoire.resolve() with missing, un-granted, and granted actions; verify mandatory action enforcement and fail-closed behavior",
+        expected: "resolve() returns null for missing or un-granted actions; returns plaintext secret only for explicit granted action. Note: R-05 remains open until Gate G2 out-of-process engine extraction.",
+        observed: observedMsg,
+        pass,
+        boundary: "Mandatory action grant checking on in-process vault resolution fails closed when action is omitted or ungranted. (R-05 remains open until G2 out-of-process engine boundary).",
+    });
+}
+
+// -----------------------------------------------------------------------------
+// Test 11: MCP SecretRef Destination Origin Binding (Gate G0)
+// -----------------------------------------------------------------------------
+{
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-verify-mcp-g0-"));
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    let unapprovedOriginBlocked = false;
+    let approvedOriginSucceeded = false;
+
+    try {
+        fs.mkdirSync(path.join(tempDir, "data"), { recursive: true });
+        fs.mkdirSync(path.join(tempDir, "modules", "origin-mod"), { recursive: true });
+
+        fs.writeFileSync(path.join(tempDir, ".env"), [
+            `HETZER_GRIMOIRE_KEY=${masterKey}`,
+            "ORIGIN_MOD_URL=http://127.0.0.1:9099",
+        ].join("\n"));
+
+        fs.writeFileSync(path.join(tempDir, "modules", "origin-mod", "module.json"), JSON.stringify({
+            schemaVersion: 1,
+            id: "origin-mod",
+            label: "Origin Test Module",
+            version: "1",
+            profile: "test",
+            lifecycle: "external",
+            surface: "headless",
+            defaultEnabled: true,
+            requires: ["core"],
+            services: [{
+                id: "origin-mod",
+                label: "Origin Mod Service",
+                surface: "headless",
+                lifecycle: "external",
+                urlEnv: "ORIGIN_MOD_URL",
+                mcpTools: [{
+                    name: "origin_tool",
+                    title: "Origin Tool",
+                    description: "Tool for testing origin binding",
+                    path: "/api/check",
+                    method: "POST",
+                    argumentMode: "legacy",
+                    inputSchema: {
+                        type: "object",
+                        properties: { payload: { type: "object" } },
+                    },
+                }],
+            }],
+        }, null, 2));
+
+        const vault = new Grimoire({
+            dbPath: path.join(tempDir, "data", "hetzer-vault.db"),
+            masterKey,
+        });
+        vault.upsertTarget({ id: "origin-mod", name: "origin-mod" });
+        vault.create({
+            id: "origin-cred",
+            projectId: "origin-mod",
+            authType: "api-key",
+            secret: "mcp-secret-payload-val",
+            allowedActions: ["mcp.tools/call"],
+            allowedOrigins: ["http://127.0.0.1:8080"],
+        });
+        vault.close();
+
+        const catalog = createToolCatalog({ root: tempDir });
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = async () => new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+        });
+
+        try {
+            // 1. Unapproved origin is rejected
+            try {
+                await catalog.call("origin_tool", {
+                    payload: { key: "secretRef:origin-cred" },
+                });
+            } catch (err) {
+                unapprovedOriginBlocked = err.message.includes("destination origin 'http://127.0.0.1:9099' is not permitted by vault grant");
+            }
+
+            // 2. Operator grants origin in vault
+            const vaultOp = new Grimoire({
+                dbPath: path.join(tempDir, "data", "hetzer-vault.db"),
+                masterKey,
+            });
+            try {
+                vaultOp.update("origin-cred", {
+                    allowedOrigins: ["http://127.0.0.1:8080", "http://127.0.0.1:9099"],
+                });
+            } finally {
+                vaultOp.close();
+            }
+
+            // 3. Approved origin succeeds
+            const res = await catalog.call("origin_tool", {
+                payload: { key: "secretRef:origin-cred" },
+            });
+            approvedOriginSucceeded = res?.status === 200;
+        } finally {
+            globalThis.fetch = originalFetch;
+            catalog.close();
+        }
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+
+    const pass = unapprovedOriginBlocked && approvedOriginSucceeded;
+    recordTest({
+        id: "VERIFY-SEC-010",
+        name: "MCP SecretRef Destination Origin Binding",
+        target: "cli/mcp/catalog.mjs -> call()",
+        threat: "Adversarial agent passes secretRef into MCP service tool to exfiltrate secret to unapproved network endpoint",
+        input: "Service tool targeting http://127.0.0.1:9099; vault credential granting only http://127.0.0.1:8080, followed by operator grant update",
+        method: "Attempt MCP tool call passing secretRef to service tool with unapproved origin; assert origin denial; grant origin in vault and verify tool execution succeeds",
+        expected: "secretRef substitution into unapproved destination origin is rejected; substitution succeeds once destination origin is granted in vault",
+        observed: `unapprovedOriginBlocked: ${unapprovedOriginBlocked}. approvedOriginSucceeded: ${approvedOriginSucceeded}.`,
+        pass,
+        boundary: "Enforces destination origin binding for MCP service tools. Tool calls without declared origin fail closed.",
+    });
+}
+
+// -----------------------------------------------------------------------------
+// Test 12: Vault Grant Column HMAC Integrity & Anti-Tampering (Gate G0)
+// -----------------------------------------------------------------------------
+{
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-verify-hmac-g0-"));
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    const dbPath = path.join(tempDir, "data", "hetzer-vault.db");
+
+    const vault = new Grimoire({ dbPath, masterKey });
+    let p2OriginsTamperBlocked = false;
+    let p3bRawTamperBlocked = false;
+    let legitimateValid = false;
+
+    try {
+        vault.upsertTarget({ id: "secure-app", name: "secure-app" });
+        vault.create({
+            id: "api-token",
+            projectId: "secure-app",
+            secret: "top-secret-payload",
+            allowedActions: ["broker.proxy"],
+            allowedOrigins: ["https://trusted.corp.test"],
+            rawInjection: "deny",
+        });
+
+        // Legitimate entry has valid HMAC
+        const initial = vault.find("api-token");
+        legitimateValid = initial.grantValid === true && initial.allowedOrigins.includes("https://trusted.corp.test");
+
+        // Probe P2: Adversarial same-user process updates allowed_origins directly in SQLite
+        vault.db.prepare("UPDATE vault_credentials SET allowed_origins = '[\"https://attacker.evil.test\"]' WHERE id = 'api-token'").run();
+        const tamperedOrigins = vault.find("api-token");
+        const resolveP2 = vault.resolve("api-token", { targetId: "secure-app", action: "broker.proxy" });
+        p2OriginsTamperBlocked = tamperedOrigins.grantValid === false && tamperedOrigins.allowedOrigins.length === 0 && resolveP2 === null;
+
+        // Restore legitimate signature
+        vault.update("api-token", {
+            allowedOrigins: ["https://trusted.corp.test"],
+            allowedActions: ["broker.proxy"],
+            rawInjection: "deny",
+        });
+
+        // Probe P3b: Adversarial same-user process updates raw_injection = 'allow' directly in SQLite
+        vault.db.prepare("UPDATE vault_credentials SET raw_injection = 'allow' WHERE id = 'api-token'").run();
+        const tamperedRaw = vault.find("api-token");
+        const resolveP3b = vault.resolve("api-token", { targetId: "secure-app", action: "broker.proxy" });
+        p3bRawTamperBlocked = tamperedRaw.grantValid === false && tamperedRaw.rawInjection === "deny" && resolveP3b === null;
+    } finally {
+        vault.close();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+
+    const pass = legitimateValid && p2OriginsTamperBlocked && p3bRawTamperBlocked;
+    recordTest({
+        id: "VERIFY-SEC-011",
+        name: "Vault Grant Column HMAC Integrity & Anti-Tampering",
+        target: "cli/vault/hetzer-vault.mjs -> verifyGrantSignature()",
+        threat: "Adversarial same-user process with SQLite write access mutates allowed_origins or raw_injection directly in DB without master key",
+        input: "Direct SQLite UPDATE to allowed_origins (Probe P2) and raw_injection (Probe P3b)",
+        method: "Directly mutate grant columns in SQLite; query via Grimoire.find() and resolve(); verify fail-closed behavior (grantValid: false, empty origins/actions, null secret)",
+        expected: "Direct SQLite tampering invalidates HMAC signature derived from master key; entry fails closed to empty origins, deny raw injection, and null resolution",
+        observed: `legitimateValid: ${legitimateValid}. p2OriginsTamperBlocked: ${p2OriginsTamperBlocked}. p3bRawTamperBlocked: ${p3bRawTamperBlocked}.`,
+        pass,
+        boundary: "Grant columns are HMAC signed with a subkey derived from the master key. Arbitrary database edits without the master key fail closed.",
     });
 }
 
