@@ -603,18 +603,35 @@ test("events from concurrent writers land in exactly one of the archive and the 
         fs.writeFileSync(writer, [
             `import { recordAuditEvent } from ${JSON.stringify(auditModule)};`,
             "const [file, tag] = process.argv.slice(2);",
-            "for (let i = 0; i < 100; i += 1) recordAuditEvent({ eventType: \"CONCURRENT\", target: `${tag}-${i}`, logFile: file, macKey: false });",
+            // The lock wait is bounded (5 s). Under CPU starvation a writer can time out; this test is about
+            // conservation across a rotation, so a writer retries the same event, as a caller that must not lose it would.
+            "function record(target) {",
+            "    for (let attempt = 0; ; attempt += 1) {",
+            "        try { return recordAuditEvent({ eventType: \"CONCURRENT\", target, logFile: file, macKey: false }); }",
+            "        catch (error) { if (!/Timeout acquiring audit log lock/.test(error.message) || attempt >= 20) throw error; }",
+            "    }",
+            "}",
+            // Real callers have work between events; a loop with no gap keeps re-taking the lock and starves every waiter.
+            "for (let i = 0; i < 100; i += 1) { record(`${tag}-${i}`); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3); }",
         ].join("\n"));
         const { spawn } = await import("node:child_process");
         const workers = 4;
         const done = Array.from({ length: workers }, (_, k) => new Promise((resolve) => {
-            spawn(process.execPath, [writer, logFile, `w${k}`], { stdio: "ignore" }).on("close", resolve);
+            const child = spawn(process.execPath, [writer, logFile, `w${k}`], { stdio: ["ignore", "ignore", "pipe"] });
+            let stderr = "";
+            child.stderr.on("data", (chunk) => { stderr += chunk; });
+            child.on("close", (code) => resolve(code === 0 ? 0 : `${code}: ${stderr.trim().split(/\r?\n/).slice(0, 3).join(" | ")}`));
         }));
         const deadline = Date.now() + 20000;
         while (Date.now() < deadline && !(fs.existsSync(logFile) && fs.readFileSync(logFile, "utf8").split("\n").length > 25)) {
             await new Promise((resolve) => setTimeout(resolve, 5));
         }
-        const result = rotateAuditLedger({ logFile, macKey: false, reason: "rotate under load" });
+        // The lock is not fair and its wait is bounded; an operator whose rotation times out runs it again.
+        let result;
+        for (let attempt = 0; !result; attempt += 1) {
+            try { result = rotateAuditLedger({ logFile, macKey: false, reason: "rotate under load" }); }
+            catch (error) { if (!/Timeout acquiring audit log lock/.test(error.message) || attempt >= 5) throw error; }
+        }
         assert.equal(result.rotated, true);
         assert.deepEqual(await Promise.all(done), Array(workers).fill(0));
 
@@ -669,5 +686,45 @@ test("refusal messages point to a person-run recovery and do not carry the --yes
             () => recordAuditEvent({ eventType: "AFTER", logFile, macKey: false }),
             (error) => /hetzer audit rotate/.test(error.message) && /interactive terminal/.test(error.message) && !error.message.includes("--yes"),
         );
+    });
+});
+
+function writeLock(logFile, pid, ageMs) {
+    const lockPath = `${logFile}.lock`;
+    fs.writeFileSync(lockPath, `${pid}\n${Date.now() - ageMs}\nsynthetic\n`);
+    const when = new Date(Date.now() - ageMs);
+    fs.utimesSync(lockPath, when, when);
+    return lockPath;
+}
+
+test("a lock held by a live process is never taken over, however old, and a lock from a dead one is", () => {
+    withTempLedger((logFile) => {
+        const lockPath = writeLock(logFile, process.pid, 60000);
+        assert.throws(() => recordAuditEvent({ eventType: "WAITS", logFile, macKey: false, lockTimeoutMs: 400 }), /Timeout acquiring audit log lock/);
+        assert.equal(fs.existsSync(lockPath), true, "the live holder's lock is untouched");
+        assert.equal(fs.existsSync(logFile), false, "nothing was written without the lock");
+
+        const finished = spawnSync(process.execPath, ["-e", ""]);
+        fs.rmSync(lockPath);
+        writeLock(logFile, finished.pid, 60000);
+        recordAuditEvent({ eventType: "TAKES_OVER", logFile, macKey: false, lockTimeoutMs: 2000 });
+        assert.equal(verifyAuditLedger({ logFile, macKey: false }).ok, true);
+        assert.equal(fs.existsSync(`${logFile}.lock`), false, "the lock is released");
+    });
+
+    // A fresh lock from a dead process is still waited for: only an old one counts as abandoned.
+    withTempLedger((logFile) => {
+        const finished = spawnSync(process.execPath, ["-e", ""]);
+        writeLock(logFile, finished.pid, 1000);
+        assert.throws(() => recordAuditEvent({ eventType: "WAITS", logFile, macKey: false, lockTimeoutMs: 300 }), /Timeout acquiring audit log lock/);
+    });
+});
+
+test("the lock is released when the guarded work throws", () => {
+    withTempLedger((logFile) => {
+        writeLedger(logFile, 1, false);
+        fs.appendFileSync(logFile, "{partial-garbage\n");
+        assert.throws(() => recordAuditEvent({ eventType: "FAILS", logFile, macKey: false }), (error) => error.code === "ERR_AUDIT_LEDGER_CORRUPT");
+        assert.equal(fs.existsSync(`${logFile}.lock`), false, "the lock is gone after an error");
     });
 });

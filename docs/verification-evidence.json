@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-10-11T02:34:11.773Z",
+  "timestamp": "2026-10-11T22:01:48.943Z",
   "nodeVersion": "v22.22.2",
   "platform": "win32",
   "results": [
@@ -59,7 +59,7 @@
       "input": "Small 30-byte build log line",
       "method": "Measure the median of 25 write-and-flush samples using dynamic retention and the bounded lexical scanner",
       "expected": "Median processing latency stays below 5ms and the complete line is emitted",
-      "observed": "Median processing latency: 0.03 ms. Output delivered: \"Compiling module auth.mjs...\".",
+      "observed": "Median processing latency: 0.024 ms. Output delivered: \"Compiling module auth.mjs...\".",
       "verdict": "PASS",
       "boundary": "Streams with secrets exceeding 128 chars scale buffer to 2x secret length to ensure boundary integrity."
     },
@@ -182,6 +182,18 @@
       "observed": "keyedVerifies: true. wrongKeyRejected: true. middleEditRejected: true. actorEditRejected: true. truncationRejected: true. macDowngradeRejected: true. unkeyedRewritePassesByDefault: true. unkeyedRewriteRejectedWhenKeyRequired: true. keyHolderCanForge: true. legacyLedgerVerifies: true. keylessWriterRefused: true. damagedTailRefused: true. removedEntriesWriteRefused: true. rotateRecoversDamagedTail: true. rotateCarriesOldHead: true. rotateRefusesUnkeyedDowngrade: true. deletedArchiveNotDetected: true. concurrentWritersConsistent: true. vaultEventsInLedger: true. strictFailsClosed: true.",
       "verdict": "PASS",
       "boundary": "A consistent rewrite of the whole chain without any MAC passes default verification and is only rejected when a keyed ledger is required (requireMac or HETZER_AUDIT_REQUIRE_MAC=1). Anyone who can read the master key can forge a valid keyed ledger. Tail truncation is caught only by the head anchor file, which the same attacker can rewrite. Rotation is an operator action that anyone with shell access can also perform by moving files; it makes the recovery logged and carries the old head forward, but the new ledger does not enforce that the archive still exists, so deleting the archive together with the rotation entry is not detected. The SQLite audit table is a frozen mirror, not a second source of truth. Failures after the child process has started cannot undo it."
+    },
+    {
+      "id": "VERIFY-SEC-015",
+      "name": "SDK Contract and Vault Format Version (Gate G2)",
+      "target": "sdk/index.mjs -> createHetzer(); cli/vault/hetzer-vault.mjs -> Grimoire format version check",
+      "threat": "The public SDK hands a credential value to its caller, accepts ids the vault and secretRef grammar do not, or runs a raw injection the vault did not grant; an older build changes a vault written by a newer format",
+      "input": "A synthetic vault with a credential whose value is also in its notes; credential ids with '.' and '_'; a raw-injection request against a credential whose grant denies it; vaults without a marker and with a newer marker, the latter with an old table layout",
+      "method": "Walk the client and module member names; collect every SDK result and error for the value; run client.execution.run against the denied grant and check the child marker; open vaults and compare bytes, tables and columns before and after a refused open",
+      "expected": "No resolve, reveal, decrypt or lease member; only the SDK entry in the package exports; no value in any result or error; one id grammar; the denied child never starts and the error carries no value; new and unstamped vaults end at format 1 with credentials intact; a newer vault is refused with its bytes, tables and columns unchanged",
+      "observed": "sdkHasNoRevealMember: true. packageExportsOnlySdk: true. sdkResultsHaveNoValue: true. idGrammarIsOne: true. sdkExecutionChecksGrant: true. freshVaultStamped: true. unstampedVaultRestamped: true. newerVaultRefusedUntouched: true. inProcessCallerCanStillResolve: true.",
+      "verdict": "PASS",
+      "boundary": "The SDK narrows what a well-behaved caller can ask for. Code in the same process or under the same user can still import the vault module, call resolve() or read the database and key store (R-05 stays open for in-process callers; untrusted agents belong out of process in the sandbox). The package exports map limits specifiers, not file access. Lease interfaces are not part of apiVersion 1. Builds from before the format marker do not check it, so an older build can still open and alter a newer vault."
     }
   ]
 }

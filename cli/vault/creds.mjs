@@ -8,6 +8,17 @@ import { fileURLToPath } from "node:url";
 import { parseEnv } from "../core/env.mjs";
 import { isCanaryCredential, triggerCanaryAlert } from "./canary.mjs";
 import { Grimoire, resolveMasterKey, resolveVaultPath } from "./hetzer-vault.mjs";
+import {
+    assertInteractiveHumanSession,
+    checkProcessAncestors,
+    detectAgentAncestor,
+} from "./human-guard.mjs";
+
+export {
+    assertInteractiveHumanSession,
+    checkProcessAncestors,
+    detectAgentAncestor,
+};
 
 export const KNOWN_CREDENTIALS = Object.freeze({
     "nine-router-initial-password": Object.freeze({
@@ -148,68 +159,6 @@ export async function promptSecret(promptText = "Enter secret value: ", { input 
 }
 
 
-const AGENT_PROCESS_NAMES = ["agy", "cursor", "electron", "code", "claude", "hermes", "ollama"];
-
-export function detectAgentAncestor(names = []) {
-    for (const rawName of names) {
-        const name = String(rawName).toLowerCase().trim();
-        if (AGENT_PROCESS_NAMES.some((target) => name.includes(target))) {
-            return { isAgent: true, processName: name };
-        }
-    }
-    return { isAgent: false };
-}
-
-export function checkProcessAncestors({ platform = process.platform, pid = process.pid, run = spawnSync, maxDepth = 5 } = {}) {
-    try {
-        if (platform === "win32") {
-            const script = [
-                `$current = Get-CimInstance Win32_Process -Filter "ProcessId = ${Number(pid)}"`,
-                `for ($i = 0; $i -lt ${Number(maxDepth)}; $i++) {`,
-                "if (-not $current -or $current.ParentProcessId -le 0) { break }",
-                "$current = Get-CimInstance Win32_Process -Filter \"ProcessId = $($current.ParentProcessId)\"",
-                "if ($current) { Write-Output ($current.ProcessId.ToString() + \"`t\" + $current.Name) }",
-                "}",
-            ].join("; ");
-            const res = run("powershell", [
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                script,
-            ], { encoding: "utf8", timeout: 2500, windowsHide: true });
-            if (res.status === 0 && res.stdout) {
-                const names = res.stdout.split(/\r?\n/).map((line) => line.split("\t").slice(1).join("\t")).filter(Boolean);
-                return detectAgentAncestor(names);
-            }
-        } else {
-            const res = run("ps", ["-axo", "pid=,ppid=,comm="], {
-                encoding: "utf8", timeout: 2500, windowsHide: true,
-            });
-            if (res.status === 0 && res.stdout) {
-                const processes = new Map();
-                for (const line of res.stdout.split(/\r?\n/)) {
-                    const match = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
-                    if (match) processes.set(Number(match[1]), { parentPid: Number(match[2]), name: match[3] });
-                }
-                const names = [];
-                let currentPid = Number(pid);
-                for (let depth = 0; depth < maxDepth; depth += 1) {
-                    const current = processes.get(currentPid);
-                    if (!current || current.parentPid <= 0 || current.parentPid === currentPid) break;
-                    const parent = processes.get(current.parentPid);
-                    if (!parent) break;
-                    names.push(parent.name);
-                    currentPid = current.parentPid;
-                }
-                return detectAgentAncestor(names);
-            }
-        }
-    } catch {
-        // Ancestor check failed or timed out; continue to env and TTY checks
-    }
-    return { isAgent: false };
-}
-
 export function promptNativeOsConfirmation(id, { timeoutMs = 20000, platform = process.platform, run = spawnSync } = {}) {
     const displayId = String(id).replace(/[^a-zA-Z0-9._-]/g, "?");
     try {
@@ -231,43 +180,6 @@ export function promptNativeOsConfirmation(id, { timeoutMs = 20000, platform = p
         }
     } catch {
         return false;
-    }
-}
-
-export function assertInteractiveHumanSession({ input = process.stdin, env = process.env, ancestor, operation = "'hetzer creds reveal'" } = {}) {
-    if (!input.isTTY) {
-        throw new Error(
-            `Access Denied: ${operation} requires a direct human interactive TTY terminal.\n` +
-            "Autonomous agent / non-interactive programmatic secret revelation is blocked to prevent context window leakage."
-        );
-    }
-    const agentIndicators = [
-        ["ANTIGRAVITY_AGENT", "Antigravity Agent runtime detected"],
-        ["CURSOR_PROJECT_DIR", "Cursor IDE Agent runtime detected"],
-        ["CURSOR_TRACE_ID", "Cursor Agent session detected"],
-        ["CLAUDE_CODE", "Claude Code session detected"],
-        ["VSCODE_PID", "VS Code agent process runner detected"],
-        ["HERMES_AGENT", "Hermes Agent session detected"],
-        ["CI", "Continuous Integration / non-interactive pipeline detected"],
-    ];
-    for (const [envVar, desc] of agentIndicators) {
-        if (env[envVar]) {
-            throw new Error(
-                `Access Denied: ${operation} blocked by the credential reveal guard.\n` +
-                `Reason: ${desc} ($${envVar} is set).\n` +
-                `Autonomous agents running in YOLO/unrestricted mode cannot extract raw secrets into context.\n` +
-                `To execute commands with injected secrets safely, use 'hetzer exec -- <command>'.`
-            );
-        }
-    }
-    const ancestry = ancestor || checkProcessAncestors();
-    if (ancestry.isAgent) {
-        throw new Error(
-            `Access Denied: ${operation} blocked by the credential reveal guard.\n` +
-            `Reason: Agent runtime '${ancestry.processName}' detected in process tree ancestry.\n` +
-            `Autonomous agents running in YOLO/unrestricted mode cannot extract raw secrets into context.\n` +
-            `To execute commands with injected secrets safely, use 'hetzer exec -- <command>'.`
-        );
     }
 }
 

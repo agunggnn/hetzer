@@ -38,8 +38,9 @@
 
 ---
 
-## 📝 Pending Agent Review & PR Stack
-Review and merge open PRs in order:
-1. **[PR #31](https://github.com/agunggnn/hetzer/pull/31)** (`fix/agent-reveal-block-same-user` -> `main`): Block same-user agentic reveal without breaking internal broker and execution. (282 tests, SEC-23 & SEC-24 resolved)
-2. **[PR #29](https://github.com/agunggnn/hetzer/pull/29)** (`perf/in-process-exec-and-benchmark-calibrations` -> `main`): Execute `hetzer exec` in-process directly and calibrate benchmark claims. (0 merge conflicts with PR #31)
-3. **[PR #30](https://github.com/agunggnn/hetzer/pull/30)** (`feat/tui-flicker-free-refresh-and-alt-screen` -> `main`): Tactical HUD ASCII banner, issue analyzer, and remediation guide. (Requires rebase onto updated `main` to resolve `hetzer-vault.mjs` conflicts)
+## 📝 ADR Gate Progression & Active Stack
+Gate implementation follows [ADR-0001](docs/adr/0001-authority-model-and-engine-boundary.md):
+1. **Gate G0: Authority Model & Origin Grants** (`feat/gate-g0-authority-model`, `fix/g0-grant-signature-fail-closed`): Completed & verified (`VERIFY-SEC-007` - `VERIFY-SEC-012`).
+2. **Gate G1: Sandbox Isolation Defaults** (`feat/gate-g1-sandbox-defaults`): Completed & verified (`VERIFY-SEC-013`).
+3. **Gate G2: Contract, Unified Audit & Canonical Grammars** (`feat/gate-g2-contract`): Completed & verified (`VERIFY-SEC-014`, `VERIFY-SEC-015`).
+4. **Gate G3: The Cut** (Upcoming): Module system, Compose runner, 9Router helpers archive and cleanup.

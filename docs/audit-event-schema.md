@@ -76,6 +76,19 @@ Writers add two refusals so a damaged ledger is not extended: a keyed ledger wit
 (`ERR_AUDIT_KEY_REQUIRED`, `ERR_AUDIT_KEY_MISMATCH`), and a damaged last line or a log shorter than its head
 (`ERR_AUDIT_LEDGER_CORRUPT`, `ERR_AUDIT_LEDGER_TRUNCATED`). `hetzer audit rotate` is the recovery.
 
+### Writer lock
+
+Writers, `verify` and `rotate` serialize on `audit.log.lock`. The lock file records the holder's process id. A lock
+older than 15 seconds is removed only when that process no longer exists; a live holder keeps its lock however
+long it takes, because taking it over would put two writers in the critical section at once. A waiter gives up
+after 10 seconds with `Timeout acquiring audit log lock`.
+
+The lock is not fair. Measured on Windows with 12 CPU-bound processes running, four writers that looped without
+any gap between events left a waiting `rotate` timed out in 5 of 25 rounds of one run, and each writer lost a few
+events to the same timeout. Fail-soft emitters then lose that event, and `--strict` start events refuse to run,
+which is the safe outcome. Real callers have work between events and were not observed to starve each other, but
+this was not measured on Linux or macOS.
+
 What the ledger does not give you: anyone who can read the master key can write a valid keyed ledger; a
 consistent rewrite of the whole chain without any `mac` passes unless `--require-mac` is used (and that fails
 for ledgers that were not keyed from the first entry); the head file is not an external anchor.

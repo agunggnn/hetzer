@@ -13,6 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { DatabaseSync } from "node:sqlite";
 import { PassThrough } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -20,11 +21,13 @@ import { computeAuditEntryHash, GENESIS_HASH, recordAuditEvent, rotateAuditLedge
 import { createStreamSanitizer, executeProcess, prepareExecutionEnvironment, sanitizeStreamOutput } from "../cli/vault/exec.mjs";
 import { loadBrokerPolicy, openHttpCredentialBroker, startHttpCredentialBroker, validateBrokerPolicy } from "../cli/vault/http-broker.mjs";
 import { resolveSecretEnvironment } from "../cli/vault/secret-env.mjs";
-import { detectAgentAncestor } from "../cli/vault/creds.mjs";
+import { detectAgentAncestor, setCredential } from "../cli/vault/creds.mjs";
 import { scanText, redactAndVault } from "../cli/vault/sniffer.mjs";
 import { scanAddedLines } from "../cli/core/git-hook.mjs";
 import { isCanaryCredential, triggerCanaryAlert } from "../cli/vault/canary.mjs";
-import { computeAuditMac, Grimoire } from "../cli/vault/hetzer-vault.mjs";
+import { computeAuditMac, Grimoire, VAULT_FORMAT_VERSION } from "../cli/vault/hetzer-vault.mjs";
+import * as sdk from "../sdk/index.mjs";
+import { createHetzer, SDK_ERROR_CODES } from "../sdk/index.mjs";
 import { createToolCatalog } from "../cli/mcp/catalog.mjs";
 import { DEFAULT_SANDBOX_IMAGE, executeSandboxedProcess, resolveSandboxMount } from "../cli/vault/sandbox.mjs";
 import {
@@ -1265,6 +1268,138 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
         observed: Object.entries(checks).map(([name, value]) => `${name}: ${value}`).join(". ") + ".",
         pass,
         boundary: "A consistent rewrite of the whole chain without any MAC passes default verification and is only rejected when a keyed ledger is required (requireMac or HETZER_AUDIT_REQUIRE_MAC=1). Anyone who can read the master key can forge a valid keyed ledger. Tail truncation is caught only by the head anchor file, which the same attacker can rewrite. Rotation is an operator action that anyone with shell access can also perform by moving files; it makes the recovery logged and carries the old head forward, but the new ledger does not enforce that the archive still exists, so deleting the archive together with the rotation entry is not detected. The SQLite audit table is a frozen mirror, not a second source of truth. Failures after the child process has started cannot undo it.",
+    });
+}
+
+// -----------------------------------------------------------------------------
+// Test 16: SDK Contract and Vault Format Version (Gate G2)
+// -----------------------------------------------------------------------------
+{
+    const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-verify-contract-")));
+    const checks = {};
+    const masterKey = "contract-evidence-key-0123456789abcdef0123456789";
+    const secretValue = ["contract", "evidence", "value", "0001"].join("-");
+    const forbiddenMember = /resolve|reveal|decrypt|lease/i;
+    const memberNames = (value, prefix = "") => Object.keys(value).flatMap((key) => [
+        `${prefix}${key}`,
+        ...(value[key] && typeof value[key] === "object" ? memberNames(value[key], `${prefix}${key}.`) : []),
+    ]);
+    const codeOf = (action) => {
+        try { action(); return ""; } catch (error) { return error.code || "threw"; }
+    };
+
+    try {
+        // The SDK surface: no member that returns a credential value, and nothing else importable from the package.
+        const sdkRoot = path.join(dir, "sdk");
+        fs.mkdirSync(sdkRoot, { recursive: true });
+        const dbPath = path.join(sdkRoot, "data", "hetzer-vault.db");
+        const vault = new Grimoire({ dbPath, masterKey });
+        vault.create({ id: "contract-key", projectId: "sample-app", keyName: "contract-key", notes: secretValue, secret: secretValue, allowedActions: ["deploy"] });
+        vault.close();
+        const client = createHetzer({ root: sdkRoot, vaultPath: dbPath });
+        const names = [...memberNames(client), ...Object.keys(sdk)];
+        checks.sdkHasNoRevealMember = names.every((name) => !forbiddenMember.test(name));
+        const packageJson = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"));
+        checks.packageExportsOnlySdk = JSON.stringify(Object.keys(packageJson.exports).sort()) === JSON.stringify(["./package.json", "./sdk"]);
+
+        const seen = [];
+        const take = (value) => seen.push(JSON.stringify(value, Object.getOwnPropertyNames(Object(value))), String(value?.stack || ""));
+        take(client.credentials.list());
+        take(client.credentials.metadata("contract-key"));
+        take(client.credentials.validate("secretRef:contract-key", { targetId: "sample-app", action: "deploy" }));
+        for (const attempt of [
+            () => client.credentials.validate("secretRef:contract-key", { action: "read" }),
+            () => client.credentials.validate("secretRef:missing-key"),
+            () => client.credentials.metadata("contract_key"),
+        ]) {
+            try { attempt(); } catch (error) { take(error); }
+        }
+        checks.sdkResultsHaveNoValue = seen.length >= 6 && seen.every((text) => !text.includes(secretValue));
+        checks.idGrammarIsOne = codeOf(() => client.credentials.metadata("a_b")) === SDK_ERROR_CODES.INVALID_CREDENTIAL_ID
+            && codeOf(() => client.credentials.metadata("a.b")) === SDK_ERROR_CODES.INVALID_CREDENTIAL_ID
+            && codeOf(() => client.credentials.validate("secretRef:a_b")) === SDK_ERROR_CODES.INVALID_REFERENCE;
+        client.close();
+
+        // Grant-checked execution through the SDK: a raw-injection request without a vault grant never starts the child.
+        const execRoot = path.join(dir, "exec");
+        fs.mkdirSync(execRoot, { recursive: true });
+        const envFile = path.join(execRoot, ".env");
+        fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${crypto.createHash("sha256").update(masterKey).digest("hex")}\n`);
+        setCredential({ root: execRoot, envFile, id: "npm-token", secret: secretValue, rawInjection: "deny" });
+        const marker = path.join(execRoot, "ran.txt");
+        const execClient = createHetzer({ root: execRoot });
+        let execCode = "";
+        let execMessageClean = false;
+        try {
+            await execClient.execution.run({
+                command: process.execPath,
+                args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran")`],
+                allow: ["npm-token"],
+                allowRawUnmediated: ["npm-token"],
+            });
+        } catch (error) {
+            execCode = error.code;
+            execMessageClean = !`${error.message}${error.stack}`.includes(secretValue);
+        }
+        execClient.close();
+        checks.sdkExecutionChecksGrant = execCode === "ERR_RAW_UNMEDIATED_DENIED_BY_GRANT" && execMessageClean && !fs.existsSync(marker);
+
+        // Vault format version: stamped when new, restamped when missing, newer refused before any change.
+        const formatDb = path.join(dir, "format", "hetzer-vault.db");
+        let formatVault = new Grimoire({ dbPath: formatDb, masterKey });
+        checks.freshVaultStamped = formatVault.formatVersion === VAULT_FORMAT_VERSION && formatVault._meta("format_version") === String(VAULT_FORMAT_VERSION);
+        formatVault.create({ id: "format-key", projectId: "sample-app", keyName: "format-key", secret: secretValue });
+        formatVault.db.prepare("DELETE FROM vault_meta WHERE key = 'format_version'").run();
+        formatVault.close();
+        formatVault = new Grimoire({ dbPath: formatDb, masterKey });
+        checks.unstampedVaultRestamped = formatVault._meta("format_version") === "1" && formatVault.matchesSecret("format-key", secretValue) === true;
+        formatVault.close();
+
+        const newerDb = path.join(dir, "newer.db");
+        const raw = new DatabaseSync(newerDb);
+        raw.exec(`
+            CREATE TABLE vault_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
+            INSERT INTO vault_meta VALUES ('format_version', '${VAULT_FORMAT_VERSION + 1}', '2026-01-01T00:00:00.000Z');
+            CREATE TABLE vault_credentials (id TEXT PRIMARY KEY, encrypted_value TEXT NOT NULL);
+        `);
+        raw.close();
+        const newerBefore = fs.readFileSync(newerDb);
+        const newerCode = codeOf(() => new Grimoire({ dbPath: newerDb, masterKey }));
+        const inspect = new DatabaseSync(newerDb);
+        const tables = inspect.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map((row) => row.name);
+        const columns = inspect.prepare("PRAGMA table_info(vault_credentials)").all().map((column) => column.name);
+        inspect.close();
+        checks.newerVaultRefusedUntouched = newerCode === "ERR_VAULT_FORMAT_UNSUPPORTED"
+            && fs.readFileSync(newerDb).equals(newerBefore)
+            && JSON.stringify(tables) === JSON.stringify(["vault_credentials", "vault_meta"])
+            && JSON.stringify(columns) === JSON.stringify(["id", "encrypted_value"]);
+
+        // Boundary: code in the same process can still import the vault module and ask it for a value.
+        const inProcess = new Grimoire({ dbPath: formatDb, masterKey });
+        checks.inProcessCallerCanStillResolve = typeof inProcess.reveal === "function" && typeof inProcess.resolve === "function";
+        inProcess.close();
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+
+    const required = [
+        "sdkHasNoRevealMember", "packageExportsOnlySdk", "sdkResultsHaveNoValue", "idGrammarIsOne", "sdkExecutionChecksGrant",
+        "freshVaultStamped", "unstampedVaultRestamped", "newerVaultRefusedUntouched",
+    ];
+    // inProcessCallerCanStillResolve documents the R-05 limit; it is reported but does not gate the verdict.
+    const pass = required.every((name) => checks[name] === true);
+
+    recordTest({
+        id: "VERIFY-SEC-015",
+        name: "SDK Contract and Vault Format Version (Gate G2)",
+        target: "sdk/index.mjs -> createHetzer(); cli/vault/hetzer-vault.mjs -> Grimoire format version check",
+        threat: "The public SDK hands a credential value to its caller, accepts ids the vault and secretRef grammar do not, or runs a raw injection the vault did not grant; an older build changes a vault written by a newer format",
+        input: "A synthetic vault with a credential whose value is also in its notes; credential ids with '.' and '_'; a raw-injection request against a credential whose grant denies it; vaults without a marker and with a newer marker, the latter with an old table layout",
+        method: "Walk the client and module member names; collect every SDK result and error for the value; run client.execution.run against the denied grant and check the child marker; open vaults and compare bytes, tables and columns before and after a refused open",
+        expected: "No resolve, reveal, decrypt or lease member; only the SDK entry in the package exports; no value in any result or error; one id grammar; the denied child never starts and the error carries no value; new and unstamped vaults end at format 1 with credentials intact; a newer vault is refused with its bytes, tables and columns unchanged",
+        observed: Object.entries(checks).map(([name, value]) => `${name}: ${value}`).join(". ") + ".",
+        pass,
+        boundary: "The SDK narrows what a well-behaved caller can ask for. Code in the same process or under the same user can still import the vault module, call resolve() or read the database and key store (R-05 stays open for in-process callers; untrusted agents belong out of process in the sandbox). The package exports map limits specifiers, not file access. Lease interfaces are not part of apiVersion 1. Builds from before the format marker do not check it, so an older build can still open and alter a newer vault.",
     });
 }
 

@@ -115,32 +115,97 @@ export function getAuditStatePath(filePath) {
     return `${filePath}.state`;
 }
 
-function withAuditLock(filePath, fn, timeoutMs = 5000) {
+const LOCK_TIMEOUT_MS = 10000;
+const LOCK_STALE_MS = 15000;
+
+function lockHolderAlive(pid) {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (err) {
+        // EPERM means the process exists but belongs to someone else.
+        return err.code === "EPERM";
+    }
+}
+
+function readLockOwner(lockPath) {
+    try {
+        const text = fs.readFileSync(lockPath, "utf8");
+        const pid = Number.parseInt(text.split("\n")[0], 10);
+        return { text, pid: Number.isInteger(pid) ? pid : 0 };
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Removes a lock left behind by a process that no longer exists. A lock whose holder is alive is never
+ * removed, however old: a holder starved of CPU for seconds would otherwise lose its lock and two writers
+ * would share the critical section. Waiting too long fails (a timeout) instead of corrupting the ledger.
+ */
+function reapStaleLock(lockPath) {
+    let stat;
+    try { stat = fs.statSync(lockPath); } catch { return false; }
+    if (Date.now() - stat.mtimeMs <= LOCK_STALE_MS) return false;
+    const owner = readLockOwner(lockPath);
+    if (owner && lockHolderAlive(owner.pid)) return false;
+    // Look again right before removing so a lock another waiter just replaced is left alone.
+    const again = readLockOwner(lockPath);
+    if ((again?.text ?? null) !== (owner?.text ?? null)) return false;
+    try {
+        if (fs.statSync(lockPath).mtimeMs !== stat.mtimeMs) return false;
+        fs.unlinkSync(lockPath);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function releaseLock(lockFd, lockPath, token) {
+    try { fs.closeSync(lockFd); } catch {}
+    // Only remove the file if it is still this holder's, and ride out Windows briefly refusing the delete.
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+        try {
+            if (readLockOwner(lockPath)?.text !== token) return;
+            fs.unlinkSync(lockPath);
+            return;
+        } catch (err) {
+            if (err.code === "ENOENT") return;
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+        }
+    }
+}
+
+function withAuditLock(filePath, fn, timeoutMs = LOCK_TIMEOUT_MS) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const lockPath = `${filePath}.lock`;
+    const token = `${process.pid}\n${Date.now()}\n${crypto.randomBytes(6).toString("hex")}\n`;
     const start = Date.now();
     let lockFd = null;
 
     while (Date.now() - start < timeoutMs) {
         try {
             lockFd = fs.openSync(lockPath, "wx");
-            fs.writeFileSync(lockFd, `${process.pid}\n${Date.now()}\n`);
-            break;
         } catch (err) {
             // On Windows, opening a lock file that another process is deleting fails with EPERM or EBUSY.
             if (err.code === "EEXIST" || err.code === "EBUSY" || (process.platform === "win32" && (err.code === "EPERM" || err.code === "EACCES"))) {
-                try {
-                    const stat = fs.statSync(lockPath);
-                    if (Date.now() - stat.mtimeMs > 10000) {
-                        try { fs.unlinkSync(lockPath); } catch {}
-                        continue;
-                    }
-                } catch {}
-                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
-            } else {
-                throw err;
+                if (reapStaleLock(lockPath)) continue;
+                const jitter = 10 + Math.floor(Math.random() * 20);
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, jitter);
+                continue;
             }
+            throw err;
         }
+        try {
+            fs.writeFileSync(lockFd, token);
+        } catch (err) {
+            // We created the file but could not mark it: give it back instead of leaving a lock nobody owns.
+            try { fs.closeSync(lockFd); } catch {}
+            try { fs.unlinkSync(lockPath); } catch {}
+            throw err;
+        }
+        break;
     }
 
     if (lockFd === null) {
@@ -150,8 +215,7 @@ function withAuditLock(filePath, fn, timeoutMs = 5000) {
     try {
         return fn();
     } finally {
-        try { fs.closeSync(lockFd); } catch {}
-        try { fs.unlinkSync(lockPath); } catch {}
+        releaseLock(lockFd, lockPath, token);
     }
 }
 
@@ -184,6 +248,7 @@ export function recordAuditEvent({
     macKey,
     baseEnv,
     envFile,
+    lockTimeoutMs,
     now = new Date(),
 } = {}) {
     if (!eventType) throw new Error("Audit eventType is required.");
@@ -192,7 +257,7 @@ export function recordAuditEvent({
 
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
 
-    return withAuditLock(filePath, () => appendEntryUnlocked({ filePath, key, eventType, target, result, actor, details, now }));
+    return withAuditLock(filePath, () => appendEntryUnlocked({ filePath, key, eventType, target, result, actor, details, now }), lockTimeoutMs);
 }
 
 /** Appends one entry. The caller holds the audit lock. */
@@ -563,6 +628,7 @@ export function rotateAuditLedger({
     envFile,
     reason = "",
     allowUnkeyed = false,
+    lockTimeoutMs,
     now = new Date(),
 } = {}) {
     const key = resolveAuditMacKey({ root, macKey, baseEnv, envFile });
@@ -664,5 +730,5 @@ export function rotateAuditLedger({
             },
             keyed: Boolean(key),
         };
-    });
+    }, lockTimeoutMs);
 }
