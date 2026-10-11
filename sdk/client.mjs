@@ -141,7 +141,14 @@ export function createHetzer(options = {}) {
         if (!vault) {
             // Metadata operations do not require a master key and never decrypt
             // credential values. Resolution belongs to a later capability API.
-            vault = new Grimoire({ dbPath });
+            try {
+                vault = new Grimoire({ dbPath });
+            } catch (error) {
+                if (error?.code === SDK_ERROR_CODES.VAULT_FORMAT_UNSUPPORTED) {
+                    throw new HetzerSdkError(SDK_ERROR_CODES.VAULT_FORMAT_UNSUPPORTED, error.message);
+                }
+                throw error;
+            }
         }
         return vault;
     };

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import * as sdk from "./index.mjs";
 import { createHetzer, SDK_API_VERSION, SDK_ERROR_CODES } from "./index.mjs";
 import { setCredential } from "../cli/vault/creds.mjs";
-import { Grimoire } from "../cli/vault/hetzer-vault.mjs";
+import { Grimoire, VAULT_FORMAT_VERSION } from "../cli/vault/hetzer-vault.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const FORBIDDEN_MEMBER = /resolve|reveal|decrypt|lease/i;
@@ -37,7 +37,7 @@ test("the SDK contract lists exactly the documented members", () => {
         ]);
         assert.deepEqual(Object.values(SDK_ERROR_CODES).sort(), [
             "ERR_CREDENTIAL_EXPIRED", "ERR_CREDENTIAL_ID_INVALID", "ERR_CREDENTIAL_NOT_ALLOWED", "ERR_CREDENTIAL_NOT_FOUND",
-            "ERR_CREDENTIAL_REFERENCE_INVALID", "ERR_CREDENTIAL_TARGET_MISMATCH", "ERR_SDK_INVALID_CONFIG",
+            "ERR_CREDENTIAL_REFERENCE_INVALID", "ERR_CREDENTIAL_TARGET_MISMATCH", "ERR_SDK_INVALID_CONFIG", "ERR_VAULT_FORMAT_UNSUPPORTED",
         ]);
         assert.ok(Object.isFrozen(client) && Object.isFrozen(client.credentials) && Object.isFrozen(client.execution));
     } finally {
@@ -136,6 +136,23 @@ test("the SDK accepts one credential id grammar: lowercase kebab-case", () => {
         }
         assert.throws(() => client.credentials.validate("secretRef:a-b", { targetId: "a.b" }), (error) => error.code === SDK_ERROR_CODES.INVALID_CONFIG);
         assert.throws(() => client.credentials.validate("a-b", { targetId: "a_b" }), (error) => error.code === SDK_ERROR_CODES.INVALID_CONFIG);
+    } finally {
+        client.close();
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("a vault from a newer format surfaces as a structured SDK error and is left untouched", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-sdk-contract-"));
+    const vaultPath = path.join(root, "data", "hetzer-vault.db");
+    const vault = new Grimoire({ dbPath: vaultPath, masterKey: "synthetic-sdk-format-master-key-0123456789" });
+    vault.db.prepare("UPDATE vault_meta SET value = ? WHERE key = 'format_version'").run(String(VAULT_FORMAT_VERSION + 1));
+    vault.close();
+    const before = fs.readFileSync(vaultPath);
+    const client = createHetzer({ root, vaultPath });
+    try {
+        assert.throws(() => client.credentials.list(), (error) => error instanceof sdk.HetzerSdkError && error.code === SDK_ERROR_CODES.VAULT_FORMAT_UNSUPPORTED);
+        assert.ok(fs.readFileSync(vaultPath).equals(before));
     } finally {
         client.close();
         fs.rmSync(root, { recursive: true, force: true });

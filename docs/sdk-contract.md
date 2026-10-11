@@ -54,7 +54,7 @@ are rejected with `ERR_CREDENTIAL_ID_INVALID` (bare id) or `ERR_CREDENTIAL_REFER
 `HetzerSdkError` carries a `code`. The stable codes are the values of `SDK_ERROR_CODES`:
 `ERR_SDK_INVALID_CONFIG`, `ERR_CREDENTIAL_ID_INVALID`, `ERR_CREDENTIAL_REFERENCE_INVALID`,
 `ERR_CREDENTIAL_NOT_FOUND`, `ERR_CREDENTIAL_TARGET_MISMATCH`, `ERR_CREDENTIAL_NOT_ALLOWED`,
-`ERR_CREDENTIAL_EXPIRED`.
+`ERR_CREDENTIAL_EXPIRED`, `ERR_VAULT_FORMAT_UNSUPPORTED` (the vault was written by a newer Hetzer and was left untouched).
 
 `execution.run` rethrows the engine's `ERR_*` code with a fixed message (`Hetzer execution failed (<code>).`),
 no `cause`, and `exitCode` when the engine set one. Engine codes such as `ERR_RAW_UNMEDIATED_DENIED_BY_GRANT`,

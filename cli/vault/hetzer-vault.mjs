@@ -352,6 +352,13 @@ function ensureParent(file) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
 }
 
+/**
+ * The on-disk vault format this build reads and writes. A vault stamped with a higher number was made
+ * by a newer Hetzer and is refused before anything in it is changed. A vault without a stamp predates
+ * the marker and is version 1. Builds before the marker do not check it, so the protection starts here.
+ */
+export const VAULT_FORMAT_VERSION = 1;
+
 export class Grimoire {
     constructor({ dbPath, file, legacyFile, masterKey, root, auditLogFile }) {
         const rootDir = root || process.cwd();
@@ -363,7 +370,14 @@ export class Grimoire {
         this.auditLogFile = resolveVaultAuditLogFile({ auditLogFile, dbPath: resolvedDb });
         ensureParent(this.dbPath);
         this.db = new DatabaseSync(this.dbPath);
-        this._initSchema();
+        try {
+            this._assertFormatSupported();
+            this._initSchema();
+        } catch (error) {
+            try { this.db.close(); } catch {}
+            throw error;
+        }
+        if (!this._meta("format_version")) this._setMeta("format_version", String(VAULT_FORMAT_VERSION));
         this.migration = this._migrateLegacy();
         if (this.dbPath !== ":memory:") {
             secureFilePermissions(this.dbPath);
@@ -376,6 +390,29 @@ export class Grimoire {
 
     get unlocked() {
         return Boolean(this.masterKey);
+    }
+
+    get formatVersion() {
+        return Number(this._meta("format_version")) || VAULT_FORMAT_VERSION;
+    }
+
+    /** Read-only: runs before any DDL, migration or stamp, so a refused vault is left untouched. */
+    _assertFormatSupported() {
+        const hasMeta = this.db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'vault_meta'").get();
+        if (!hasMeta) return;
+        const stored = this.db.prepare("SELECT value FROM vault_meta WHERE key = 'format_version'").get()?.value;
+        if (stored === undefined) return;
+        const version = /^[1-9][0-9]*$/.test(String(stored)) ? Number(stored) : 0;
+        if (version < 1) {
+            const error = new Error("The vault format marker is not a valid version number; refusing to open it.");
+            error.code = "ERR_VAULT_FORMAT_UNSUPPORTED";
+            throw error;
+        }
+        if (version > VAULT_FORMAT_VERSION) {
+            const error = new Error(`This vault uses format ${version}, but this Hetzer reads format ${VAULT_FORMAT_VERSION}. Upgrade Hetzer to open it; nothing was changed.`);
+            error.code = "ERR_VAULT_FORMAT_UNSUPPORTED";
+            throw error;
+        }
     }
 
     _initSchema() {
