@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-10-11T01:21:15.275Z",
+  "timestamp": "2026-10-11T02:34:11.773Z",
   "nodeVersion": "v22.22.2",
   "platform": "win32",
   "results": [
@@ -59,7 +59,7 @@
       "input": "Small 30-byte build log line",
       "method": "Measure the median of 25 write-and-flush samples using dynamic retention and the bounded lexical scanner",
       "expected": "Median processing latency stays below 5ms and the complete line is emitted",
-      "observed": "Median processing latency: 0.033 ms. Output delivered: \"Compiling module auth.mjs...\".",
+      "observed": "Median processing latency: 0.03 ms. Output delivered: \"Compiling module auth.mjs...\".",
       "verdict": "PASS",
       "boundary": "Streams with secrets exceeding 128 chars scale buffer to 2x secret length to ensure boundary integrity."
     },
@@ -174,14 +174,14 @@
     {
       "id": "VERIFY-SEC-014",
       "name": "Unified Audit Ledger Integrity (Gate G2)",
-      "target": "cli/vault/audit.mjs -> recordAuditEvent(), verifyAuditLedger(); Grimoire.recordAudit(); executeProcess() under --strict",
+      "target": "cli/vault/audit.mjs -> recordAuditEvent(), verifyAuditLedger(), rotateAuditLedger(); Grimoire.recordAudit(); executeProcess() under --strict",
       "threat": "Audit entries are edited, truncated or rewritten, vault events are missing from the tamper-evident stream, events are lost under concurrent writers, or a run proceeds without its start record under --strict",
-      "input": "Synthetic ledgers written with and without a key, then edited, truncated, rewritten, downgraded and extended by key-less writers; four concurrent writer processes; a vault with a workspace layout; an unwritable audit path",
-      "method": "Write and tamper ledgers on disk and run the verifier with and without the key; run concurrent writer processes; mirror a vault event; run executeProcess under --strict against an unwritable log path",
-      "expected": "Edits, actor changes, truncation, MAC downgrade, wrong keys and key-less extension are rejected; legacy ledgers verify; concurrent writers lose nothing; vault events are keyed and verifiable; --strict refuses to start without its start record",
-      "observed": "keyedVerifies: true. wrongKeyRejected: true. middleEditRejected: true. actorEditRejected: true. truncationRejected: true. macDowngradeRejected: true. unkeyedRewritePassesByDefault: true. unkeyedRewriteRejectedWhenKeyRequired: true. keyHolderCanForge: true. legacyLedgerVerifies: true. keylessWriterRefused: true. damagedTailRefused: true. removedEntriesWriteRefused: true. concurrentWritersConsistent: true. vaultEventsInLedger: true. strictFailsClosed: true.",
+      "input": "Synthetic ledgers written with and without a key, then edited, truncated, rewritten, downgraded and extended by key-less writers, then rotated; four concurrent writer processes; a vault with a workspace layout; an unwritable audit path",
+      "method": "Write and tamper ledgers on disk and run the verifier with and without the key; rotate refused ledgers and check the archive and the first entry of the new ledger; run concurrent writer processes; mirror a vault event; run executeProcess under --strict against an unwritable log path",
+      "expected": "Edits, actor changes, truncation, MAC downgrade, wrong keys and key-less extension are rejected; legacy ledgers verify; rotation keeps the old files, carries the old head into the new ledger and does not turn a keyed ledger into an unkeyed one; concurrent writers lose nothing; vault events are keyed and verifiable; --strict refuses to start without its start record",
+      "observed": "keyedVerifies: true. wrongKeyRejected: true. middleEditRejected: true. actorEditRejected: true. truncationRejected: true. macDowngradeRejected: true. unkeyedRewritePassesByDefault: true. unkeyedRewriteRejectedWhenKeyRequired: true. keyHolderCanForge: true. legacyLedgerVerifies: true. keylessWriterRefused: true. damagedTailRefused: true. removedEntriesWriteRefused: true. rotateRecoversDamagedTail: true. rotateCarriesOldHead: true. rotateRefusesUnkeyedDowngrade: true. deletedArchiveNotDetected: true. concurrentWritersConsistent: true. vaultEventsInLedger: true. strictFailsClosed: true.",
       "verdict": "PASS",
-      "boundary": "A consistent rewrite of the whole chain without any MAC passes default verification and is only rejected when a keyed ledger is required (requireMac or HETZER_AUDIT_REQUIRE_MAC=1). Anyone who can read the master key can forge a valid keyed ledger. Tail truncation is caught only by the head anchor file, which the same attacker can rewrite. The SQLite audit table is a frozen mirror, not a second source of truth. Failures after the child process has started cannot undo it."
+      "boundary": "A consistent rewrite of the whole chain without any MAC passes default verification and is only rejected when a keyed ledger is required (requireMac or HETZER_AUDIT_REQUIRE_MAC=1). Anyone who can read the master key can forge a valid keyed ledger. Tail truncation is caught only by the head anchor file, which the same attacker can rewrite. Rotation is an operator action that anyone with shell access can also perform by moving files; it makes the recovery logged and carries the old head forward, but the new ledger does not enforce that the archive still exists, so deleting the archive together with the rotation entry is not detected. The SQLite audit table is a frozen mirror, not a second source of truth. Failures after the child process has started cannot undo it."
     }
   ]
 }
