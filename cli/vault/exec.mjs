@@ -879,6 +879,8 @@ export async function executeProcess(options, {
                     result: "BLOCK",
                     details: { command: effectiveOptions.command, error: err.message },
                     root: effectiveOptions.root,
+                    baseEnv,
+                    envFile: effectiveOptions.envFile,
                 });
             } catch {}
             throw err;
@@ -895,6 +897,8 @@ export async function executeProcess(options, {
                     result: "BLOCK",
                     details: { command: effectiveOptions.command, error: err.message },
                     root: effectiveOptions.root,
+                    baseEnv,
+                    envFile: effectiveOptions.envFile,
                 });
             } catch {}
             throw err;
@@ -910,6 +914,8 @@ export async function executeProcess(options, {
                 result: "BLOCK",
                 details: { command: effectiveOptions.command },
                 root: effectiveOptions.root,
+                baseEnv,
+                envFile: effectiveOptions.envFile,
             });
         } catch {}
         const err = new Error(
@@ -939,6 +945,8 @@ export async function executeProcess(options, {
                 sandbox: Boolean(effectiveOptions.sandbox),
             },
             root: effectiveOptions.root,
+            baseEnv,
+            envFile: effectiveOptions.envFile,
         });
     } catch (error) {
         // The start event is the record that this run happened. Under --strict a run that cannot be

@@ -512,7 +512,7 @@ Commands:
   validate [module]         Validate module integrity, security, and compose recipe
   creds [list|request|approve|status|reveal|set] Manage encrypted secrets in Grimoire Vault (AES-256-GCM)
   canary [setup]            Deploy decoy canary honey-token tripwire to catch prompt injections
-  audit [verify|tail [n]]   Verify cryptographic hash-chain or inspect tamper-evident audit ledger
+  audit [verify [--require-mac]|tail [n]]   Verify the hash-chain (and MACs) or inspect the audit ledger
   exec [--allow <ids>] [--policy <file>] [--sandbox [image]] [--sandbox-mount <dir>] [--host] [--strict] [--canary] [--timeout <t>] -- <c>
                               Run with mediated credentials; raw injection requires an audited opt-out
   broker --policy <file> -- <command>   Run an HTTP client using a short-lived capability instead of the real credential
@@ -771,7 +771,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             process.stdout.write("================================================================================\n");
             return;
         }
-        throw new Error(`Unknown audit subcommand: '${sub}'. Use 'verify' or 'tail [count]'.`);
+        throw new Error(`Unknown audit subcommand: '${sub}'. Use 'verify [--require-mac]' or 'tail [count]'.`);
     }
 
     const { envFile, values } = projectEnvironment(root);

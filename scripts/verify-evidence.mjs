@@ -959,7 +959,7 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
         fs.mkdirSync(path.join(workspace, "data"), { recursive: true });
         fs.mkdirSync(path.join(workspace, ".hetzer"), { recursive: true });
         fs.writeFileSync(path.join(workspace, "README.md"), "project file\n");
-        fs.writeFileSync(path.join(workspace, ".hetzer", "audit.log"), "synthetic\n");
+        fs.writeFileSync(path.join(workspace, ".hetzer", "audit.log"), "");
         const dbPath = path.join(workspace, "data", "hetzer-vault.db");
         const vault = new Grimoire({ dbPath, masterKey });
         vault.create({ id: "sandbox-cred", projectId: "sandbox-target", secret: secretValue, allowedActions: ["process.start"], rawInjection: "allow" });
@@ -1162,6 +1162,15 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
         try { recordAuditEvent({ eventType: "X", logFile: damaged, macKey: false }); } catch (error) { damagedCode = error.code; }
         checks.damagedTailRefused = damagedCode === "ERR_AUDIT_LEDGER_CORRUPT";
 
+        // Entries removed behind the checkpoint anchor: the writer refuses and leaves the anchor alone.
+        const removed = path.join(dir, "removed.log");
+        fill(removed, 4, false);
+        store(removed, lineOf(removed).slice(0, 2));
+        let removedCode = "";
+        try { recordAuditEvent({ eventType: "X", logFile: removed, macKey: false }); } catch (error) { removedCode = error.code; }
+        checks.removedEntriesWriteRefused = removedCode === "ERR_AUDIT_LEDGER_TRUNCATED"
+            && JSON.parse(fs.readFileSync(`${removed}.head`, "utf8")).lastIndex === 4;
+
         // Concurrent writer processes: one valid chain, no lost events.
         const concurrent = path.join(dir, "concurrent.log");
         const writerFile = path.join(dir, "writer.mjs");
@@ -1215,11 +1224,11 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
     const required = [
         "keyedVerifies", "wrongKeyRejected", "middleEditRejected", "actorEditRejected", "truncationRejected",
         "macDowngradeRejected", "unkeyedRewriteRejectedWhenKeyRequired", "legacyLedgerVerifies", "keylessWriterRefused",
-        "damagedTailRefused", "concurrentWritersConsistent", "vaultEventsInLedger", "strictFailsClosed",
+        "damagedTailRefused", "removedEntriesWriteRefused", "concurrentWritersConsistent", "vaultEventsInLedger", "strictFailsClosed",
     ];
-    // These two describe limits that must stay true to the documented boundary.
-    const boundaryHolds = checks.unkeyedRewritePassesByDefault === true && checks.keyHolderCanForge === true;
-    const pass = required.every((name) => checks[name] === true) && boundaryHolds;
+    // unkeyedRewritePassesByDefault and keyHolderCanForge document known limits. They are reported in
+    // "observed" and "boundary" but do not gate the verdict, so closing a limit later is not a regression.
+    const pass = required.every((name) => checks[name] === true);
 
     recordTest({
         id: "VERIFY-SEC-014",

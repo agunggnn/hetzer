@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-10-11T01:08:41.190Z",
+  "timestamp": "2026-10-11T01:21:15.275Z",
   "nodeVersion": "v22.22.2",
   "platform": "win32",
   "results": [
@@ -59,7 +59,7 @@
       "input": "Small 30-byte build log line",
       "method": "Measure the median of 25 write-and-flush samples using dynamic retention and the bounded lexical scanner",
       "expected": "Median processing latency stays below 5ms and the complete line is emitted",
-      "observed": "Median processing latency: 0.023 ms. Output delivered: \"Compiling module auth.mjs...\".",
+      "observed": "Median processing latency: 0.033 ms. Output delivered: \"Compiling module auth.mjs...\".",
       "verdict": "PASS",
       "boundary": "Streams with secrets exceeding 128 chars scale buffer to 2x secret length to ensure boundary integrity."
     },
@@ -179,7 +179,7 @@
       "input": "Synthetic ledgers written with and without a key, then edited, truncated, rewritten, downgraded and extended by key-less writers; four concurrent writer processes; a vault with a workspace layout; an unwritable audit path",
       "method": "Write and tamper ledgers on disk and run the verifier with and without the key; run concurrent writer processes; mirror a vault event; run executeProcess under --strict against an unwritable log path",
       "expected": "Edits, actor changes, truncation, MAC downgrade, wrong keys and key-less extension are rejected; legacy ledgers verify; concurrent writers lose nothing; vault events are keyed and verifiable; --strict refuses to start without its start record",
-      "observed": "keyedVerifies: true. wrongKeyRejected: true. middleEditRejected: true. actorEditRejected: true. truncationRejected: true. macDowngradeRejected: true. unkeyedRewritePassesByDefault: true. unkeyedRewriteRejectedWhenKeyRequired: true. keyHolderCanForge: true. legacyLedgerVerifies: true. keylessWriterRefused: true. damagedTailRefused: true. concurrentWritersConsistent: true. vaultEventsInLedger: true. strictFailsClosed: true.",
+      "observed": "keyedVerifies: true. wrongKeyRejected: true. middleEditRejected: true. actorEditRejected: true. truncationRejected: true. macDowngradeRejected: true. unkeyedRewritePassesByDefault: true. unkeyedRewriteRejectedWhenKeyRequired: true. keyHolderCanForge: true. legacyLedgerVerifies: true. keylessWriterRefused: true. damagedTailRefused: true. removedEntriesWriteRefused: true. concurrentWritersConsistent: true. vaultEventsInLedger: true. strictFailsClosed: true.",
       "verdict": "PASS",
       "boundary": "A consistent rewrite of the whole chain without any MAC passes default verification and is only rejected when a keyed ledger is required (requireMac or HETZER_AUDIT_REQUIRE_MAC=1). Anyone who can read the master key can forge a valid keyed ledger. Tail truncation is caught only by the head anchor file, which the same attacker can rewrite. The SQLite audit table is a frozen mirror, not a second source of truth. Failures after the child process has started cannot undo it."
     }

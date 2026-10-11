@@ -440,9 +440,17 @@ export async function executeSandboxedProcess(options, {
                     command: effectiveOptions.command,
                 },
                 root: effectiveOptions.root,
+                baseEnv,
+                envFile: effectiveOptions.envFile,
             });
-        } catch {
-            // Fail soft on audit write
+        } catch (error) {
+            // Same rule as host exec: under --strict a run without its start record does not start.
+            if (effectiveOptions.strict) {
+                const failure = new Error(`Audit event could not be recorded and --strict requires it: ${error.message}`);
+                failure.code = "ERR_AUDIT_WRITE_FAILED";
+                throw failure;
+            }
+            process.stderr.write(`[hetzer] warning: audit event not recorded (${error.code || error.message})\n`);
         }
 
         const child = spawnFn(engineCheck.engine, dockerArgs, {

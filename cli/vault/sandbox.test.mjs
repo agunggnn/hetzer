@@ -606,3 +606,47 @@ test("executeSandboxedProcess refuses --sandbox-network none together with a bro
         fs.rmSync(project, { recursive: true, force: true });
     }
 });
+
+test("executeSandboxedProcess under --strict does not start when the audit event cannot be recorded", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-sandbox-audit-"));
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-sandbox-audit-project-"));
+    const blocker = path.join(root, "blocker");
+    fs.writeFileSync(blocker, "file");
+    fs.writeFileSync(path.join(root, ".env"), "PLAIN=value\n");
+    const previous = process.env.HETZER_AUDIT_LOG_PATH;
+    process.env.HETZER_AUDIT_LOG_PATH = path.join(blocker, "sub", "audit.log");
+    const run = (strict) => {
+        let spawned = false;
+        const promise = executeSandboxedProcess({
+            root,
+            envFile: path.join(root, ".env"),
+            allowNames: [],
+            strict,
+            sandbox: true,
+            sandboxMountDir: project,
+            command: "/bin/true",
+            commandArgs: [],
+        }, {
+            baseEnv: { PATH: "/usr/bin" },
+            execSyncFn: () => ({ status: 0, stdout: "ok" }),
+            spawnFn: () => { spawned = true; return fakeEngineChild(); },
+            outStream: new PassThrough(),
+            errStream: new PassThrough(),
+        });
+        return { promise, spawned: () => spawned };
+    };
+    try {
+        const strictRun = run(true);
+        await assert.rejects(strictRun.promise, (error) => error.code === "ERR_AUDIT_WRITE_FAILED");
+        assert.equal(strictRun.spawned(), false);
+
+        const softRun = run(false);
+        await softRun.promise;
+        assert.equal(softRun.spawned(), true);
+    } finally {
+        if (previous === undefined) delete process.env.HETZER_AUDIT_LOG_PATH;
+        else process.env.HETZER_AUDIT_LOG_PATH = previous;
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(project, { recursive: true, force: true });
+    }
+});

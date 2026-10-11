@@ -60,6 +60,23 @@ function macMatches(masterKey, entry) {
 
 const TAIL_CHUNK_BYTES = 64 * 1024;
 
+/**
+ * Recovery text for refusals that need no attacker (an interrupted write, a new vault key). Moving
+ * only some of the three files makes the verifier report the missing ones as tampering.
+ */
+function ledgerRecoveryHint(filePath) {
+    return `To start a new ledger, move ${filePath}, ${getAuditHeadPath(filePath)} and ${getAuditStatePath(filePath)} aside together and keep them as the archive of the old one.`;
+}
+
+function readHeadIndex(headPath) {
+    try {
+        const head = JSON.parse(fs.readFileSync(headPath, "utf8"));
+        return Number.isInteger(head?.lastIndex) && head.lastIndex > 0 ? head.lastIndex : 0;
+    } catch {
+        return 0;
+    }
+}
+
 function readLastEntry(filePath) {
     if (!fs.existsSync(filePath)) return null;
     const fd = fs.openSync(filePath, "r");
@@ -84,7 +101,7 @@ function readLastEntry(filePath) {
     try {
         return JSON.parse(lines[lines.length - 1]);
     } catch {
-        const error = new Error("Audit ledger tail is not valid JSON; refusing to extend a damaged chain. Run 'hetzer audit verify'.");
+        const error = new Error(`Audit ledger tail is not valid JSON (an interrupted write or an edit); refusing to extend a damaged chain. Run 'hetzer audit verify' to see where. ${ledgerRecoveryHint(filePath)}`);
         error.code = "ERR_AUDIT_LEDGER_CORRUPT";
         throw error;
     }
@@ -141,15 +158,16 @@ function withAuditLock(filePath, fn, timeoutMs = 5000) {
 /**
  * The MAC key is the explicit `macKey`, else the master key from the runtime environment, the
  * workspace .env or the isolated key store. No key means unkeyed entries, never an error.
- * Pass `macKey: false` to disable key lookup (tests, tools that must not touch the key store).
+ * Callers that opened the vault with an injected environment pass the same `baseEnv` and `envFile`,
+ * so the ledger is keyed with the key the vault used. Pass `macKey: false` to disable key lookup (tests, tools that must not touch the key store).
  */
-export function resolveAuditMacKey({ root, macKey } = {}) {
+export function resolveAuditMacKey({ root, macKey, baseEnv = process.env, envFile } = {}) {
     if (macKey === false) return "";
     if (macKey) return normalizeMasterKey(macKey);
     try {
-        const envFile = path.join(path.resolve(root || process.cwd()), ".env");
-        const envValues = fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, "utf8")) : {};
-        return normalizeMasterKey(resolveMasterKey({ root, envValues }));
+        const envPath = envFile || path.join(path.resolve(root || process.cwd()), ".env");
+        const envValues = fs.existsSync(envPath) ? parseEnv(fs.readFileSync(envPath, "utf8")) : {};
+        return normalizeMasterKey(resolveMasterKey({ root, envValues, baseEnv }));
     } catch {
         return "";
     }
@@ -164,10 +182,12 @@ export function recordAuditEvent({
     logFile,
     root,
     macKey,
+    baseEnv,
+    envFile,
     now = new Date(),
 } = {}) {
     if (!eventType) throw new Error("Audit eventType is required.");
-    const key = resolveAuditMacKey({ root, macKey });
+    const key = resolveAuditMacKey({ root, macKey, baseEnv, envFile });
     const filePath = logFile || getAuditLogPath({ root });
 
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -183,15 +203,23 @@ export function recordAuditEvent({
         }
 
         const lastEntry = readLastEntry(filePath);
+        // The head file is written after each append, so it never runs ahead of the log in normal operation.
+        // If it does, entries were removed; extending the chain would overwrite the head and hide that.
+        const anchoredIndex = readHeadIndex(getAuditHeadPath(filePath));
+        if (anchoredIndex > (lastEntry?.index || 0)) {
+            const error = new Error(`Audit ledger has ${lastEntry?.index || 0} entries but its checkpoint anchor records ${anchoredIndex}; entries were removed. Run 'hetzer audit verify'. ${ledgerRecoveryHint(filePath)}`);
+            error.code = "ERR_AUDIT_LEDGER_TRUNCATED";
+            throw error;
+        }
         if (lastEntry?.mac) {
             // Extending a keyed chain without the key, or with another key, would make it fail verification for good.
             if (!key) {
-                const error = new Error("Audit ledger is keyed but no master key is available to extend it; event not recorded.");
+                const error = new Error(`Audit ledger is keyed but no master key is available to extend it. Set HETZER_GRIMOIRE_KEY for this process. ${ledgerRecoveryHint(filePath)}`);
                 error.code = "ERR_AUDIT_KEY_REQUIRED";
                 throw error;
             }
             if (!macMatches(key, lastEntry)) {
-                const error = new Error("Audit ledger was written with a different master key; event not recorded.");
+                const error = new Error(`Audit ledger was written with a different master key than this process has (for example after the vault was re-created). ${ledgerRecoveryHint(filePath)}`);
                 error.code = "ERR_AUDIT_KEY_MISMATCH";
                 throw error;
             }
@@ -401,7 +429,7 @@ export function verifyAuditLedger({ logFile, root, expectedHeadHash, expectedCou
                     return {
                         ok: false,
                         tamperedIndex: entry.index,
-                        error: `Keyed MAC check failed at index ${entry.index}: the entry was not written with this master key.`,
+                        error: `Keyed MAC check failed at index ${entry.index}: the entry was not written with the master key available here (a different key, or the entry was altered).`,
                     };
                 }
             } else if (sawMac) {

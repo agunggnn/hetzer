@@ -431,3 +431,26 @@ test("the MAC key is the same whether it is given as raw text or in its normaliz
         }
     });
 });
+
+test("a writer refuses to extend a ledger whose entries were removed behind its checkpoint anchor", () => {
+    withTempLedger((logFile) => {
+        writeLedger(logFile, 4, false);
+        writeEntries(logFile, readEntries(logFile).slice(0, 2));
+        assert.throws(() => recordAuditEvent({ eventType: "AFTER", logFile, macKey: false }), (error) => error.code === "ERR_AUDIT_LEDGER_TRUNCATED");
+        assert.equal(JSON.parse(fs.readFileSync(logFile + ".head", "utf8")).lastIndex, 4, "the anchor must not be overwritten");
+        assert.equal(verifyAuditLedger({ logFile, macKey: false }).ok, false);
+    });
+
+    withTempLedger((logFile) => {
+        writeLedger(logFile, 3, false);
+        fs.renameSync(logFile, `${logFile}.moved`);
+        assert.throws(() => recordAuditEvent({ eventType: "AFTER", logFile, macKey: false }), (error) => error.code === "ERR_AUDIT_LEDGER_TRUNCATED");
+
+        // Moving the log, the anchor and the sentinel together is the documented way to start a new ledger.
+        for (const suffix of [".head", ".state"]) fs.renameSync(logFile + suffix, `${logFile}${suffix}.moved`);
+        recordAuditEvent({ eventType: "FRESH", logFile, macKey: false });
+        const check = verifyAuditLedger({ logFile, macKey: false });
+        assert.equal(check.ok, true);
+        assert.equal(check.count, 1);
+    });
+});
