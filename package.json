@@ -28,6 +28,7 @@
     "scripts/render-banner.mjs",
     "docs/agent-sandbox-threat-model.md",
     "docs/architecture.md",
+    "docs/audit-event-schema.md",
     "docs/banner-spec.md",
     "docs/enterprise-readiness.md",
     "docs/hardware-root-of-trust-roadmap.md",

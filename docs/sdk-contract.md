@@ -66,8 +66,9 @@ not part of the contract; anything else becomes `ERR_SDK_EXECUTION_FAILED`.
 - **No `resolve`, `reveal`, `decrypt` or lease member.** A call that returns a credential value to the caller
   has the same exposure as `Grimoire.resolve()` (R-05). The contract test fails if any member name matches
   those words.
-- **Lease interfaces** (short-lived capabilities handed to the caller) are not built. ADR-0001 item 10 names
-  them; they are deferred until the authority model can say what a lease is allowed to expose.
+- **Lease interfaces.** ADR-0001 item 10 names them. The HTTP broker (`hetzer broker`) already issues short-lived
+  capability leases to the child it starts, but the SDK exposes no way to request or hold one. Handing a lease to
+  the caller is deferred until the authority model can say what a lease is allowed to expose.
 - Provider adapters and deployment synchronization (see `sdk-library-roadmap.md`).
 
 ## What this contract does not do

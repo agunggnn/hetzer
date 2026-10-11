@@ -86,6 +86,12 @@ export function generateMasterKey() {
     return crypto.randomBytes(48).toString("base64url");
 }
 
+/** Ledger event type for a vault audit action: `vault.set-credential` -> `VAULT_SET_CREDENTIAL`, `policy.loaded` -> `VAULT_POLICY_LOADED`. */
+export function vaultAuditEventType(action) {
+    const name = String(action || "unknown").replace(/^vault[._-]/i, "").replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    return `VAULT_${name}`.toUpperCase();
+}
+
 /** The one credential id grammar: what the vault accepts on create, and what a secretRef can name. */
 export function isCredentialId(id) {
     return typeof id === "string" && ID_PATTERN.test(id);
@@ -1052,7 +1058,7 @@ export class Grimoire {
         try {
             const action = String(event.action || "unknown");
             recordAuditEvent({
-                eventType: `VAULT_${action.replace(/^vault[.-_]/i, "").replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`,
+                eventType: vaultAuditEventType(action),
                 target: String(event.credentialId || event.credential_id || event.targetId || event.target_id || ""),
                 result: String(event.outcome || "unknown"),
                 actor: { user: String(event.actor || "unknown").slice(0, 120) },
