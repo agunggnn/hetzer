@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { isCanaryCredential, triggerCanaryAlert } from "../cli/vault/canary.mjs";
 import { executeProcess } from "../cli/vault/exec.mjs";
-import { Grimoire, parseSecretRef, resolveVaultPath } from "../cli/vault/hetzer-vault.mjs";
+import { Grimoire, isCredentialId, parseSecretRef, resolveVaultPath } from "../cli/vault/hetzer-vault.mjs";
 import {
     HetzerSdkError,
     invalidCredentialId,
@@ -12,8 +12,8 @@ import {
     SDK_ERROR_CODES,
 } from "./errors.mjs";
 import { toSafeCredentialList, toSafeCredentialMetadata } from "./metadata.mjs";
+import { SDK_API_VERSION } from "./version.mjs";
 
-const CREDENTIAL_ID_PATTERN = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
 const ACTION_PATTERN = /^[a-z0-9]+(?:[.:_/-][a-z0-9]+)*$/;
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -45,7 +45,7 @@ function resolveDatabasePath(root, vaultPath) {
 }
 
 function validateCredentialId(id) {
-    if (typeof id !== "string" || !CREDENTIAL_ID_PATTERN.test(id)) {
+    if (!isCredentialId(id)) {
         throw invalidCredentialId();
     }
     return id;
@@ -72,7 +72,7 @@ function normalizeValidationContext(context) {
     }
     const targetId = context.targetId === undefined ? "" : String(context.targetId).trim().toLowerCase();
     const action = context.action === undefined ? "" : String(context.action).trim().toLowerCase();
-    if (targetId && !CREDENTIAL_ID_PATTERN.test(targetId)) {
+    if (targetId && !isCredentialId(targetId)) {
         throw invalidSdkConfig("credential validation targetId is invalid.");
     }
     if (action && !ACTION_PATTERN.test(action)) {
@@ -98,7 +98,7 @@ function normalizeAllowNames(value, name) {
         }
         const candidate = item.trim();
         if (candidate.startsWith("secretRef:")) return normalizeReference(candidate).id;
-        if (CREDENTIAL_ID_PATTERN.test(candidate) || ENV_NAME_PATTERN.test(candidate)) return candidate;
+        if (isCredentialId(candidate) || ENV_NAME_PATTERN.test(candidate)) return candidate;
         throw invalidSdkConfig(`${name} contains an invalid credential id or environment name.`);
     });
 }
@@ -124,8 +124,9 @@ function wrapExecutionError(error) {
  * Create the public, metadata-first Hetzer SDK client.
  *
  * Construction is lazy: it validates paths but does not open or decrypt the
- * vault. Secret resolution and scoped execution will be added behind this
- * facade in later SDK PRs.
+ * vault. The client never returns a credential value: metadata calls read
+ * only the non-secret columns, and `execution.run` injects credentials into a
+ * child process under strict mode. The surface is listed in docs/sdk-contract.md.
  */
 export function createHetzer(options = {}) {
     if (!options || typeof options !== "object" || Array.isArray(options)) {
@@ -147,7 +148,7 @@ export function createHetzer(options = {}) {
 
     const client = {
         kind: "hetzer-sdk",
-        apiVersion: "experimental-1",
+        apiVersion: SDK_API_VERSION,
         credentials: {
             list() {
                 return toSafeCredentialList(openVault().list());

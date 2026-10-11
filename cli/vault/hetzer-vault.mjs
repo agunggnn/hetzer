@@ -86,6 +86,11 @@ export function generateMasterKey() {
     return crypto.randomBytes(48).toString("base64url");
 }
 
+/** The one credential id grammar: what the vault accepts on create, and what a secretRef can name. */
+export function isCredentialId(id) {
+    return typeof id === "string" && ID_PATTERN.test(id);
+}
+
 export function isSecretRef(reference) {
     return typeof reference === "string" && SECRET_REF_PATTERN.test(reference.trim());
 }

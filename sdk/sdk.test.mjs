@@ -5,7 +5,7 @@ import path from "node:path";
 import { Writable } from "node:stream";
 import test from "node:test";
 
-import { createHetzer, formatSecretRef, HetzerSdkError, isSecretRef, parseSecretRef, SDK_ERROR_CODES } from "./index.mjs";
+import { createHetzer, formatSecretRef, HetzerSdkError, isSecretRef, parseSecretRef, SDK_API_VERSION, SDK_ERROR_CODES } from "./index.mjs";
 import { Grimoire } from "../cli/vault/hetzer-vault.mjs";
 
 test("public SDK export creates a lazy metadata client", () => {
@@ -14,7 +14,7 @@ test("public SDK export creates a lazy metadata client", () => {
     const client = createHetzer({ root, vaultPath });
 
     assert.equal(client.kind, "hetzer-sdk");
-    assert.equal(client.apiVersion, "experimental-1");
+    assert.equal(client.apiVersion, SDK_API_VERSION);
     assert.equal(fs.existsSync(vaultPath), false);
     assert.equal(typeof client.credentials.list, "function");
     assert.equal(typeof client.credentials.metadata, "function");

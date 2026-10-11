@@ -4,10 +4,11 @@ import path from "node:path";
 
 import { assertInteractiveHumanSession, promptSecret, setCredential } from "./creds.mjs";
 import { recordAuditEvent } from "./audit.mjs";
+import { isCredentialId } from "./hetzer-vault.mjs";
 
 const REQUEST_TTL_MS = 15 * 60 * 1000;
 const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const CREDENTIAL_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
+const MAX_CREDENTIAL_ID_LENGTH = 128;
 
 function requestDirectory(root) {
     return path.join(root, "data", "credential-requests");
@@ -21,8 +22,8 @@ function requestFile(root, requestId) {
 }
 
 function validateCredentialId(id) {
-    if (!CREDENTIAL_ID_PATTERN.test(String(id || ""))) {
-        throw new Error("Credential ID must contain only letters, numbers, '.', '_' or '-'.");
+    if (!isCredentialId(id) || id.length > MAX_CREDENTIAL_ID_LENGTH) {
+        throw new Error("Credential ID must be lowercase kebab-case (letters, numbers, hyphens).");
     }
     return id;
 }
@@ -48,7 +49,7 @@ function readRequest({ root, requestId }) {
     } catch {
         throw new Error(`Credential request '${requestId}' is unreadable.`);
     }
-    if (request?.version !== 1 || request.requestId !== requestId || !CREDENTIAL_ID_PATTERN.test(request.credentialId)) {
+    if (request?.version !== 1 || request.requestId !== requestId || !isCredentialId(request.credentialId) || request.credentialId.length > MAX_CREDENTIAL_ID_LENGTH) {
         throw new Error(`Credential request '${requestId}' is invalid.`);
     }
     return { file, request };
