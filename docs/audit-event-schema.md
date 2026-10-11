@@ -79,9 +79,11 @@ Writers add two refusals so a damaged ledger is not extended: a keyed ledger wit
 ### Writer lock
 
 Writers, `verify` and `rotate` serialize on `audit.log.lock`. The lock file records the holder's process id. A lock
-older than 15 seconds is removed only when that process no longer exists; a live holder keeps its lock however
-long it takes, because taking it over would put two writers in the critical section at once. A waiter gives up
-after 10 seconds with `Timeout acquiring audit log lock`.
+older than 15 seconds is removed only when that process no longer exists; a live holder keeps its lock for up to
+10 minutes (a critical section lasts milliseconds), because taking it over sooner would put two writers in the
+critical section at once. A lock older than that is treated as leaked, for example by a long-lived process whose
+release failed or by a process id reused after a crash. A waiter gives up after 10 seconds with
+`Timeout acquiring audit log lock`, and the message names the file to delete if no Hetzer process is running.
 
 The lock is not fair. Measured on Windows with 12 CPU-bound processes running, four writers that looped without
 any gap between events left a waiting `rotate` timed out in 5 of 25 rounds of one run, and each writer lost a few

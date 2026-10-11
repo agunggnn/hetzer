@@ -117,6 +117,9 @@ export function getAuditStatePath(filePath) {
 
 const LOCK_TIMEOUT_MS = 10000;
 const LOCK_STALE_MS = 15000;
+// A holder that is still alive keeps its lock far longer than any critical section lasts (milliseconds).
+// Past this age the lock is treated as leaked by a process that is alive but no longer using it.
+const LOCK_LIVE_HOLDER_MAX_MS = 10 * 60 * 1000;
 
 function lockHolderAlive(pid) {
     if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -140,16 +143,18 @@ function readLockOwner(lockPath) {
 }
 
 /**
- * Removes a lock left behind by a process that no longer exists. A lock whose holder is alive is never
- * removed, however old: a holder starved of CPU for seconds would otherwise lose its lock and two writers
+ * Removes a lock left behind by a process that no longer exists. A lock whose holder is alive is not
+ * removed for minutes: a holder starved of CPU for seconds would otherwise lose its lock and two writers
  * would share the critical section. Waiting too long fails (a timeout) instead of corrupting the ledger.
+ * Only past LOCK_LIVE_HOLDER_MAX_MS is a live holder's lock treated as leaked (for example by a long-lived
+ * process whose release failed, or a process id reused after a crash).
  */
 function reapStaleLock(lockPath) {
     let stat;
     try { stat = fs.statSync(lockPath); } catch { return false; }
     if (Date.now() - stat.mtimeMs <= LOCK_STALE_MS) return false;
     const owner = readLockOwner(lockPath);
-    if (owner && lockHolderAlive(owner.pid)) return false;
+    if (owner && lockHolderAlive(owner.pid) && Date.now() - stat.mtimeMs <= LOCK_LIVE_HOLDER_MAX_MS) return false;
     // Look again right before removing so a lock another waiter just replaced is left alone.
     const again = readLockOwner(lockPath);
     if ((again?.text ?? null) !== (owner?.text ?? null)) return false;
@@ -164,10 +169,18 @@ function reapStaleLock(lockPath) {
 
 function releaseLock(lockFd, lockPath, token) {
     try { fs.closeSync(lockFd); } catch {}
-    // Only remove the file if it is still this holder's, and ride out Windows briefly refusing the delete.
+    // Remove the file unless it is readable and holds someone else's token. When it cannot be read, remove it
+    // anyway: a lock that stays behind blocks every later writer in a process that keeps running. Windows can
+    // refuse the delete or the read for a moment, so retry.
     for (let attempt = 0; attempt < 10; attempt += 1) {
         try {
-            if (readLockOwner(lockPath)?.text !== token) return;
+            let current;
+            try {
+                current = fs.readFileSync(lockPath, "utf8");
+            } catch (err) {
+                if (err.code === "ENOENT") return;
+            }
+            if (current !== undefined && current !== token) return;
             fs.unlinkSync(lockPath);
             return;
         } catch (err) {
@@ -209,7 +222,7 @@ function withAuditLock(filePath, fn, timeoutMs = LOCK_TIMEOUT_MS) {
     }
 
     if (lockFd === null) {
-        throw new Error(`Timeout acquiring audit log lock on ${lockPath}`);
+        throw new Error(`Timeout acquiring audit log lock on ${lockPath}. Another Hetzer process is holding it; if none is running, delete that file.`);
     }
 
     try {

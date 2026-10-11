@@ -728,3 +728,44 @@ test("the lock is released when the guarded work throws", () => {
         assert.equal(fs.existsSync(`${logFile}.lock`), false, "the lock is gone after an error");
     });
 });
+
+test("a live holder's lock is taken over only after the 10 minute ceiling", () => {
+    withTempLedger((logFile) => {
+        writeLock(logFile, process.pid, 9 * 60 * 1000);
+        assert.throws(() => recordAuditEvent({ eventType: "WAITS", logFile, macKey: false, lockTimeoutMs: 300 }), /Timeout acquiring audit log lock/);
+        fs.rmSync(`${logFile}.lock`);
+        writeLock(logFile, process.pid, 11 * 60 * 1000);
+        recordAuditEvent({ eventType: "TAKES_OVER_LEAKED", logFile, macKey: false, lockTimeoutMs: 2000 });
+        assert.equal(verifyAuditLedger({ logFile, macKey: false }).ok, true);
+    });
+});
+
+test("releasing the lock still removes it when the lock file cannot be read or the first deletes fail", () => {
+    withTempLedger((logFile) => {
+        const lockPath = `${logFile}.lock`;
+        const realRead = fs.readFileSync;
+        const realUnlink = fs.unlinkSync;
+        let unlinkFailures = 0;
+        fs.readFileSync = function patchedRead(target, ...rest) {
+            if (String(target) === lockPath) throw Object.assign(new Error("synthetic read failure"), { code: "EIO" });
+            return realRead.call(this, target, ...rest);
+        };
+        fs.unlinkSync = function patchedUnlink(target, ...rest) {
+            if (String(target) === lockPath && unlinkFailures < 3) {
+                unlinkFailures += 1;
+                throw Object.assign(new Error("synthetic delete failure"), { code: "EPERM" });
+            }
+            return realUnlink.call(this, target, ...rest);
+        };
+        try {
+            recordAuditEvent({ eventType: "RELEASE_FAILS_OPEN", logFile, macKey: false });
+        } finally {
+            fs.readFileSync = realRead;
+            fs.unlinkSync = realUnlink;
+        }
+        assert.equal(unlinkFailures, 3, "the delete was retried");
+        assert.equal(fs.existsSync(lockPath), false, "the lock does not stay behind");
+        recordAuditEvent({ eventType: "NEXT_WRITER", logFile, macKey: false, lockTimeoutMs: 500 });
+        assert.equal(verifyAuditLedger({ logFile, macKey: false }).ok, true);
+    });
+});
