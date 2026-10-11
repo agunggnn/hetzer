@@ -42,5 +42,5 @@
 Gate implementation follows [ADR-0001](docs/adr/0001-authority-model-and-engine-boundary.md):
 1. **Gate G0: Authority Model & Origin Grants** (`feat/gate-g0-authority-model`, `fix/g0-grant-signature-fail-closed`): Completed & verified (`VERIFY-SEC-007` - `VERIFY-SEC-012`).
 2. **Gate G1: Sandbox Isolation Defaults** (`feat/gate-g1-sandbox-defaults`): Completed & verified (`VERIFY-SEC-013`).
-3. **Gate G2: Contract, Unified Audit & Canonical Grammars** (`feat/gate-g2-contract`): Completed & verified (`VERIFY-SEC-014`, `VERIFY-SEC-015`).
+3. **Gate G2: Contract, Unified Audit & Canonical Grammars** (`feat/gate-g2-contract`): In progress. Items 10, 11 and 13 and the guard half of item 12 are done and verified (`VERIFY-SEC-014`, `VERIFY-SEC-015`); the vault schema v2 migration (rest of item 12), lease interfaces and the open limits listed under ADR items 10 and 11 remain.
 4. **Gate G3: The Cut** (Upcoming): Module system, Compose runner, 9Router helpers archive and cleanup.
