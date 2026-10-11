@@ -65,7 +65,7 @@ const TAIL_CHUNK_BYTES = 64 * 1024;
  * moves the log, its head anchor and its sentinel together and records why in the new ledger.
  */
 function ledgerRecoveryHint() {
-    return "To start a new ledger and archive the old one, run 'hetzer audit rotate --yes'.";
+    return "Recovery needs a person: run 'hetzer audit rotate' in an interactive terminal to archive this ledger and start a new one.";
 }
 
 function readHeadIndex(headPath) {
@@ -520,20 +520,24 @@ function snapshotLedger(filePath, key) {
         for (const line of fs.readFileSync(filePath, "utf8").split(/\r?\n/)) {
             if (!line.trim()) continue;
             lines += 1;
-            if (!chainIntact) continue;
+            let entry;
             try {
-                const entry = JSON.parse(line);
-                const expectedIndex = (lastGood?.index || 0) + 1;
-                const expectedPrev = lastGood?.hash || GENESIS_HASH;
-                if (entry.index !== expectedIndex || entry.prevHash !== expectedPrev || entry.hash !== computeAuditEntryHash(entry)) {
-                    chainIntact = false;
-                    continue;
-                }
-                lastGood = { index: entry.index, hash: entry.hash };
-                if (entry.mac !== undefined) keyedEntries += 1;
+                entry = JSON.parse(line);
             } catch {
                 chainIntact = false;
+                continue;
             }
+            // Keyed lines are counted even after the chain breaks (deleted or damaged leading lines
+            // must not make a keyed ledger look unkeyed).
+            if (entry?.mac !== undefined) keyedEntries += 1;
+            if (!chainIntact) continue;
+            const expectedIndex = (lastGood?.index || 0) + 1;
+            const expectedPrev = lastGood?.hash || GENESIS_HASH;
+            if (entry.index !== expectedIndex || entry.prevHash !== expectedPrev || entry.hash !== computeAuditEntryHash(entry)) {
+                chainIntact = false;
+                continue;
+            }
+            lastGood = { index: entry.index, hash: entry.hash };
         }
     }
     return { verification, anchor, lastGood, lines, keyedEntries };
@@ -595,39 +599,54 @@ export function rotateAuditLedger({
             throw err;
         }
 
-        const archivedLog = `${archiveBase}`;
-        const archiveSha256 = fs.existsSync(archivedLog)
-            ? crypto.createHash("sha256").update(fs.readFileSync(archivedLog)).digest("hex")
-            : "";
-        const entry = appendEntryUnlocked({
-            filePath,
-            key,
-            eventType: "AUDIT_LEDGER_ROTATED",
-            target: path.basename(archiveBase),
-            result: "ALLOW",
-            actor: {},
-            details: {
-                reason: String(reason || "").slice(0, 200),
-                archive: path.basename(archiveBase),
-                archiveSha256,
-                archivedFiles: moved.map(([, target]) => path.basename(target)),
-                previousEntries: before.lines,
-                previousLastGood: before.lastGood,
-                previousAnchor: before.anchor,
-                previousVerified: before.verification.ok === true,
-                previousMacChecked: before.verification.macVerified === true,
-                previousVerifyError: before.verification.ok ? "" : String(before.verification.error || "").slice(0, 300),
-                previousKeyed: before.keyedEntries > 0,
-                keyed: Boolean(key),
-            },
-            now,
-        });
+        // From here on, a failure puts the old files back so the ledger is never left without a successor.
+        const rollback = () => {
+            for (const part of parts) {
+                try { fs.rmSync(part, { force: true }); } catch {}
+            }
+            for (const [original, target] of [...moved].reverse()) {
+                try { fs.renameSync(target, original); } catch {}
+            }
+        };
+        let entry;
+        try {
+            const archivedLog = `${archiveBase}`;
+            const archiveSha256 = fs.existsSync(archivedLog)
+                ? crypto.createHash("sha256").update(fs.readFileSync(archivedLog)).digest("hex")
+                : "";
+            entry = appendEntryUnlocked({
+                filePath,
+                key,
+                eventType: "AUDIT_LEDGER_ROTATED",
+                target: path.basename(archiveBase),
+                result: "ALLOW",
+                actor: {},
+                details: {
+                    reason: String(reason || "").slice(0, 200),
+                    archive: path.basename(archiveBase),
+                    archiveSha256,
+                    archivedFiles: moved.map(([, target]) => path.basename(target)),
+                    previousEntries: before.lines,
+                    previousLastGood: before.lastGood,
+                    previousAnchor: before.anchor,
+                    previousVerified: before.verification.ok === true,
+                    previousMacChecked: before.verification.macVerified === true,
+                    previousVerifyError: before.verification.ok ? "" : String(before.verification.error || "").slice(0, 300),
+                    previousKeyed: before.keyedEntries > 0,
+                    keyed: Boolean(key),
+                },
+                now,
+            });
 
-        const after = verifyLedgerUnlocked({ filePath, key, mustBeKeyed: false });
-        if (!after.ok) {
-            const error = new Error(`The new audit ledger did not verify after rotation: ${after.error}`);
-            error.code = "ERR_AUDIT_ROTATE_FAILED";
-            throw error;
+            const after = verifyLedgerUnlocked({ filePath, key, mustBeKeyed: false });
+            if (!after.ok) {
+                const error = new Error(`The new audit ledger did not verify after rotation: ${after.error}`);
+                error.code = "ERR_AUDIT_ROTATE_FAILED";
+                throw error;
+            }
+        } catch (err) {
+            rollback();
+            throw err;
         }
         return {
             rotated: true,

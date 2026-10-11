@@ -484,8 +484,19 @@ test("audit verify and tail commands inspect workspace audit ledger", async () =
         assert.ok(fs.readFileSync(logFile).equals(before));
         process.exitCode = exitBefore;
 
+        // --yes needs a human session: not a pipe, not an agent environment, not an agent ancestor.
+        const person = { input: { isTTY: true }, env: {}, ancestor: { isAgent: false } };
+        for (const humanSession of [
+            { ...person, input: { isTTY: false } },
+            { ...person, env: { CURSOR_PROJECT_DIR: "fixture" } },
+            { ...person, ancestor: { isAgent: true, processName: "agent" } },
+        ]) {
+            await assert.rejects(main(["audit", "rotate", "--yes"], { root: tempDir, humanSession }), /Access Denied/);
+            assert.ok(fs.readFileSync(logFile).equals(before), "a refused rotation moves nothing");
+        }
+
         stdoutOutput = "";
-        await main(["audit", "rotate", "--yes", "--reason", "cli test"], { root: tempDir });
+        await main(["audit", "rotate", "--yes", "--reason", "cli test"], { root: tempDir, humanSession: person });
         assert.match(stdoutOutput, /Archive\s+:/);
         const archives = fs.readdirSync(path.join(tempDir, ".hetzer")).filter((name) => /^audit\.log\.\d{8}T\d{6}Z$/.test(name));
         assert.equal(archives.length, 1);

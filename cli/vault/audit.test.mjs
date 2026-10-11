@@ -632,3 +632,42 @@ test("events from concurrent writers land in exactly one of the archive and the 
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });
+
+test("rotate still sees a keyed ledger as keyed after its leading lines were removed or damaged", () => {
+    for (const damage of [
+        (logFile) => writeEntries(logFile, readEntries(logFile).slice(1)),
+        (logFile) => fs.writeFileSync(logFile, `{broken\n${fs.readFileSync(logFile, "utf8").split("\n").slice(1).join("\n")}`),
+    ]) {
+        withTempLedger((logFile) => {
+            writeLedger(logFile, 4, KEY);
+            damage(logFile);
+            const before = snapshotBytes(logFile);
+            assert.throws(() => rotateAuditLedger({ logFile, macKey: false }), (error) => error.code === "ERR_AUDIT_ROTATE_UNKEYED");
+            assert.deepEqual(snapshotBytes(logFile), before, "nothing was moved");
+            assert.equal(archiveFiles(logFile).length, 0);
+        });
+    }
+});
+
+test("a failure after the files were moved puts the old ledger back", () => {
+    withTempLedger((logFile) => {
+        writeLedger(logFile, 3, false);
+        const before = snapshotBytes(logFile);
+        const failing = { toString() { throw new Error("synthetic failure"); } };
+        assert.throws(() => rotateAuditLedger({ logFile, macKey: false, reason: failing }), /synthetic failure/);
+        assert.deepEqual(snapshotBytes(logFile), before, "the old log, anchor and sentinel are back unchanged");
+        assert.equal(archiveFiles(logFile).length, 0);
+        assert.equal(verifyAuditLedger({ logFile, macKey: false }).ok, true);
+    });
+});
+
+test("refusal messages point to a person-run recovery and do not carry the --yes flag", () => {
+    withTempLedger((logFile) => {
+        writeLedger(logFile, 2, false);
+        fs.appendFileSync(logFile, "{partial-garbage\n");
+        assert.throws(
+            () => recordAuditEvent({ eventType: "AFTER", logFile, macKey: false }),
+            (error) => /hetzer audit rotate/.test(error.message) && /interactive terminal/.test(error.message) && !error.message.includes("--yes"),
+        );
+    });
+});

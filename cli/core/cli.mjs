@@ -783,12 +783,16 @@ export async function main(argv = process.argv.slice(2), options = {}) {
                 process.stdout.write(rule);
                 process.stdout.write(`  Current ledger: ${current.ok ? "verifies" : `does not verify (${current.error})`}\n`);
                 process.stdout.write("  Rotation moves the log, its head anchor and its sentinel to a timestamped archive and\n");
-                process.stdout.write("  starts a new ledger whose first entry records the old head. Re-run with --yes to do it.\n");
+                process.stdout.write("  starts a new ledger whose first entry records the old head. Doing it needs --yes in an\n");
+                process.stdout.write("  interactive terminal started by a person.\n");
                 process.stdout.write(rule);
                 process.exitCode = 1;
                 return;
             }
-            const result = rotateAuditLedger({ root, reason, allowUnkeyed: args.includes("--allow-unkeyed") });
+            // A refused ledger is what --strict stops on, so clearing it is not left to an agent session.
+            // The check is the same heuristic as the other human-only commands, not a guarantee.
+            assertInteractiveHumanSession({ operation: "'hetzer audit rotate --yes'", ...(options.humanSession || {}) });
+            const result =rotateAuditLedger({ root, reason, allowUnkeyed: args.includes("--allow-unkeyed") });
             process.stdout.write(rule);
             process.stdout.write("  HETZER - AUDIT LEDGER ROTATION\n");
             process.stdout.write(rule);
