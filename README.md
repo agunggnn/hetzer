@@ -377,7 +377,7 @@ All Hetzer commands are executed via the `hetzer` CLI:
 | `hetzer creds status <request-id>` | Reports only `pending`, `approved`, or `expired` |
 | `hetzer creds isolate-key` | Moves master key outside workspace to `~/.hetzer/grimoire.key` (mode 0600) |
 | `hetzer canary [setup]` | Deploys decoy canary honey-tokens to catch prompt injection & scraping |
-| `hetzer audit [verify\|tail [n]]` | Verifies cryptographic SHA-256 hash-chain or inspects tamper-evident audit ledger |
+| `hetzer audit [verify [--require-mac]\|tail [n]\|rotate --yes]` | Verifies the SHA-256 hash-chain (and MACs), inspects the tamper-evident audit ledger, or archives it and starts a new one |
 | `hetzer exec [--allow <ids>] [--policy <file>] [--sandbox [image]] [--sandbox-mount <dir>] [--host] [--strict] [--canary] [--timeout <t>] -- <c>` | Runs with broker-mediated credentials, transient container sandbox, stream redaction, and canary tripwire |
 | `hetzer broker --policy <file> -- <c>` | Runs an HTTP client using short-lived capability instead of real credentials |
 | `hetzer protect` | Arms workspace with credential-safety guidance, Git pre-commit hook, and .env protection |

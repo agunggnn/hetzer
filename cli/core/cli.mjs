@@ -20,7 +20,7 @@ import { approveCredentialRequest, createCredentialRequest, getCredentialRequest
 import { isolateMasterKey, resolveMasterKey } from "../vault/hetzer-vault.mjs";
 import { autoIngestPlaintextEnv, migrateEnvCredentials } from "../vault/migrate-env.mjs";
 import { setupCanaryTrap } from "../vault/canary.mjs";
-import { readAuditEvents, verifyAuditLedger } from "../vault/audit.mjs";
+import { readAuditEvents, rotateAuditLedger, verifyAuditLedger } from "../vault/audit.mjs";
 import { redactAndVault, scanText, restoreSecrets } from "../vault/sniffer.mjs";
 import { getHetzerAsciiBanner, printHetzerBanner } from "./banner.mjs";
 import { runDoctor } from "./doctor.mjs";
@@ -512,7 +512,8 @@ Commands:
   validate [module]         Validate module integrity, security, and compose recipe
   creds [list|request|approve|status|reveal|set] Manage encrypted secrets in Grimoire Vault (AES-256-GCM)
   canary [setup]            Deploy decoy canary honey-token tripwire to catch prompt injections
-  audit [verify [--require-mac]|tail [n]]   Verify the hash-chain (and MACs) or inspect the audit ledger
+  audit [verify [--require-mac]|tail [n]|rotate [--yes] [--reason <text>] [--allow-unkeyed]]
+                              Verify the hash-chain (and MACs), inspect the ledger, or archive it and start a new one
   exec [--allow <ids>] [--policy <file>] [--sandbox [image]] [--sandbox-mount <dir>] [--host] [--strict] [--canary] [--timeout <t>] -- <c>
                               Run with mediated credentials; raw injection requires an audited opt-out
   broker --policy <file> -- <command>   Run an HTTP client using a short-lived capability instead of the real credential
@@ -771,7 +772,43 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             process.stdout.write("================================================================================\n");
             return;
         }
-        throw new Error(`Unknown audit subcommand: '${sub}'. Use 'verify [--require-mac]' or 'tail [count]'.`);
+        if (sub === "rotate") {
+            const reasonIndex = args.indexOf("--reason");
+            const reason = reasonIndex >= 0 ? String(args[reasonIndex + 1] || "") : "";
+            const rule = "================================================================================\n";
+            if (!args.includes("--yes")) {
+                const current = verifyAuditLedger({ root });
+                process.stdout.write(rule);
+                process.stdout.write("  HETZER - AUDIT LEDGER ROTATION (PREVIEW, NOTHING CHANGED)\n");
+                process.stdout.write(rule);
+                process.stdout.write(`  Current ledger: ${current.ok ? "verifies" : `does not verify (${current.error})`}\n`);
+                process.stdout.write("  Rotation moves the log, its head anchor and its sentinel to a timestamped archive and\n");
+                process.stdout.write("  starts a new ledger whose first entry records the old head. Re-run with --yes to do it.\n");
+                process.stdout.write(rule);
+                process.exitCode = 1;
+                return;
+            }
+            const result = rotateAuditLedger({ root, reason, allowUnkeyed: args.includes("--allow-unkeyed") });
+            process.stdout.write(rule);
+            process.stdout.write("  HETZER - AUDIT LEDGER ROTATION\n");
+            process.stdout.write(rule);
+            if (!result.rotated) {
+                process.stdout.write(`  ${result.message}\n`);
+            } else {
+                process.stdout.write(`  Archive      : ${result.archive}\n`);
+                process.stdout.write(`  Old ledger   : ${result.previous.entries} entries, ${result.previous.verified ? "verified" : `did not verify (${result.previous.error})`}\n`);
+                if (result.previous.lastGood) {
+                    process.stdout.write(`  Old head hash: ${result.previous.lastGood.hash} (entry #${result.previous.lastGood.index})\n`);
+                }
+                process.stdout.write(`  New ledger   : ${result.keyed ? "keyed" : "unkeyed"}, entry #1 records the rotation\n`);
+                if (result.previous.keyed && !result.keyed) {
+                    process.stdout.write("  Warning      : the old ledger was keyed and the new one is not (--allow-unkeyed)\n");
+                }
+            }
+            process.stdout.write(rule);
+            return;
+        }
+        throw new Error(`Unknown audit subcommand: '${sub}'. Use 'verify [--require-mac]', 'tail [count]' or 'rotate'.`);
     }
 
     const { envFile, values } = projectEnvironment(root);

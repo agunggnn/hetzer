@@ -473,6 +473,26 @@ test("audit verify and tail commands inspect workspace audit ledger", async () =
         await main(["audit", "tail", "5"], { root: tempDir });
         assert.match(stdoutOutput, /TEST_CLI_EVENT/);
         assert.match(stdoutOutput, /unit-test/);
+
+        // Rotation is a preview without --yes, and archives the ledger with it.
+        const logFile = path.join(tempDir, ".hetzer", "audit.log");
+        const before = fs.readFileSync(logFile);
+        stdoutOutput = "";
+        const exitBefore = process.exitCode;
+        await main(["audit", "rotate"], { root: tempDir });
+        assert.match(stdoutOutput, /PREVIEW, NOTHING CHANGED/);
+        assert.ok(fs.readFileSync(logFile).equals(before));
+        process.exitCode = exitBefore;
+
+        stdoutOutput = "";
+        await main(["audit", "rotate", "--yes", "--reason", "cli test"], { root: tempDir });
+        assert.match(stdoutOutput, /Archive\s+:/);
+        const archives = fs.readdirSync(path.join(tempDir, ".hetzer")).filter((name) => /^audit\.log\.\d{8}T\d{6}Z$/.test(name));
+        assert.equal(archives.length, 1);
+        assert.ok(fs.readFileSync(path.join(tempDir, ".hetzer", archives[0])).equals(before));
+        stdoutOutput = "";
+        await main(["audit", "verify"], { root: tempDir });
+        assert.match(stdoutOutput, /Total Events\s+:\s+1/);
     } finally {
         process.stdout.write = originalStdout;
         fs.rmSync(tempDir, { recursive: true, force: true });

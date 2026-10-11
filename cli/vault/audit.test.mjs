@@ -14,6 +14,7 @@ import {
     getAuditLogPath,
     readAuditEvents,
     recordAuditEvent,
+    rotateAuditLedger,
     verifyAuditLedger,
 } from "./audit.mjs";
 
@@ -453,4 +454,181 @@ test("a writer refuses to extend a ledger whose entries were removed behind its 
         assert.equal(check.ok, true);
         assert.equal(check.count, 1);
     });
+});
+
+function archiveFiles(logFile) {
+    const dir = path.dirname(logFile);
+    return fs.readdirSync(dir)
+        .filter((name) => name.startsWith("audit.log.") && !name.endsWith(".head") && !name.endsWith(".state") && !name.endsWith(".lock") && !name.endsWith(".moved"))
+        .map((name) => path.join(dir, name));
+}
+
+function snapshotBytes(logFile) {
+    return Object.fromEntries(["", ".head", ".state"].filter((suffix) => fs.existsSync(logFile + suffix)).map((suffix) => [suffix, fs.readFileSync(logFile + suffix)]));
+}
+
+test("rotate recovers each refusal state and records the old ledger in the new one", () => {
+    const states = [
+        {
+            name: "damaged tail",
+            prepare: (logFile) => { writeLedger(logFile, 3, false); fs.appendFileSync(logFile, "{partial-garbage\n"); },
+            code: "ERR_AUDIT_LEDGER_CORRUPT", macKey: false, options: {},
+        },
+        {
+            name: "different key",
+            prepare: (logFile) => writeLedger(logFile, 3, KEY),
+            code: "ERR_AUDIT_KEY_MISMATCH", macKey: OTHER_KEY, options: {},
+        },
+        {
+            name: "missing key",
+            prepare: (logFile) => writeLedger(logFile, 3, KEY),
+            code: "ERR_AUDIT_KEY_REQUIRED", macKey: false, options: { allowUnkeyed: true }, verified: true,
+        },
+        {
+            name: "entries removed behind the anchor",
+            prepare: (logFile) => { writeLedger(logFile, 4, false); writeEntries(logFile, readEntries(logFile).slice(0, 2)); },
+            code: "ERR_AUDIT_LEDGER_TRUNCATED", macKey: false, options: {},
+        },
+    ];
+    for (const state of states) {
+        withTempLedger((logFile) => {
+            state.prepare(logFile);
+            assert.throws(() => recordAuditEvent({ eventType: "BLOCKED", logFile, macKey: state.macKey }), (error) => error.code === state.code, state.name);
+            const original = snapshotBytes(logFile);
+
+            const result = rotateAuditLedger({ logFile, macKey: state.macKey, reason: `recover ${state.name}`, ...state.options });
+            assert.equal(result.rotated, true, state.name);
+            const expectVerified = state.verified === true;
+            assert.equal(result.previous.verified, expectVerified, `${state.name}: the old ledger's verification outcome is recorded`);
+            assert.equal(result.previous.macChecked, false, `${state.name}: no MAC could be checked here`);
+
+            // The archive is the old files, byte for byte.
+            const archived = archiveFiles(logFile);
+            assert.equal(archived.length, 1, state.name);
+            for (const [suffix, bytes] of Object.entries(original)) {
+                assert.ok(fs.readFileSync(archived[0] + suffix).equals(bytes), `${state.name}: ${suffix || "log"} archived unchanged`);
+            }
+
+            // The new ledger starts at genesis with the rotation entry and accepts writers again.
+            const entries = readEntries(logFile);
+            assert.equal(entries.length, 1);
+            assert.equal(entries[0].index, 1);
+            assert.equal(entries[0].prevHash, GENESIS_HASH);
+            assert.equal(entries[0].eventType, "AUDIT_LEDGER_ROTATED");
+            assert.equal(entries[0].details.reason, `recover ${state.name}`);
+            assert.equal(entries[0].details.previousVerified, expectVerified);
+            assert.equal(entries[0].details.previousMacChecked, false);
+            assert.equal(entries[0].details.archive, path.basename(archived[0]));
+            assert.equal(entries[0].details.archiveSha256, crypto.createHash("sha256").update(original[""]).digest("hex"));
+            assert.ok(!JSON.stringify(entries[0]).includes(path.dirname(logFile)), "no absolute path in the entry");
+            recordAuditEvent({ eventType: "AFTER", logFile, macKey: state.macKey });
+            const check = verifyAuditLedger({ logFile, macKey: state.macKey });
+            assert.equal(check.ok, true, `${state.name}: ${check.error}`);
+            assert.equal(check.count, 2);
+        });
+    }
+});
+
+test("rotating a healthy keyed ledger carries the old head forward and keeps the archive verifiable", () => {
+    withTempLedger((logFile) => {
+        writeLedger(logFile, 3, KEY);
+        const oldHead = readEntries(logFile).at(-1);
+        const result = rotateAuditLedger({ logFile, macKey: KEY, now: new Date("2026-10-11T10:15:30.123Z") });
+        assert.equal(result.previous.verified, true);
+        assert.equal(path.basename(result.archive), "audit.log.20261011T101530Z");
+        assert.deepEqual(result.previous.lastGood, { index: 3, hash: oldHead.hash });
+
+        const [first] = readEntries(logFile);
+        assert.deepEqual(first.details.previousLastGood, { index: 3, hash: oldHead.hash });
+        assert.deepEqual(first.details.previousAnchor, { lastIndex: 3, lastHash: oldHead.hash });
+        assert.equal(first.details.previousKeyed, true);
+        assert.equal(first.details.keyed, true);
+        assert.ok(first.mac, "the new ledger is keyed");
+
+        assert.equal(verifyAuditLedger({ logFile, macKey: KEY }).ok, true);
+        const archived = verifyAuditLedger({ logFile: result.archive, macKey: KEY });
+        assert.equal(archived.ok, true, archived.error);
+        assert.equal(archived.count, 3);
+    });
+});
+
+test("rotate refuses to turn a keyed ledger into an unkeyed one unless asked to", () => {
+    withTempLedger((logFile) => {
+        writeLedger(logFile, 2, KEY);
+        const before = snapshotBytes(logFile);
+        assert.throws(() => rotateAuditLedger({ logFile, macKey: false }), (error) => error.code === "ERR_AUDIT_ROTATE_UNKEYED");
+        assert.deepEqual(snapshotBytes(logFile), before, "nothing was moved");
+        assert.equal(archiveFiles(logFile).length, 0);
+
+        const result = rotateAuditLedger({ logFile, macKey: false, allowUnkeyed: true });
+        assert.equal(result.keyed, false);
+        assert.equal(result.previous.keyed, true);
+        assert.equal(readEntries(logFile)[0].details.previousKeyed, true);
+        assert.equal(readEntries(logFile)[0].details.keyed, false);
+    });
+});
+
+test("rotate handles a partly moved ledger, nothing to rotate, and two rotations in the same instant", () => {
+    withTempLedger((logFile) => {
+        assert.deepEqual(rotateAuditLedger({ logFile, macKey: false }), { rotated: false, message: "There is no audit ledger to rotate." });
+        assert.equal(fs.existsSync(logFile), false, "nothing is created when there is nothing to rotate");
+    });
+
+    withTempLedger((logFile) => {
+        writeLedger(logFile, 3, false);
+        fs.renameSync(`${logFile}.state`, `${logFile}.state.moved`);
+        const result = rotateAuditLedger({ logFile, macKey: false });
+        assert.equal(result.rotated, true);
+        assert.equal(result.archivedFiles.length, 2);
+        assert.equal(verifyAuditLedger({ logFile, macKey: false }).ok, true);
+    });
+
+    withTempLedger((logFile) => {
+        const now = new Date("2026-10-11T10:15:30.000Z");
+        writeLedger(logFile, 1, false);
+        const first = rotateAuditLedger({ logFile, macKey: false, now });
+        const second = rotateAuditLedger({ logFile, macKey: false, now });
+        assert.notEqual(first.archive, second.archive);
+        assert.equal(archiveFiles(logFile).length, 2);
+        assert.equal(verifyAuditLedger({ logFile, macKey: false }).ok, true);
+    });
+});
+
+test("events from concurrent writers land in exactly one of the archive and the new ledger across a rotation", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-audit-rotate-"));
+    try {
+        const logFile = path.join(tempDir, "audit.log");
+        const auditModule = pathToFileURL(path.join(import.meta.dirname, "audit.mjs")).href;
+        const writer = path.join(tempDir, "writer.mjs");
+        fs.writeFileSync(writer, [
+            `import { recordAuditEvent } from ${JSON.stringify(auditModule)};`,
+            "const [file, tag] = process.argv.slice(2);",
+            "for (let i = 0; i < 100; i += 1) recordAuditEvent({ eventType: \"CONCURRENT\", target: `${tag}-${i}`, logFile: file, macKey: false });",
+        ].join("\n"));
+        const { spawn } = await import("node:child_process");
+        const workers = 4;
+        const done = Array.from({ length: workers }, (_, k) => new Promise((resolve) => {
+            spawn(process.execPath, [writer, logFile, `w${k}`], { stdio: "ignore" }).on("close", resolve);
+        }));
+        const deadline = Date.now() + 20000;
+        while (Date.now() < deadline && !(fs.existsSync(logFile) && fs.readFileSync(logFile, "utf8").split("\n").length > 25)) {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        const result = rotateAuditLedger({ logFile, macKey: false, reason: "rotate under load" });
+        assert.equal(result.rotated, true);
+        assert.deepEqual(await Promise.all(done), Array(workers).fill(0));
+
+        const archived = readEntries(result.archive);
+        const current = readEntries(logFile);
+        assert.ok(archived.length > 0 && current.length > 1, "writers were running on both sides of the rotation");
+        assert.equal(current[0].eventType, "AUDIT_LEDGER_ROTATED");
+        assert.equal(current[0].details.previousEntries, archived.length, "the rotation entry saw the whole old ledger");
+        const targets = [...archived, ...current.slice(1)].map((entry) => entry.target);
+        assert.equal(targets.length, workers * 100, "no event lost");
+        assert.equal(new Set(targets).size, workers * 100, "no event recorded twice");
+        assert.equal(verifyAuditLedger({ logFile, macKey: false }).ok, true);
+        assert.equal(verifyAuditLedger({ logFile: result.archive, macKey: false }).ok, true);
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
 });

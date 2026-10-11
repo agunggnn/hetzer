@@ -16,7 +16,7 @@ import { performance } from "node:perf_hooks";
 import { PassThrough } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { computeAuditEntryHash, GENESIS_HASH, recordAuditEvent, verifyAuditLedger } from "../cli/vault/audit.mjs";
+import { computeAuditEntryHash, GENESIS_HASH, recordAuditEvent, rotateAuditLedger, verifyAuditLedger } from "../cli/vault/audit.mjs";
 import { createStreamSanitizer, executeProcess, prepareExecutionEnvironment, sanitizeStreamOutput } from "../cli/vault/exec.mjs";
 import { loadBrokerPolicy, openHttpCredentialBroker, startHttpCredentialBroker, validateBrokerPolicy } from "../cli/vault/http-broker.mjs";
 import { resolveSecretEnvironment } from "../cli/vault/secret-env.mjs";
@@ -1171,6 +1171,29 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
         checks.removedEntriesWriteRefused = removedCode === "ERR_AUDIT_LEDGER_TRUNCATED"
             && JSON.parse(fs.readFileSync(`${removed}.head`, "utf8")).lastIndex === 4;
 
+        // Rotation recovers the refusals above: the old files are kept, the old head is carried into entry #1,
+        // the new ledger verifies and accepts writers, and a keyed ledger is not silently rotated to unkeyed.
+        const damagedBytes = fs.readFileSync(damaged);
+        const lastGoodHash = lineOf(removed)[1].hash;
+        const rotatedDamaged = rotateAuditLedger({ logFile: damaged, macKey: false, reason: "evidence" });
+        recordAuditEvent({ eventType: "AFTER_ROTATE", logFile: damaged, macKey: false });
+        const rotatedFirst = lineOf(damaged)[0];
+        checks.rotateRecoversDamagedTail = rotatedDamaged.rotated === true
+            && verifyAuditLedger({ logFile: damaged, macKey: false }).ok === true
+            && fs.readFileSync(rotatedDamaged.archive).equals(damagedBytes)
+            && rotatedFirst.eventType === "AUDIT_LEDGER_ROTATED" && rotatedFirst.prevHash === GENESIS_HASH
+            && rotatedFirst.details.previousVerified === false;
+        const rotatedRemoved = rotateAuditLedger({ logFile: removed, macKey: false });
+        checks.rotateCarriesOldHead = rotatedRemoved.previous.lastGood.hash === lastGoodHash
+            && lineOf(removed)[0].details.previousAnchor.lastIndex === 4
+            && lineOf(removed)[0].details.previousLastGood.hash === lastGoodHash;
+        let unkeyedRotateCode = "";
+        try { rotateAuditLedger({ logFile: keyed, macKey: false }); } catch (error) { unkeyedRotateCode = error.code; }
+        checks.rotateRefusesUnkeyedDowngrade = unkeyedRotateCode === "ERR_AUDIT_ROTATE_UNKEYED" && fs.existsSync(keyed);
+        // Boundary: nothing in the new ledger enforces that the archive still exists.
+        for (const suffix of ["", ".head", ".state"]) fs.rmSync(`${rotatedDamaged.archive}${suffix}`, { force: true });
+        checks.deletedArchiveNotDetected = verifyAuditLedger({ logFile: damaged, macKey: false }).ok === true;
+
         // Concurrent writer processes: one valid chain, no lost events.
         const concurrent = path.join(dir, "concurrent.log");
         const writerFile = path.join(dir, "writer.mjs");
@@ -1224,23 +1247,24 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
     const required = [
         "keyedVerifies", "wrongKeyRejected", "middleEditRejected", "actorEditRejected", "truncationRejected",
         "macDowngradeRejected", "unkeyedRewriteRejectedWhenKeyRequired", "legacyLedgerVerifies", "keylessWriterRefused",
-        "damagedTailRefused", "removedEntriesWriteRefused", "concurrentWritersConsistent", "vaultEventsInLedger", "strictFailsClosed",
+        "damagedTailRefused", "removedEntriesWriteRefused", "rotateRecoversDamagedTail", "rotateCarriesOldHead", "rotateRefusesUnkeyedDowngrade",
+        "concurrentWritersConsistent", "vaultEventsInLedger", "strictFailsClosed",
     ];
-    // unkeyedRewritePassesByDefault and keyHolderCanForge document known limits. They are reported in
+    // unkeyedRewritePassesByDefault, keyHolderCanForge and deletedArchiveNotDetected document known limits. They are reported in
     // "observed" and "boundary" but do not gate the verdict, so closing a limit later is not a regression.
     const pass = required.every((name) => checks[name] === true);
 
     recordTest({
         id: "VERIFY-SEC-014",
         name: "Unified Audit Ledger Integrity (Gate G2)",
-        target: "cli/vault/audit.mjs -> recordAuditEvent(), verifyAuditLedger(); Grimoire.recordAudit(); executeProcess() under --strict",
+        target: "cli/vault/audit.mjs -> recordAuditEvent(), verifyAuditLedger(), rotateAuditLedger(); Grimoire.recordAudit(); executeProcess() under --strict",
         threat: "Audit entries are edited, truncated or rewritten, vault events are missing from the tamper-evident stream, events are lost under concurrent writers, or a run proceeds without its start record under --strict",
-        input: "Synthetic ledgers written with and without a key, then edited, truncated, rewritten, downgraded and extended by key-less writers; four concurrent writer processes; a vault with a workspace layout; an unwritable audit path",
-        method: "Write and tamper ledgers on disk and run the verifier with and without the key; run concurrent writer processes; mirror a vault event; run executeProcess under --strict against an unwritable log path",
-        expected: "Edits, actor changes, truncation, MAC downgrade, wrong keys and key-less extension are rejected; legacy ledgers verify; concurrent writers lose nothing; vault events are keyed and verifiable; --strict refuses to start without its start record",
+        input: "Synthetic ledgers written with and without a key, then edited, truncated, rewritten, downgraded and extended by key-less writers, then rotated; four concurrent writer processes; a vault with a workspace layout; an unwritable audit path",
+        method: "Write and tamper ledgers on disk and run the verifier with and without the key; rotate refused ledgers and check the archive and the first entry of the new ledger; run concurrent writer processes; mirror a vault event; run executeProcess under --strict against an unwritable log path",
+        expected: "Edits, actor changes, truncation, MAC downgrade, wrong keys and key-less extension are rejected; legacy ledgers verify; rotation keeps the old files, carries the old head into the new ledger and does not turn a keyed ledger into an unkeyed one; concurrent writers lose nothing; vault events are keyed and verifiable; --strict refuses to start without its start record",
         observed: Object.entries(checks).map(([name, value]) => `${name}: ${value}`).join(". ") + ".",
         pass,
-        boundary: "A consistent rewrite of the whole chain without any MAC passes default verification and is only rejected when a keyed ledger is required (requireMac or HETZER_AUDIT_REQUIRE_MAC=1). Anyone who can read the master key can forge a valid keyed ledger. Tail truncation is caught only by the head anchor file, which the same attacker can rewrite. The SQLite audit table is a frozen mirror, not a second source of truth. Failures after the child process has started cannot undo it.",
+        boundary: "A consistent rewrite of the whole chain without any MAC passes default verification and is only rejected when a keyed ledger is required (requireMac or HETZER_AUDIT_REQUIRE_MAC=1). Anyone who can read the master key can forge a valid keyed ledger. Tail truncation is caught only by the head anchor file, which the same attacker can rewrite. Rotation is an operator action that anyone with shell access can also perform by moving files; it makes the recovery logged and carries the old head forward, but the new ledger does not enforce that the archive still exists, so deleting the archive together with the rotation entry is not detected. The SQLite audit table is a frozen mirror, not a second source of truth. Failures after the child process has started cannot undo it.",
     });
 }
 
