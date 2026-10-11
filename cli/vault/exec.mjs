@@ -940,8 +940,16 @@ export async function executeProcess(options, {
             },
             root: effectiveOptions.root,
         });
-    } catch {
-        // Fail soft
+    } catch (error) {
+        // The start event is the record that this run happened. Under --strict a run that cannot be
+        // recorded does not start; otherwise the gap is reported instead of staying silent.
+        if (effectiveOptions.strict) {
+            const failure = new Error(`Audit event could not be recorded and --strict requires it: ${error.message}`);
+            failure.code = "ERR_AUDIT_WRITE_FAILED";
+            throw failure;
+        }
+        process.stderr.write(`[hetzer] warning: audit event not recorded (${error.code || error.message})
+`);
     }
 
     if (effectiveOptions.sandbox) {

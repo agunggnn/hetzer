@@ -817,3 +817,39 @@ test("parseArguments parses --policy-hash and executeProcess records policy.load
     }
 });
 
+test("executeProcess under --strict refuses to start when the audit event cannot be recorded", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-exec-audit-fail-"));
+    const envFile = path.join(tempDir, ".env");
+    fs.writeFileSync(envFile, "FOO=bar\n");
+    const blocker = path.join(tempDir, "blocker");
+    fs.writeFileSync(blocker, "not a directory");
+    const marker = path.join(tempDir, "ran.txt");
+    const script = path.join(tempDir, "touch.js");
+    fs.writeFileSync(script, `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran");`);
+    const previous = process.env.HETZER_AUDIT_LOG_PATH;
+    process.env.HETZER_AUDIT_LOG_PATH = path.join(blocker, "sub", "audit.log");
+
+    try {
+        await assert.rejects(
+            () => executeProcess({ root: tempDir, envFile, strict: true, allowNames: [], command: process.execPath, commandArgs: [script] }),
+            (error) => error.code === "ERR_AUDIT_WRITE_FAILED",
+        );
+        assert.equal(fs.existsSync(marker), false);
+
+        let warning = "";
+        const originalWrite = process.stderr.write.bind(process.stderr);
+        process.stderr.write = (chunk, ...rest) => { warning += chunk; return true; };
+        try {
+            const result = await executeProcess({ root: tempDir, envFile, command: process.execPath, commandArgs: [script] });
+            assert.equal(result.status, 0);
+        } finally {
+            process.stderr.write = originalWrite;
+        }
+        assert.equal(fs.existsSync(marker), true);
+        assert.match(warning, /audit event not recorded/);
+    } finally {
+        if (previous === undefined) delete process.env.HETZER_AUDIT_LOG_PATH;
+        else process.env.HETZER_AUDIT_LOG_PATH = previous;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});

@@ -6,6 +6,7 @@
  */
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -13,16 +14,17 @@ import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { PassThrough } from "node:stream";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { createStreamSanitizer, prepareExecutionEnvironment, sanitizeStreamOutput } from "../cli/vault/exec.mjs";
+import { computeAuditEntryHash, GENESIS_HASH, recordAuditEvent, verifyAuditLedger } from "../cli/vault/audit.mjs";
+import { createStreamSanitizer, executeProcess, prepareExecutionEnvironment, sanitizeStreamOutput } from "../cli/vault/exec.mjs";
 import { loadBrokerPolicy, openHttpCredentialBroker, startHttpCredentialBroker, validateBrokerPolicy } from "../cli/vault/http-broker.mjs";
 import { resolveSecretEnvironment } from "../cli/vault/secret-env.mjs";
 import { detectAgentAncestor } from "../cli/vault/creds.mjs";
 import { scanText, redactAndVault } from "../cli/vault/sniffer.mjs";
 import { scanAddedLines } from "../cli/core/git-hook.mjs";
 import { isCanaryCredential, triggerCanaryAlert } from "../cli/vault/canary.mjs";
-import { Grimoire } from "../cli/vault/hetzer-vault.mjs";
+import { computeAuditMac, Grimoire } from "../cli/vault/hetzer-vault.mjs";
 import { createToolCatalog } from "../cli/mcp/catalog.mjs";
 import { DEFAULT_SANDBOX_IMAGE, executeSandboxedProcess, resolveSandboxMount } from "../cli/vault/sandbox.mjs";
 import {
@@ -1054,6 +1056,182 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
         observed: `unsafeMountsRefused: ${unsafeMountsRefused}. sensitivePathsHidden: ${sensitivePathsHidden}. projectFilesNotHidden: ${projectFilesNotHidden}. argvHasNoSecretMaterial: ${argvHasNoSecretMaterial}. hostVariablesNotForwarded: ${hostVariablesNotForwarded}. engineEnvHasNoMasterKey: ${engineEnvHasNoMasterKey}. imagePinned: ${imagePinned}. networkStated: ${networkStated}.`,
         pass,
         boundary: "Builder-level evidence: it does not start a container. Container behaviour of the file and directory masks was checked separately on Docker Desktop for Windows. Outbound network access is still open by default, the broker still binds 0.0.0.0 in sandbox mode, `docker inspect` still shows container environment values, and files that appear after the container starts are not masked.",
+    });
+}
+
+// -----------------------------------------------------------------------------
+// Test 15: Unified Audit Ledger Integrity (Gate G2)
+// -----------------------------------------------------------------------------
+{
+    const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-verify-audit-")));
+    const key = "audit-evidence-key-0123456789abcdef0123456789";
+    const otherKey = "audit-evidence-other-0123456789abcdef01234567";
+    const checks = {};
+    const previousLogPath = process.env.HETZER_AUDIT_LOG_PATH;
+    const lineOf = (file) => fs.readFileSync(file, "utf8").trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    const store = (file, entries) => fs.writeFileSync(file, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+    const fill = (file, count, macKey) => {
+        for (let i = 0; i < count; i += 1) {
+            recordAuditEvent({ eventType: "EVIDENCE", target: `t${i}`, result: i === 2 ? "DENY" : "ALLOW", actor: { user: "alice" }, logFile: file, macKey });
+        }
+    };
+    const rewrite = (file, mutate, macKey) => {
+        let prevHash = GENESIS_HASH;
+        const entries = lineOf(file).map((entry, position) => {
+            mutate(entry, position + 1);
+            entry.prevHash = prevHash;
+            entry.hash = computeAuditEntryHash(entry);
+            if (macKey && entry.keep !== false) entry.mac = computeAuditMac(macKey, entry.hash);
+            else delete entry.mac;
+            prevHash = entry.hash;
+            return entry;
+        });
+        store(file, entries);
+        fs.writeFileSync(`${file}.head`, JSON.stringify({ lastIndex: entries.length, lastHash: prevHash }));
+    };
+
+    try {
+        // Keyed ledger: right key verifies, wrong key is rejected.
+        const keyed = path.join(dir, "keyed.log");
+        fill(keyed, 5, key);
+        checks.keyedVerifies = verifyAuditLedger({ logFile: keyed, macKey: key }).ok === true;
+        checks.wrongKeyRejected = verifyAuditLedger({ logFile: keyed, macKey: otherKey }).ok === false;
+
+        // Edits and truncation.
+        const edited = path.join(dir, "edited.log");
+        fill(edited, 5, key);
+        store(edited, lineOf(edited).map((entry) => (entry.index === 3 ? { ...entry, result: "ALLOW" } : entry)));
+        checks.middleEditRejected = verifyAuditLedger({ logFile: edited, macKey: key }).ok === false;
+
+        const actorEdit = path.join(dir, "actor.log");
+        fill(actorEdit, 3, false);
+        store(actorEdit, lineOf(actorEdit).map((entry) => (entry.index === 1 ? { ...entry, actor: { user: "mallory" } } : entry)));
+        checks.actorEditRejected = verifyAuditLedger({ logFile: actorEdit, macKey: false }).ok === false;
+
+        const truncated = path.join(dir, "truncated.log");
+        fill(truncated, 5, key);
+        store(truncated, lineOf(truncated).slice(0, 3));
+        checks.truncationRejected = verifyAuditLedger({ logFile: truncated, macKey: key }).ok === false;
+
+        // Unkeyed tail after keyed entries (downgrade) is visible from the file alone.
+        const downgraded = path.join(dir, "downgraded.log");
+        fill(downgraded, 5, key);
+        rewrite(downgraded, (entry, position) => {
+            if (position >= 3) { entry.result = "ALLOW"; entry.keep = false; }
+        }, key);
+        // The helper marks which entries stay unkeyed through a transient field; remove it so the entry hash is honest.
+        store(downgraded, lineOf(downgraded).map(({ keep, ...rest }) => rest));
+        checks.macDowngradeRejected = verifyAuditLedger({ logFile: downgraded, macKey: false }).ok === false;
+
+        // Whole-chain unkeyed rewrite: boundary. Default verification cannot see it; requireMac does.
+        const wholeRewrite = path.join(dir, "whole.log");
+        fill(wholeRewrite, 5, key);
+        rewrite(wholeRewrite, (entry) => { if (entry.result === "DENY") entry.result = "ALLOW"; }, null);
+        checks.unkeyedRewritePassesByDefault = verifyAuditLedger({ logFile: wholeRewrite, macKey: key, requireMac: false }).ok === true;
+        checks.unkeyedRewriteRejectedWhenKeyRequired = verifyAuditLedger({ logFile: wholeRewrite, macKey: key, requireMac: true }).ok === false;
+
+        // Boundary: someone holding the key can forge a consistent keyed ledger.
+        const forged = path.join(dir, "forged.log");
+        fill(forged, 5, key);
+        rewrite(forged, (entry) => { if (entry.result === "DENY") entry.result = "ALLOW"; }, key);
+        checks.keyHolderCanForge = verifyAuditLedger({ logFile: forged, macKey: key, requireMac: true }).ok === true;
+
+        // Legacy v1 ledger still verifies.
+        const legacy = path.join(dir, "legacy.log");
+        let prevHash = GENESIS_HASH;
+        const oldEntries = [1, 2, 3].map((index) => {
+            const entry = { index, timestamp: new Date().toISOString(), eventType: "OLD", target: "t", result: "ALLOW", actor: { user: "u" }, details: {}, prevHash, hash: "" };
+            entry.hash = computeAuditEntryHash(entry);
+            prevHash = entry.hash;
+            return entry;
+        });
+        store(legacy, oldEntries);
+        fs.writeFileSync(`${legacy}.head`, JSON.stringify({ lastIndex: 3, lastHash: prevHash }));
+        checks.legacyLedgerVerifies = verifyAuditLedger({ logFile: legacy, macKey: key }).ok === true;
+
+        // A writer without the key cannot extend a keyed chain.
+        let keylessCode = "";
+        try { recordAuditEvent({ eventType: "X", logFile: keyed, macKey: false }); } catch (error) { keylessCode = error.code; }
+        checks.keylessWriterRefused = keylessCode === "ERR_AUDIT_KEY_REQUIRED";
+
+        // Damaged tail is refused rather than restarting the chain.
+        const damaged = path.join(dir, "damaged.log");
+        fill(damaged, 3, false);
+        fs.appendFileSync(damaged, "{partial\n");
+        let damagedCode = "";
+        try { recordAuditEvent({ eventType: "X", logFile: damaged, macKey: false }); } catch (error) { damagedCode = error.code; }
+        checks.damagedTailRefused = damagedCode === "ERR_AUDIT_LEDGER_CORRUPT";
+
+        // Concurrent writer processes: one valid chain, no lost events.
+        const concurrent = path.join(dir, "concurrent.log");
+        const writerFile = path.join(dir, "writer.mjs");
+        fs.writeFileSync(writerFile, [
+            `import { recordAuditEvent } from ${JSON.stringify(pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "cli", "vault", "audit.mjs")).href)};`,
+            "const [file, tag] = process.argv.slice(2);",
+            "for (let i = 0; i < 10; i += 1) recordAuditEvent({ eventType: \"CONCURRENT\", target: `${tag}-${i}`, logFile: file, macKey: false });",
+        ].join("\n"));
+        const driver = spawnSync(process.execPath, ["-e", `
+            const { spawn } = require("node:child_process");
+            const runs = Array.from({ length: 4 }, (_, k) => new Promise((resolve) => {
+                spawn(process.execPath, [${JSON.stringify(writerFile)}, ${JSON.stringify(concurrent)}, "w" + k], { stdio: "ignore" }).on("close", resolve);
+            }));
+            Promise.all(runs).then((codes) => process.exit(codes.every((code) => code === 0) ? 0 : 1));
+        `], { encoding: "utf8" });
+        const concurrentResult = verifyAuditLedger({ logFile: concurrent, macKey: false });
+        checks.concurrentWritersConsistent = driver.status === 0 && concurrentResult.ok === true && concurrentResult.count === 40;
+
+        // Vault events reach the same stream, keyed.
+        const workspace = path.join(dir, "workspace");
+        delete process.env.HETZER_AUDIT_LOG_PATH;
+        const vault = new Grimoire({ dbPath: path.join(workspace, "data", "hetzer-vault.db"), masterKey: key });
+        vault.recordAudit({ actor: "evidence", action: "vault.set-credential", credential_id: "evidence-cred", outcome: "allowed" });
+        vault.close();
+        const vaultLedger = path.join(workspace, ".hetzer", "audit.log");
+        const vaultCheck = verifyAuditLedger({ logFile: vaultLedger, macKey: key });
+        checks.vaultEventsInLedger = vaultCheck.ok === true && vaultCheck.macVerified === true
+            && lineOf(vaultLedger)[0]?.eventType === "VAULT_SET_CREDENTIAL";
+
+        // --strict stops before the child runs when the start event cannot be recorded.
+        const blocker = path.join(dir, "blocker");
+        fs.writeFileSync(blocker, "file");
+        const marker = path.join(dir, "ran.txt");
+        const script = path.join(dir, "touch.js");
+        fs.writeFileSync(script, `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran");`);
+        fs.writeFileSync(path.join(dir, ".env"), "PLAIN=value\n");
+        process.env.HETZER_AUDIT_LOG_PATH = path.join(blocker, "sub", "audit.log");
+        let strictCode = "";
+        try {
+            await executeProcess({ root: dir, envFile: path.join(dir, ".env"), strict: true, allowNames: [], command: process.execPath, commandArgs: [script] });
+        } catch (error) {
+            strictCode = error.code;
+        }
+        checks.strictFailsClosed = strictCode === "ERR_AUDIT_WRITE_FAILED" && !fs.existsSync(marker);
+    } finally {
+        if (previousLogPath === undefined) delete process.env.HETZER_AUDIT_LOG_PATH;
+        else process.env.HETZER_AUDIT_LOG_PATH = previousLogPath;
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+
+    const required = [
+        "keyedVerifies", "wrongKeyRejected", "middleEditRejected", "actorEditRejected", "truncationRejected",
+        "macDowngradeRejected", "unkeyedRewriteRejectedWhenKeyRequired", "legacyLedgerVerifies", "keylessWriterRefused",
+        "damagedTailRefused", "concurrentWritersConsistent", "vaultEventsInLedger", "strictFailsClosed",
+    ];
+    // These two describe limits that must stay true to the documented boundary.
+    const boundaryHolds = checks.unkeyedRewritePassesByDefault === true && checks.keyHolderCanForge === true;
+    const pass = required.every((name) => checks[name] === true) && boundaryHolds;
+
+    recordTest({
+        id: "VERIFY-SEC-014",
+        name: "Unified Audit Ledger Integrity (Gate G2)",
+        target: "cli/vault/audit.mjs -> recordAuditEvent(), verifyAuditLedger(); Grimoire.recordAudit(); executeProcess() under --strict",
+        threat: "Audit entries are edited, truncated or rewritten, vault events are missing from the tamper-evident stream, events are lost under concurrent writers, or a run proceeds without its start record under --strict",
+        input: "Synthetic ledgers written with and without a key, then edited, truncated, rewritten, downgraded and extended by key-less writers; four concurrent writer processes; a vault with a workspace layout; an unwritable audit path",
+        method: "Write and tamper ledgers on disk and run the verifier with and without the key; run concurrent writer processes; mirror a vault event; run executeProcess under --strict against an unwritable log path",
+        expected: "Edits, actor changes, truncation, MAC downgrade, wrong keys and key-less extension are rejected; legacy ledgers verify; concurrent writers lose nothing; vault events are keyed and verifiable; --strict refuses to start without its start record",
+        observed: Object.entries(checks).map(([name, value]) => `${name}: ${value}`).join(". ") + ".",
+        pass,
+        boundary: "A consistent rewrite of the whole chain without any MAC passes default verification and is only rejected when a keyed ledger is required (requireMac or HETZER_AUDIT_REQUIRE_MAC=1). Anyone who can read the master key can forge a valid keyed ledger. Tail truncation is caught only by the head anchor file, which the same attacker can rewrite. The SQLite audit table is a frozen mirror, not a second source of truth. Failures after the child process has started cannot undo it.",
     });
 }
 

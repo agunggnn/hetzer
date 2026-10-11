@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parseEnv } from "../core/env.mjs";
+import { recordAuditEvent } from "./audit.mjs";
 import { assertInteractiveHumanSession } from "./human-guard.mjs";
 
 export function secureFilePermissions(filePath, { run = spawnSync } = {}) {
@@ -38,6 +39,21 @@ const ALLOWED_ACTION_PATTERN = /^[a-z0-9]+(?:[.:_/-][a-z0-9]+)*$/;
 export const SCOPES = new Set(["header", "query", "env", "basic"]);
 export const REALMS = new Set(["core", "data", "memory", "social", "command", "frontier"]);
 export const ACCESS_ROLES = new Set(["reader", "operator", "admin"]);
+/**
+ * Where vault events are mirrored into the audit ledger: an explicit option, HETZER_AUDIT_LOG_PATH,
+ * or the workspace default when the database sits in <root>/data. Other layouts and in-memory
+ * vaults record to SQLite only.
+ */
+export function resolveVaultAuditLogFile({ auditLogFile, dbPath } = {}) {
+    if (auditLogFile === false) return null;
+    if (auditLogFile) return path.resolve(auditLogFile);
+    if (process.env.HETZER_AUDIT_LOG_PATH) return path.resolve(process.env.HETZER_AUDIT_LOG_PATH);
+    if (!dbPath || dbPath === ":memory:") return null;
+    const dataDir = path.dirname(path.resolve(dbPath));
+    if (path.basename(dataDir) !== "data") return null;
+    return path.join(path.dirname(dataDir), ".hetzer", "audit.log");
+}
+
 export const SECRET_REF_PATTERN = /^secretRef:([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 
 /**
@@ -247,6 +263,17 @@ export function verifyGrantSignature(masterKey, row) {
     }
 }
 
+export function computeAuditMac(masterKey, entryHash) {
+    // Writers hold the key in different forms (raw text from the environment, normalized inside the vault).
+    // normalizeMasterKey is idempotent, so every form maps to the same MAC key.
+    const normalizedKey = normalizeMasterKey(masterKey);
+    if (!normalizedKey) return "";
+    const subkey = crypto.createHmac("sha256", keyBuffer(normalizedKey))
+        .update("hetzer:audit-integrity:v1")
+        .digest();
+    return crypto.createHmac("sha256", subkey).update(String(entryHash)).digest("hex");
+}
+
 export function computeApprovalSignature(masterKey, { credentialId, policyHash, targetOrigin } = {}) {
     if (!masterKey) return "";
     const subkey = crypto.createHmac("sha256", keyBuffer(masterKey))
@@ -321,13 +348,14 @@ function ensureParent(file) {
 }
 
 export class Grimoire {
-    constructor({ dbPath, file, legacyFile, masterKey, root }) {
+    constructor({ dbPath, file, legacyFile, masterKey, root, auditLogFile }) {
         const rootDir = root || process.cwd();
         const envPath = resolveVaultPath(rootDir);
         const resolvedDb = dbPath || file || envPath || path.join(rootDir, "data", "hetzer-vault.db");
         this.dbPath = resolvedDb;
         this.legacyFile = legacyFile || (String(file || "").endsWith(".json") ? file : "");
         this.masterKey = normalizeMasterKey(masterKey);
+        this.auditLogFile = resolveVaultAuditLogFile({ auditLogFile, dbPath: resolvedDb });
         ensureParent(this.dbPath);
         this.db = new DatabaseSync(this.dbPath);
         this._initSchema();
@@ -954,6 +982,7 @@ export class Grimoire {
     }
 
     recordAudit(event) {
+        this._mirrorAuditToLedger(event);
         const metadata = event.metadata && typeof event.metadata === "object" ? event.metadata : {};
         this.db.prepare(`
             INSERT INTO vault_audit_events (
@@ -969,6 +998,33 @@ export class Grimoire {
             JSON.stringify(metadata).slice(0, 4000),
             new Date().toISOString(),
         );
+    }
+
+    /**
+     * Vault events also go to the hash-chained file ledger (the single audit stream). The SQLite
+     * table is kept as a mirror for existing readers. A ledger failure never blocks a vault
+     * operation; the last failure is kept on `auditLedgerError` for callers that need to know.
+     */
+    _mirrorAuditToLedger(event) {
+        if (!this.auditLogFile) return;
+        try {
+            const action = String(event.action || "unknown");
+            recordAuditEvent({
+                eventType: `VAULT_${action.replace(/^vault[.-_]/i, "").replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`,
+                target: String(event.credentialId || event.credential_id || event.targetId || event.target_id || ""),
+                result: String(event.outcome || "unknown"),
+                actor: { user: String(event.actor || "unknown").slice(0, 120) },
+                details: {
+                    reason: String(event.reason || "").slice(0, 500) || undefined,
+                    metadata: event.metadata && typeof event.metadata === "object" ? event.metadata : undefined,
+                },
+                logFile: this.auditLogFile,
+                macKey: this.masterKey || false,
+            });
+            this.auditLedgerError = null;
+        } catch (error) {
+            this.auditLedgerError = error;
+        }
     }
 
     listAudit(options = {}) {

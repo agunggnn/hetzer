@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
+import { readAuditEvents, verifyAuditLedger } from "./audit.mjs";
 import { Grimoire } from "./hetzer-vault.mjs";
 import { grantCredentialCommand, setCredential, signExistingGrantsCommand } from "./creds.mjs";
 
@@ -493,6 +494,59 @@ test("signExistingGrantsCommand requires a human session, a typed confirmation, 
             after.close();
         }
     } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("vault audit events are mirrored into the keyed file ledger and SQLite keeps its copy", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-vault-ledger-"));
+    const dbPath = path.join(root, "data", "hetzer-vault.db");
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    const previous = process.env.HETZER_AUDIT_LOG_PATH;
+    delete process.env.HETZER_AUDIT_LOG_PATH;
+
+    const vault = new Grimoire({ dbPath, masterKey });
+    try {
+        vault.recordAudit({ actor: "tester", action: "vault.set-credential", credential_id: "demo-token", outcome: "allowed", reason: "synthetic", metadata: { note: "n" } });
+        vault.recordAudit({ actor: "tester", action: "broker.policy.approve", credential_id: "demo-token", outcome: "allowed" });
+
+        const logFile = path.join(root, ".hetzer", "audit.log");
+        assert.equal(vault.auditLogFile, logFile);
+        const events = readAuditEvents({ logFile });
+        assert.deepEqual(events.map((event) => event.eventType), ["VAULT_SET_CREDENTIAL", "VAULT_BROKER_POLICY_APPROVE"]);
+        assert.equal(events[0].target, "demo-token");
+        assert.equal(events[0].result, "ALLOWED");
+        assert.equal(events[0].actor.user, "tester");
+        assert.ok(events.every((event) => typeof event.mac === "string"));
+
+        const check = verifyAuditLedger({ logFile, macKey: masterKey });
+        assert.equal(check.ok, true);
+        assert.equal(check.macVerified, true);
+        assert.equal(vault.listAudit().length, 2);
+    } finally {
+        vault.close();
+        if (previous !== undefined) process.env.HETZER_AUDIT_LOG_PATH = previous;
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("vault audit events stay in SQLite only for in-memory vaults and non-workspace layouts", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-vault-ledger-off-"));
+    const previous = process.env.HETZER_AUDIT_LOG_PATH;
+    delete process.env.HETZER_AUDIT_LOG_PATH;
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    const elsewhere = new Grimoire({ dbPath: path.join(root, "vault.db"), masterKey });
+    const memory = new Grimoire({ dbPath: ":memory:", masterKey });
+    try {
+        assert.equal(elsewhere.auditLogFile, null);
+        assert.equal(memory.auditLogFile, null);
+        elsewhere.recordAudit({ actor: "tester", action: "vault.x", outcome: "allowed" });
+        assert.equal(fs.existsSync(path.join(root, ".hetzer")), false);
+        assert.equal(elsewhere.listAudit().length, 1);
+    } finally {
+        elsewhere.close();
+        memory.close();
+        if (previous !== undefined) process.env.HETZER_AUDIT_LOG_PATH = previous;
         fs.rmSync(root, { recursive: true, force: true });
     }
 });

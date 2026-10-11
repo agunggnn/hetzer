@@ -248,7 +248,7 @@ Effort figures are planning estimates for one engineer familiar with the code, n
 
 **G2: Contract (about 1.5 to 2 weeks)**
 10. [ ] SDK `apiVersion` 1 with grant-checked execution and lease interfaces; public SDK does not expose `resolve()` (R-05 remains open for in-process callers); one `secretRef` grammar (`parseSecretRef`); one audit event schema; vault format version and format note.
-11. [ ] Consolidate audit into one stream with an optional keyed MAC or external anchor; fail closed in strict mode.
+11. [x] Audit consolidated into one stream: vault events mirrored into the file ledger, versioned entries covering the actor, optional keyed MAC with downgrade detection, key-less writers refused, damaged tails refused, concurrent writers safe, `hetzer exec --strict` fails closed on its start event (`VERIFY-SEC-014`). [ ] **Open:** an external anchor for the head and for a full-chain rewrite (today only `--require-mac` catches an unkeyed rewrite); dropping the SQLite audit table (item 12); strict handling in the broker, sandbox and credential-request writers.
 12. [ ] Remove the duplicate guard logic and the vault schema leftovers (schema v2 migration).
 13. [ ] Narrow SEC-23 and R-05 wording in `docs/audit-batch-5.md`, `AGENTS.md`, and `docs/system-logic-and-progress.md` (clarifying that `reveal()` blocks naive TTY/CLI dumps, while internal `resolve()` and direct SQLite reads operate under same-user trust; untrusted agents must run out-of-process in a sandbox).
 

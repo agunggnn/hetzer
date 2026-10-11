@@ -726,13 +726,14 @@ export async function main(argv = process.argv.slice(2), options = {}) {
     if (command === "audit") {
         const sub = args[0] || "tail";
         if (sub === "verify") {
-            const result = verifyAuditLedger({ root });
+            const result = verifyAuditLedger({ root, requireMac: args.includes("--require-mac") ? true : undefined });
             process.stdout.write("================================================================================\n");
             process.stdout.write("  HETZER - AUDIT LEDGER INTEGRITY VERIFICATION\n");
             process.stdout.write("================================================================================\n");
             if (result.ok) {
                 process.stdout.write("  Status       : [v] VERIFIED (Cryptographic hash-chain intact)\n");
                 process.stdout.write(`  Total Events : ${result.count}\n`);
+                process.stdout.write(`  Keyed Entries: ${result.keyedEntries || 0}${result.macVerified ? " (MAC verified with the master key)" : " (MAC not checked)"}\n`);
                 if (result.latestHash) {
                     process.stdout.write(`  Latest Hash  : ${result.latestHash}\n`);
                 }
