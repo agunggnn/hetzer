@@ -6,7 +6,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 
-import { Grimoire, resolveMasterKey, resolveVaultPath } from "./hetzer-vault.mjs";
+import { createSecretRefScanner, Grimoire, resolveMasterKey, resolveVaultPath } from "./hetzer-vault.mjs";
 import { parseEnv } from "../core/env.mjs";
 
 export const MAX_DETECTION_MATCH_LENGTH = 16384;
@@ -299,7 +299,7 @@ export function restoreSecrets(text, { root, envFile, masterKey } = {}) {
 
     const vault = new Grimoire({ dbPath, masterKey: key });
     try {
-        return text.replace(/secretRef:([a-zA-Z0-9._-]+)/g, (match, id) => {
+        return text.replace(createSecretRefScanner(), (match, id) => {
             try {
                 const entry = vault.find(id);
                 if (!entry) return match;

@@ -137,6 +137,24 @@ test("MCP bridge keeps custom-secret redaction request-local during concurrent c
     assert.ok(!responseB.result.content[0].text.includes(secretB));
 });
 
+test("resolveSecretRefsInPayload leaves references that are not a whole valid credential id untouched", () => {
+    const requested = [];
+    const resolver = (id) => {
+        requested.push(id);
+        return `synthetic-${id}`;
+    };
+
+    for (const literal of ["secretRef:github.pat", "secretRef:npm_token", "secretRef:Prod-Key", "secretRef:abcDef", "secretRef:npm-"]) {
+        assert.equal(resolveSecretRefsInPayload(`Bearer ${literal}`, resolver), `Bearer ${literal}`);
+    }
+    assert.deepEqual(requested, []);
+
+    // A reference still resolves when ordinary punctuation follows it.
+    assert.equal(resolveSecretRefsInPayload("token=secretRef:npm-token, next", resolver), "token=synthetic-npm-token, next");
+    assert.equal(resolveSecretRefsInPayload("use secretRef:npm-token.", resolver), "use synthetic-npm-token.");
+    assert.deepEqual(requested, ["npm-token", "npm-token"]);
+});
+
 test("resolveSecretRefsInPayload resolves exact, inline, and nested secretRef references", () => {
     const syntheticKey = ["sk-ant-", "api03-sample-mcp-key-12345"].join("");
     const syntheticDb = "postgresql://user:pass@localhost:5432/mcp";

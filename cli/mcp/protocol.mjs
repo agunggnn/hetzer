@@ -1,6 +1,6 @@
 import { sanitizeStreamOutput } from "../vault/exec.mjs";
 import { isCanaryCredential, triggerCanaryAlert } from "../vault/canary.mjs";
-import { SECRET_REF_PATTERN } from "../vault/hetzer-vault.mjs";
+import { createSecretRefScanner, SECRET_REF_PATTERN } from "../vault/hetzer-vault.mjs";
 
 const MODERN_VERSION = "2026-07-28";
 const LEGACY_VERSION = "2025-11-25";
@@ -105,7 +105,7 @@ export function resolveSecretRefsInPayload(value, resolver, collectedSecrets = [
             return value;
         }
         if (value.includes("secretRef:")) {
-            return value.replace(/secretRef:([a-z0-9]+(?:-[a-z0-9]+)*)/g, (match, id) => {
+            return value.replace(createSecretRefScanner(), (match, id) => {
                 if (isCanaryCredential(id)) {
                     triggerCanaryAlert({ id, actor: "mcp-agent", action: "mcp.tools/call" });
                 }

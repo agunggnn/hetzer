@@ -40,6 +40,16 @@ export const REALMS = new Set(["core", "data", "memory", "social", "command", "f
 export const ACCESS_ROLES = new Set(["reader", "operator", "admin"]);
 export const SECRET_REF_PATTERN = /^secretRef:([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 
+/**
+ * Fresh global matcher for secretRef tokens embedded in longer text. A reference only matches when
+ * the whole token is a valid credential id: "secretRef:github.pat" or "secretRef:npm_token" are left
+ * untouched instead of resolving the shorter prefix ("github", "npm"). A sentence-ending period or
+ * comma still ends the token; a trailing hyphen, underscore or dotted suffix does not.
+ */
+export function createSecretRefScanner() {
+    return /secretRef:([a-z0-9]+(?:-[a-z0-9]+)*)(?![A-Za-z0-9_-]|\.[A-Za-z0-9])/g;
+}
+
 function sha256(text) {
     return crypto.createHash("sha256").update(String(text)).digest("hex");
 }
