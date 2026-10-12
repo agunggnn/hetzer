@@ -13,6 +13,7 @@ module, and fails when an event type exists in only one of the code and the cata
 | `audit.log.head` | `{ "lastIndex", "lastHash", "updatedAt" }` after the latest append. Detects removal of the newest entries. |
 | `audit.log.state` | `{ "version": 1, "initializedAt" }`. Written on first use; its presence with a missing log is reported as tampering. |
 | `audit.log.lock` | Present only while a writer holds the lock. |
+| `audit.log.lock.wait.<pid>.<random>` | An empty marker a waiting process leaves while it waits. Removed when it gets the lock or gives up; one left by a crashed process is ignored after 15 seconds and is not swept. |
 | `audit.log.<UTC stamp>[.head\|.state]` | An archive left by `hetzer audit rotate`. |
 
 A vault whose database is `<root>/data/*.db` (or when `HETZER_AUDIT_LOG_PATH` is set) mirrors its audit events into
@@ -91,11 +92,12 @@ writer that finds a marker of another process younger than 15 seconds pauses 45 
 waiter polling in that window finds the lock free. Mutual exclusion is unchanged (the lock file is still created
 exclusively), and a marker that cannot be written or read only costs latency. Order is still not guaranteed.
 
-Measured on Windows with 12 CPU-bound processes running, four writers that looped without any gap between events:
-before the markers a waiting `rotate` timed out in 5 of 25 rounds of one run and each writer lost a few events to
-the same timeout; with the markers, 0 of 25 rounds in each of two runs. That is a small sample and says nothing about
-a heavier load. A waiter that does time out still means a lost event for fail-soft emitters, and a `--strict` start
-event refuses to run, which is the safe outcome. This was not measured on Linux or macOS.
+Measured on Windows, four writers that looped without any gap between events while a `rotate` ran, 25 rounds per
+run. With 16 CPU-bound processes running, a waiting `rotate` timed out in 5 of 25 rounds before the markers and in
+1 of 25 with them. With 12 CPU-bound processes and the markers, 0 of 25 in each of two runs; no run without the
+markers was taken at 12. These are small samples: the markers reduced timeouts at the same load, they did not
+remove them. A waiter that times out still means a lost event for fail-soft emitters, and a `--strict` start event
+refuses to run, which is the safe outcome. This was not measured on Linux or macOS.
 
 What the ledger does not give you: anyone who can read the master key can write a valid keyed ledger; a
 consistent rewrite of the whole chain without any `mac` passes unless `--require-mac` is used (and that fails
