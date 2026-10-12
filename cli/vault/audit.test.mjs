@@ -626,7 +626,7 @@ test("events from concurrent writers land in exactly one of the archive and the 
         while (Date.now() < deadline && !(fs.existsSync(logFile) && fs.readFileSync(logFile, "utf8").split("\n").length > 25)) {
             await new Promise((resolve) => setTimeout(resolve, 5));
         }
-        // The lock is not fair and its wait is bounded; an operator whose rotation times out runs it again.
+        // The lock is not a queue and its wait is bounded; an operator whose rotation times out runs it again.
         let result;
         for (let attempt = 0; !result; attempt += 1) {
             try { result = rotateAuditLedger({ logFile, macKey: false, reason: "rotate under load" }); }

@@ -85,11 +85,17 @@ critical section at once. A lock older than that is treated as leaked, for examp
 release failed or by a process id reused after a crash. A waiter gives up after 10 seconds with
 `Timeout acquiring audit log lock`, and the message names the file to delete if no Hetzer process is running.
 
-The lock is not fair. Measured on Windows with 12 CPU-bound processes running, four writers that looped without
-any gap between events left a waiting `rotate` timed out in 5 of 25 rounds of one run, and each writer lost a few
-events to the same timeout. Fail-soft emitters then lose that event, and `--strict` start events refuse to run,
-which is the safe outcome. Real callers have work between events and were not observed to starve each other, but
-this was not measured on Linux or macOS.
+The lock is not a queue; it is polite. A process that has to wait leaves a marker file
+(`audit.log.lock.wait.<pid>.<random>`) next to the lock and removes it when it acquires the lock or gives up. A
+writer that finds a marker of another process younger than 15 seconds pauses 45 ms before it competes again, so a
+waiter polling in that window finds the lock free. Mutual exclusion is unchanged (the lock file is still created
+exclusively), and a marker that cannot be written or read only costs latency. Order is still not guaranteed.
+
+Measured on Windows with 12 CPU-bound processes running, four writers that looped without any gap between events:
+before the markers a waiting `rotate` timed out in 5 of 25 rounds of one run and each writer lost a few events to
+the same timeout; with the markers, 0 of 25 rounds in each of two runs. That is a small sample and says nothing about
+a heavier load. A waiter that does time out still means a lost event for fail-soft emitters, and a `--strict` start
+event refuses to run, which is the safe outcome. This was not measured on Linux or macOS.
 
 What the ledger does not give you: anyone who can read the master key can write a valid keyed ledger; a
 consistent rewrite of the whole chain without any `mac` passes unless `--require-mac` is used (and that fails
