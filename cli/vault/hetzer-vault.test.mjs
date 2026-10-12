@@ -551,7 +551,7 @@ test("vault audit events stay in SQLite only for in-memory vaults and non-worksp
     }
 });
 
-test("a new vault is stamped with the format version and a vault without a stamp is version 1", () => {
+test("a new vault is stamped with the format version and a vault without a stamp is migrated to format 2", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-vault-format-"));
     const dbPath = path.join(root, "data", "hetzer-vault.db");
     const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
@@ -566,7 +566,7 @@ test("a new vault is stamped with the format version and a vault without a stamp
         vault.close();
 
         vault = new Grimoire({ dbPath, masterKey });
-        assert.equal(vault._meta("format_version"), "1", "an unstamped vault is stamped as version 1");
+        assert.equal(vault._meta("format_version"), String(VAULT_FORMAT_VERSION), "an unstamped vault is migrated to current format version");
         assert.equal(vault.matchesSecret("format-key", secret), true, "its credentials still decrypt");
         vault.close();
     } finally {

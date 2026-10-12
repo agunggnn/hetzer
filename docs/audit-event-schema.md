@@ -143,7 +143,7 @@ the credential id, else the target id; `result` is the outcome upper-cased; the 
 | `VAULT_SET_CREDENTIAL` | `vault.set-credential` |
 | `VAULT_GRANT_CREDENTIAL` | `vault.grant-credential` |
 | `VAULT_SIGN_LEGACY_GRANTS` | `vault.sign-legacy-grants` |
-| `VAULT_IMPORT_LEGACY_JSON` | `vault.import-legacy-json` |
+| `VAULT_MIGRATE_SCHEMA_V2` | `vault.migrate-schema-v2` |
 | `VAULT_IMPORT_EXPLICIT_ENV` | `vault.import-explicit-env` |
 | `VAULT_REVEAL_BLOCKED` | `vault.reveal-blocked` |
 | `VAULT_PROCESS_RAW_UNMEDIATED` | `process.raw-unmediated` |
