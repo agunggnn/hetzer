@@ -740,6 +740,48 @@ test("a live holder's lock is taken over only after the 10 minute ceiling", () =
     });
 });
 
+function waiterMarkers(logFile) {
+    const dir = path.dirname(logFile);
+    return fs.readdirSync(dir).filter((name) => name.startsWith(`${path.basename(logFile)}.lock.wait.`));
+}
+
+test("a waiter that gives up leaves no marker behind", () => {
+    withTempLedger((logFile) => {
+        writeLock(logFile, process.pid, 1000);
+        assert.throws(() => recordAuditEvent({ eventType: "WAITS", logFile, macKey: false, lockTimeoutMs: 200 }), /Timeout acquiring audit log lock/);
+        assert.deepEqual(waiterMarkers(logFile), []);
+
+        // The waiter that does get the lock cleans up as well.
+        const lockPath = `${logFile}.lock`;
+        const finished = spawnSync(process.execPath, ["-e", ""]);
+        fs.rmSync(lockPath);
+        writeLock(logFile, finished.pid, 60000);
+        recordAuditEvent({ eventType: "ACQUIRES", logFile, macKey: false, lockTimeoutMs: 2000 });
+        assert.deepEqual(waiterMarkers(logFile), []);
+    });
+});
+
+test("a writer pauses for another process's fresh waiter marker and ignores a stale one", () => {
+    withTempLedger((logFile) => {
+        const marker = `${logFile}.lock.wait.${process.pid + 1}.cafe`;
+        fs.writeFileSync(marker, "");
+        const begun = Date.now();
+        recordAuditEvent({ eventType: "POLITE", logFile, macKey: false });
+        assert.ok(Date.now() - begun >= 40, "a fresh marker makes the writer let a waiter go first");
+
+        const old = new Date(Date.now() - 60000);
+        fs.utimesSync(marker, old, old);
+        const timings = [];
+        for (let i = 0; i < 5; i += 1) {
+            const t = process.hrtime.bigint();
+            recordAuditEvent({ eventType: "NOT_POLITE", logFile, macKey: false });
+            timings.push(Number(process.hrtime.bigint() - t) / 1e6);
+        }
+        assert.ok(Math.min(...timings) < 40, `a stale marker does not delay the writer (fastest of five: ${Math.min(...timings).toFixed(1)} ms)`);
+        assert.equal(verifyAuditLedger({ logFile, macKey: false }).ok, true);
+    });
+});
+
 test("releasing the lock still removes it when the lock file cannot be read or the first deletes fail", () => {
     withTempLedger((logFile) => {
         const lockPath = `${logFile}.lock`;

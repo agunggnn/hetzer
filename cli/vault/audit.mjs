@@ -190,40 +190,82 @@ function releaseLock(lockFd, lockPath, token) {
     }
 }
 
+// A writer that finds a fresh waiter marker pauses this long before taking the lock, which is more than a
+// waiter's longest poll interval, so a waiter polling during the pause finds the lock free.
+const LOCK_YIELD_MS = 45;
+const LOCK_WAITER_FRESH_MS = 15000;
+
+/**
+ * Politeness, not a queue: mutual exclusion still comes from creating the lock file exclusively. A process that
+ * waits leaves a marker next to the lock; a writer that sees a fresh marker of another process lets one poll
+ * interval pass before it competes again, so a tight writer loop cannot keep the lock to itself. Any failure
+ * here only costs latency, and an old marker (a crashed waiter) stops mattering after LOCK_WAITER_FRESH_MS.
+ */
+function otherWaiterPresent(lockPath) {
+    try {
+        const dir = path.dirname(lockPath);
+        const prefix = `${path.basename(lockPath)}.wait.`;
+        for (const name of fs.readdirSync(dir)) {
+            if (!name.startsWith(prefix)) continue;
+            try {
+                if (Date.now() - fs.statSync(path.join(dir, name)).mtimeMs <= LOCK_WAITER_FRESH_MS) return true;
+            } catch {}
+        }
+    } catch {}
+    return false;
+}
+
+function leaveWaiterMarker(lockPath) {
+    const marker = `${lockPath}.wait.${process.pid}.${crypto.randomBytes(4).toString("hex")}`;
+    try {
+        fs.writeFileSync(marker, "");
+        return marker;
+    } catch {
+        return null;
+    }
+}
+
+function acquireAuditLock(lockPath, token, timeoutMs) {
+    const start = Date.now();
+    let marker = null;
+    try {
+        while (Date.now() - start < timeoutMs) {
+            let lockFd;
+            try {
+                lockFd = fs.openSync(lockPath, "wx");
+            } catch (err) {
+                // On Windows, opening a lock file that another process is deleting fails with EPERM or EBUSY.
+                if (err.code === "EEXIST" || err.code === "EBUSY" || (process.platform === "win32" && (err.code === "EPERM" || err.code === "EACCES"))) {
+                    if (marker === null) marker = leaveWaiterMarker(lockPath);
+                    if (reapStaleLock(lockPath)) continue;
+                    sleepMs(10 + Math.floor(Math.random() * 20));
+                    continue;
+                }
+                throw err;
+            }
+            try {
+                fs.writeFileSync(lockFd, token);
+            } catch (err) {
+                // We created the file but could not mark it: give it back instead of leaving a lock nobody owns.
+                try { fs.closeSync(lockFd); } catch {}
+                try { fs.unlinkSync(lockPath); } catch {}
+                throw err;
+            }
+            return lockFd;
+        }
+    } finally {
+        if (marker) { try { fs.unlinkSync(marker); } catch {} }
+    }
+    throw new Error(`Timeout acquiring audit log lock on ${lockPath}. Another Hetzer process is holding it; if none is running, delete that file.`);
+}
+
 function withAuditLock(filePath, fn, timeoutMs = LOCK_TIMEOUT_MS) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const lockPath = `${filePath}.lock`;
     const token = `${process.pid}\n${Date.now()}\n${crypto.randomBytes(6).toString("hex")}\n`;
-    const start = Date.now();
-    let lockFd = null;
 
-    while (Date.now() - start < timeoutMs) {
-        try {
-            lockFd = fs.openSync(lockPath, "wx");
-        } catch (err) {
-            // On Windows, opening a lock file that another process is deleting fails with EPERM or EBUSY.
-            if (err.code === "EEXIST" || err.code === "EBUSY" || (process.platform === "win32" && (err.code === "EPERM" || err.code === "EACCES"))) {
-                if (reapStaleLock(lockPath)) continue;
-                const jitter = 10 + Math.floor(Math.random() * 20);
-                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, jitter);
-                continue;
-            }
-            throw err;
-        }
-        try {
-            fs.writeFileSync(lockFd, token);
-        } catch (err) {
-            // We created the file but could not mark it: give it back instead of leaving a lock nobody owns.
-            try { fs.closeSync(lockFd); } catch {}
-            try { fs.unlinkSync(lockPath); } catch {}
-            throw err;
-        }
-        break;
-    }
-
-    if (lockFd === null) {
-        throw new Error(`Timeout acquiring audit log lock on ${lockPath}. Another Hetzer process is holding it; if none is running, delete that file.`);
-    }
+    if (otherWaiterPresent(lockPath)) sleepMs(LOCK_YIELD_MS);
+    const lockFd = acquireAuditLock(lockPath, token, timeoutMs);
 
     try {
         return fn();
