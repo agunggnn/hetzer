@@ -97,7 +97,7 @@ When a developer worked on multiple repositories with different vault databases,
 
 ### 2.2 Precedence Recalibration
 In PR #31, `resolveMasterKey()` precedence was updated:
-1. **Explicit runtime environment** (`process.env.HETZER_GRIMOIRE_KEY` or `SHADOW_GRIMOIRE_KEY`)
+1. **Explicit runtime environment** (`process.env.HETZER_GRIMOIRE_KEY`; the `SHADOW_GRIMOIRE_KEY` alias named here originally is no longer read since vault format 2, see `docs/vault-format.md`)
 2. **Explicit workspace configuration** (`.env` file in project root)
 3. **User-level home isolated store** (`~/.hetzer/grimoire.key` via `getIsolatedKeyPath()`)
 
