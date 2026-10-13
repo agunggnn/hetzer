@@ -47,6 +47,6 @@ Write-Host "====================================================================
 Write-Host "Quickstart Commands:"
 Write-Host "  1. Pre-commit Git Guard  : hetzer hook install"
 Write-Host "  2. Initialize Workspace  : hetzer init"
-Write-Host "  3. Store a Secret        : hetzer creds set <id> <value>"
+Write-Host "  3. Store a Secret        : hetzer creds set <id>   (masked prompt)"
 Write-Host "  4. Doctor Diagnostic     : hetzer doctor"
 Write-Host ""

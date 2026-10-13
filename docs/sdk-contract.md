@@ -3,8 +3,9 @@
 **Status:** Frozen for `apiVersion` 1 by `sdk/sdk-contract.test.mjs`. Gate G2 of
 [ADR-0001](adr/0001-authority-model-and-engine-boundary.md) item 10.
 
-The SDK is `@agunggnn/hetzer/sdk`. It is the only specifier the package `exports` map offers besides
-`package.json`; deep imports such as `@agunggnn/hetzer/cli/vault/...` are not importable through the package.
+The SDK is `hetzer/sdk` (the npmjs package; the GitHub Packages mirror ships the same files as
+`@agunggnn/hetzer/sdk`). It is the only specifier the package `exports` map offers besides `package.json`; deep
+imports such as `hetzer/cli/vault/...` are not importable through the package.
 That limits what a consumer can import by name. It does not stop a process that runs as the same user from
 importing the files by path, so it is not a security boundary (see "What this contract does not do").
 
@@ -18,7 +19,7 @@ change to the member list, so a change cannot ship by accident.
 
 ```js
 import { createHetzer, SDK_API_VERSION, SDK_ERROR_CODES, HetzerSdkError,
-         parseSecretRef, formatSecretRef, isSecretRef } from "@agunggnn/hetzer/sdk";
+         parseSecretRef, formatSecretRef, isSecretRef } from "hetzer/sdk";
 
 const client = createHetzer({ root, vaultPath, actor });
 ```

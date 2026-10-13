@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/agunggnn/hetzer/packages"><img src="https://img.shields.io/badge/GitHub%20Packages-%40agunggnn%2Fhetzer-blue?style=flat-square&logo=github" alt="GitHub Packages" /></a>
+  <a href="https://www.npmjs.com/package/hetzer"><img src="https://img.shields.io/npm/v/hetzer?style=flat-square&logo=npm" alt="npm version" /></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22.13.0-brightgreen.svg?style=flat-square" alt="Node.js version" /></a>
   <a href="package.json"><img src="https://img.shields.io/badge/dependencies-0%20(pure%20Node%20stdlib)-success.svg?style=flat-square" alt="Zero External Dependencies" /></a>
   <a href="SECURITY.md"><img src="https://img.shields.io/badge/security-AES--256--GCM%20Vault-orange.svg?style=flat-square" alt="AES-256-GCM Vault" /></a>
@@ -40,6 +40,10 @@ npx hetzer creds set openai-api-key
 
 ### Permanent Installation Options:
 
+- **Via npm (recommended)**:
+  ```bash
+  npm install -g hetzer
+  ```
 - **One-Line Script (Linux & macOS)**:
   ```bash
   curl -fsSL https://raw.githubusercontent.com/agunggnn/hetzer/main/install.sh | bash
@@ -48,7 +52,7 @@ npx hetzer creds set openai-api-key
   ```powershell
   irm https://raw.githubusercontent.com/agunggnn/hetzer/main/install.ps1 | iex
   ```
-- **Via GitHub Packages (Direct from this repo)**:
+- **Via GitHub Packages (mirror, scoped name)**: needs an npm login to GitHub Packages with a token that has `read:packages`:
   ```bash
   npm install -g @agunggnn/hetzer --registry=https://npm.pkg.github.com
   ```
@@ -60,8 +64,9 @@ npx hetzer creds set openai-api-key
 > [!TIP]
 > **Upgrade**: Hetzer is upgraded through npm. `hetzer upgrade` and `hetzer check-update` only print this command:
 > ```bash
-> npm install -g @agunggnn/hetzer
+> npm install -g hetzer@latest
 > ```
+> From 0.6.2, npmjs releases come from the release workflow through npm trusted publishing (no npm token is stored in this repository) and become public only after a maintainer approves them with 2FA. The unscoped `hetzer` package on npmjs went from 0.4.5 straight to 0.6.2; 0.5.x to 0.6.1 are on GitHub Releases and GitHub Packages only.
 > Coming from 0.5.x? Read [docs/upgrade-0.6.md](docs/upgrade-0.6.md) first: 0.6.0 migrates the vault file and removes commands.
 
 ---
@@ -90,7 +95,7 @@ For structured navigation and deep architectural insights, explore the dedicated
 Hetzer now exposes a metadata-first SDK for local Node.js applications and trusted deployment tooling:
 
 ```js
-import { createHetzer } from "@agunggnn/hetzer/sdk";
+import { createHetzer } from "hetzer/sdk";
 
 const hetzer = createHetzer({ root: process.cwd() });
 const credentials = hetzer.credentials.list();
@@ -108,7 +113,7 @@ hetzer.close();
 
 The SDK currently exposes credential metadata, metadata-only authorization checks, and strict scoped execution. It does not return decrypted values, replace application authentication, or provide a browser-side vault. Applications should keep references such as `secretRef:service-api-key` in configuration and run from a trusted local/CI process with an explicit allowlist.
 
-`apiVersion` is the number `1` (earlier builds reported the string `experimental-1`). Version 1 is the member list in [`docs/sdk-contract.md`](docs/sdk-contract.md), which a test keeps fixed; it has no way to resolve, reveal or lease a credential value, and lease interfaces are not part of it. The package exports only `@agunggnn/hetzer/sdk`, but code running as the same user can still import the vault module or read the vault file directly, so the SDK is not a boundary against untrusted code in the same process; run untrusted agents out of process in the sandbox. The CLI remains the supported human interface.
+`apiVersion` is the number `1` (earlier builds reported the string `experimental-1`). Version 1 is the member list in [`docs/sdk-contract.md`](docs/sdk-contract.md), which a test keeps fixed; it has no way to resolve, reveal or lease a credential value, and lease interfaces are not part of it. The package exports only `hetzer/sdk` (`@agunggnn/hetzer/sdk` when installed from GitHub Packages), but code running as the same user can still import the vault module or read the vault file directly, so the SDK is not a boundary against untrusted code in the same process; run untrusted agents out of process in the sandbox. The CLI remains the supported human interface.
 
 ---
 

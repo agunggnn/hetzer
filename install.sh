@@ -81,7 +81,7 @@ if command -v hetzer >/dev/null 2>&1; then
     echo "Quickstart Commands:"
     echo "  1. Pre-commit Git Guard  : hetzer hook install"
     echo "  2. Initialize Workspace  : hetzer init"
-    echo "  3. Store a Secret        : hetzer creds set <id> <value>"
+    echo "  3. Store a Secret        : hetzer creds set <id>   (masked prompt)"
     echo "  4. Doctor Diagnostic     : hetzer doctor"
     echo ""
 else

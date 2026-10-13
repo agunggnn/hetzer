@@ -211,7 +211,7 @@ export async function runCliUpgrade(args = [], {
 
         if (installRes.status !== 0) {
             stderr.write("  [!] 'npm install -g --force' failed. Run manually:\n");
-            stderr.write(`      npm install -g --force @agunggnn/hetzer@${update.latestVersion} --registry=https://npm.pkg.github.com\n`);
+            stderr.write(`      npm install -g --force hetzer@${update.latestVersion}\n`);
             stdout.write("================================================================================\n");
             return { ok: false, error: "npm_install_failed" };
         }

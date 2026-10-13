@@ -276,7 +276,7 @@ function printInitWizard(result) {
     if (isGlobal && !globalCli) {
         process.stdout.write(`[!] Global Access     : 'hetzer' is NOT in your system PATH (running via npx or local script).\n`);
         process.stdout.write(`                        To run direct commands, install globally:\n`);
-        process.stdout.write(`                          npm install -g @agunggnn/hetzer\n`);
+        process.stdout.write(`                          npm install -g hetzer\n`);
         process.stdout.write(`                        Or prefix commands with npx: 'npx hetzer <command>'\n`);
     }
     process.stdout.write("--------------------------------------------------------------------------------\n");
@@ -351,7 +351,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         return;
     }
     if (["check-update", "check_update", "upgrade"].includes(command)) {
-        process.stderr.write("Hetzer CLI upgrades are managed via npm: run 'npm install -g @agunggnn/hetzer' to update.\n");
+        process.stderr.write("Hetzer CLI upgrades are managed via npm: run 'npm install -g hetzer@latest' to update.\n");
         process.exitCode = 1;
         return;
     }
@@ -436,7 +436,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             process.stdout.write("      'hetzer' is not in your system PATH (running via npx or local script).\n");
             process.stdout.write("      * Passive Guards (Active) : Prompt protection & Git hook work immediately.\n");
             process.stdout.write("      * Scoped Execution        : For agents to run 'hetzer exec', install globally:\n");
-            process.stdout.write("                                  npm install -g @agunggnn/hetzer\n");
+            process.stdout.write("                                  npm install -g hetzer\n");
             process.stdout.write("                                  (or prefix commands with npx: npx hetzer <cmd>)\n");
         }
         process.stdout.write("================================================================================\n");

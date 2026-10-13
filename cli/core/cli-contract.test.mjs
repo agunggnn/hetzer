@@ -119,11 +119,13 @@ test("CONTRACT: README.md CLI cheat sheet table covers all active and deprecated
     }
 });
 
-test("CONTRACT: Documentation installation methods safeguard against legacy unscoped npm package", () => {
+test("CONTRACT: Documentation installation methods point at the npmjs release channel", () => {
     const installDocPath = path.join(repoRoot, "docs", "installation.md");
     const installContent = fs.readFileSync(installDocPath, "utf8");
 
-    assert.match(installContent, /npm install -g @agunggnn\/hetzer/);
+    assert.match(installContent, /npm install -g hetzer\n/);
+    assert.match(installContent, /npm install -g hetzer@latest/);
+    assert.doesNotMatch(installContent, /npx --registry=https:\/\/npm\.pkg\.github\.com/);
     assert.match(installContent, /git\+https:\/\/github\.com\/agunggnn\/hetzer\.git/);
     assert.match(installContent, /hetzer upgrade/);
     assert.match(installContent, /hetzer check-update/);
