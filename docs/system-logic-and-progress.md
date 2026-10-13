@@ -99,6 +99,7 @@ Before release:
 3. Verify each container digest against its upstream source and required platforms.
 4. Review documentation for absolute security, performance, comparison, cost, and compliance claims.
 5. Perform independent security testing when the release will handle production or regulated credentials.
+6. After the merge to `main`, approve the version that `publish-npm` staged on npmjs (npmjs.com, Staged Packages, or `npm stage approve <stage-id>`), then confirm `npm view hetzer version` shows it.
 
 ## Future work
 

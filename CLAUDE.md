@@ -12,7 +12,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Package is `@agunggnn/hetzer` (the `shadow-core` directory name is legacy). Pure native-ESM JavaScript (`.mjs`), no build step, **zero runtime deps** (Node stdlib only, `node:sqlite` needs Node `^22.13.0 || >=23.4.0`, the first releases that load it without a flag). Architecture and security invariants live in @AGENTS.md; read it before touching `cli/vault/`.
+Package is `@agunggnn/hetzer` in this repo (the `shadow-core` directory name is legacy); releases ship to npmjs as unscoped `hetzer` (renamed when `scripts/package-stage.mjs` stages it) and to GitHub Packages as `@agunggnn/hetzer`, so user-facing install commands say `npm install -g hetzer`. Pure native-ESM JavaScript (`.mjs`), no build step, **zero runtime deps** (Node stdlib only, `node:sqlite` needs Node `^22.13.0 || >=23.4.0`, the first releases that load it without a flag). Architecture and security invariants live in @AGENTS.md; read it before touching `cli/vault/`.
 
 ## Commands
 - Pre-PR gate: `npm run check && npm test && npm run verify -- --no-write`
@@ -30,6 +30,7 @@ Package is `@agunggnn/hetzer` (the `shadow-core` directory name is legacy). Pure
 - After a security-control change, update `docs/verification-evidence.json` and `docs/system-logic-and-progress.md`. `scripts/verify-evidence.mjs` imports directly from vault modules, so API changes there can break it.
 - New docs or scripts that must ship need an entry in `package.json` `"files"`.
 - Version string is mirrored in `package.json`, `package-lock.json`, the `AGENTS.md` header, and `cli/mcp/{call,ping,protocol}.mjs`. Bump all together.
+- Every merge to `main` releases: `release-main.yml` tags, creates the GitHub Release, publishes to GitHub Packages, and its `publish-npm` job stages `hetzer` on npmjs through trusted publishing (OIDC, no token). npmjs.com trusts that workflow by filename, so do not rename `release-main.yml` or move `publish-npm` into a reusable workflow. A maintainer approves each staged version with 2FA.
 
 ## Git
 - Never commit to `main`. Branch as `<type>/<short-desc>`.
