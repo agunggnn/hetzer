@@ -84,7 +84,7 @@ For structured navigation and deep architectural insights, explore the dedicated
 | ☣️ **[Agent Threat Model & Sandbox Case Study (`docs/agent-sandbox-threat-model.md`)](docs/agent-sandbox-threat-model.md)** | Incident analysis of un-sandboxed agent session hijacking (*Pass-the-Cookie*), why antivirus fails, and the Sandbox-Credential Paradox. |
 | 🛡️ **[Jagdpanzer Multi-Container Fleet Ops](https://github.com/agunggnn/jagdpanzer)** | Multi-container stack orchestration, persistent cognitive memory (Cognee), and automated agent networks. |
 
-## 📦 Node.js SDK (experimental)
+## 📦 Node.js SDK (apiVersion 1)
 
 Hetzer now exposes a metadata-first SDK for local Node.js applications and trusted deployment tooling:
 
@@ -107,7 +107,7 @@ hetzer.close();
 
 The SDK currently exposes credential metadata, metadata-only authorization checks, and strict scoped execution. It does not return decrypted values, replace application authentication, or provide a browser-side vault. Applications should keep references such as `secretRef:service-api-key` in configuration and run from a trusted local/CI process with an explicit allowlist.
 
-This is an experimental public export. The CLI remains the supported human interface while the SDK contract is hardened.
+`apiVersion` is the number `1` (earlier builds reported the string `experimental-1`). Version 1 is the member list in [`docs/sdk-contract.md`](docs/sdk-contract.md), which a test keeps fixed; it has no way to resolve, reveal or lease a credential value, and lease interfaces are not part of it. The package exports only `@agunggnn/hetzer/sdk`, but code running as the same user can still import the vault module or read the vault file directly, so the SDK is not a boundary against untrusted code in the same process; run untrusted agents out of process in the sandbox. The CLI remains the supported human interface.
 
 ---
 
@@ -377,7 +377,7 @@ All Hetzer commands are executed via the `hetzer` CLI:
 | `hetzer creds status <request-id>` | Reports only `pending`, `approved`, or `expired` |
 | `hetzer creds isolate-key` | Moves master key outside workspace to `~/.hetzer/grimoire.key` (mode 0600) |
 | `hetzer canary [setup]` | Deploys decoy canary honey-tokens to catch prompt injection & scraping |
-| `hetzer audit [verify\|tail [n]]` | Verifies cryptographic SHA-256 hash-chain or inspects tamper-evident audit ledger |
+| `hetzer audit [verify [--require-mac]\|tail [n]\|rotate --yes]` | Verifies the SHA-256 hash-chain (and MACs), inspects the tamper-evident audit ledger, or archives it and starts a new one |
 | `hetzer exec [--allow <ids>] [--policy <file>] [--sandbox [image]] [--sandbox-mount <dir>] [--host] [--strict] [--canary] [--timeout <t>] -- <c>` | Runs with broker-mediated credentials, transient container sandbox, stream redaction, and canary tripwire |
 | `hetzer broker --policy <file> -- <c>` | Runs an HTTP client using short-lived capability instead of real credentials |
 | `hetzer protect` | Arms workspace with credential-safety guidance, Git pre-commit hook, and .env protection |

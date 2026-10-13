@@ -60,12 +60,13 @@ test("revealCredential trips immediately when a canary honey-token is requested"
     const logContent = fs.readFileSync(incidentsLog, "utf8");
     assert.match(logContent, /Canary 'canary-token' triggered/);
 
-    const auditEvents = readAuditEvents({ root });
+    // Setup records the decoy credential in the same ledger; the trip itself is exactly one event.
+    const auditEvents = readAuditEvents({ root }).filter((entry) => entry.eventType === "CANARY_TRIGGER");
     assert.equal(auditEvents.length, 1);
-    assert.equal(auditEvents[0].eventType, "CANARY_TRIGGER");
     assert.equal(auditEvents[0].target, "canary-token");
     assert.equal(auditEvents[0].result, "TRIGGERED");
     assert.match(auditEvents[0].details.threatVector, /Unauthorized Credential Scraping/);
+    assert.ok(readAuditEvents({ root }).some((entry) => entry.eventType === "VAULT_SET_CREDENTIAL" && entry.target === "canary-token"));
 
     fs.rmSync(root, { recursive: true, force: true });
 });

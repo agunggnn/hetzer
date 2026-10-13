@@ -5,7 +5,8 @@ import path from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
-import { Grimoire } from "./hetzer-vault.mjs";
+import { readAuditEvents, verifyAuditLedger } from "./audit.mjs";
+import { Grimoire, VAULT_FORMAT_VERSION } from "./hetzer-vault.mjs";
 import { grantCredentialCommand, setCredential, signExistingGrantsCommand } from "./creds.mjs";
 
 test("Grimoire initializes schema with Gate G0 columns and approved policies table", () => {
@@ -491,6 +492,135 @@ test("signExistingGrantsCommand requires a human session, a typed confirmation, 
             assert.equal(after.find("api-token").grantValid, false);
         } finally {
             after.close();
+        }
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("vault audit events are mirrored into the keyed file ledger and SQLite keeps its copy", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-vault-ledger-"));
+    const dbPath = path.join(root, "data", "hetzer-vault.db");
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    const previous = process.env.HETZER_AUDIT_LOG_PATH;
+    delete process.env.HETZER_AUDIT_LOG_PATH;
+
+    const vault = new Grimoire({ dbPath, masterKey });
+    try {
+        vault.recordAudit({ actor: "tester", action: "vault.set-credential", credential_id: "demo-token", outcome: "allowed", reason: "synthetic", metadata: { note: "n" } });
+        vault.recordAudit({ actor: "tester", action: "broker.policy.approve", credential_id: "demo-token", outcome: "allowed" });
+
+        const logFile = path.join(root, ".hetzer", "audit.log");
+        assert.equal(vault.auditLogFile, logFile);
+        const events = readAuditEvents({ logFile });
+        assert.deepEqual(events.map((event) => event.eventType), ["VAULT_SET_CREDENTIAL", "VAULT_BROKER_POLICY_APPROVE"]);
+        assert.equal(events[0].target, "demo-token");
+        assert.equal(events[0].result, "ALLOWED");
+        assert.equal(events[0].actor.user, "tester");
+        assert.ok(events.every((event) => typeof event.mac === "string"));
+
+        const check = verifyAuditLedger({ logFile, macKey: masterKey });
+        assert.equal(check.ok, true);
+        assert.equal(check.macVerified, true);
+        assert.equal(vault.listAudit().length, 2);
+    } finally {
+        vault.close();
+        if (previous !== undefined) process.env.HETZER_AUDIT_LOG_PATH = previous;
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("vault audit events stay in SQLite only for in-memory vaults and non-workspace layouts", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-vault-ledger-off-"));
+    const previous = process.env.HETZER_AUDIT_LOG_PATH;
+    delete process.env.HETZER_AUDIT_LOG_PATH;
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    const elsewhere = new Grimoire({ dbPath: path.join(root, "vault.db"), masterKey });
+    const memory = new Grimoire({ dbPath: ":memory:", masterKey });
+    try {
+        assert.equal(elsewhere.auditLogFile, null);
+        assert.equal(memory.auditLogFile, null);
+        elsewhere.recordAudit({ actor: "tester", action: "vault.x", outcome: "allowed" });
+        assert.equal(fs.existsSync(path.join(root, ".hetzer")), false);
+        assert.equal(elsewhere.listAudit().length, 1);
+    } finally {
+        elsewhere.close();
+        memory.close();
+        if (previous !== undefined) process.env.HETZER_AUDIT_LOG_PATH = previous;
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("a new vault is stamped with the format version and a vault without a stamp is version 1", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-vault-format-"));
+    const dbPath = path.join(root, "data", "hetzer-vault.db");
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    const secret = ["synthetic", "format", "value", "0001"].join("-");
+    try {
+        let vault = new Grimoire({ dbPath, masterKey });
+        assert.equal(vault.formatVersion, VAULT_FORMAT_VERSION);
+        assert.equal(vault._meta("format_version"), String(VAULT_FORMAT_VERSION));
+        vault.create({ id: "format-key", projectId: "sample-app", keyName: "format-key", secret });
+        // A vault from a build that did not stamp a version: no marker row.
+        vault.db.prepare("DELETE FROM vault_meta WHERE key = 'format_version'").run();
+        vault.close();
+
+        vault = new Grimoire({ dbPath, masterKey });
+        assert.equal(vault._meta("format_version"), "1", "an unstamped vault is stamped as version 1");
+        assert.equal(vault.matchesSecret("format-key", secret), true, "its credentials still decrypt");
+        vault.close();
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("a vault written by a newer format is refused before any schema change or stamp", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-vault-format-newer-"));
+    const dbPath = path.join(root, "hetzer-vault.db");
+    try {
+        // An old-shaped vault stamped with a future format: none of the current tables or columns exist.
+        const raw = new DatabaseSync(dbPath);
+        raw.exec(`
+            CREATE TABLE vault_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
+            INSERT INTO vault_meta VALUES ('format_version', '${VAULT_FORMAT_VERSION + 1}', '2026-01-01T00:00:00.000Z');
+            CREATE TABLE vault_credentials (id TEXT PRIMARY KEY, encrypted_value TEXT NOT NULL);
+        `);
+        raw.close();
+        const before = fs.readFileSync(dbPath);
+        const filesBefore = fs.readdirSync(root).sort();
+
+        assert.throws(() => new Grimoire({ dbPath, masterKey: "synthetic-format-master-key-long-enough" }), (error) => {
+            assert.equal(error.code, "ERR_VAULT_FORMAT_UNSUPPORTED");
+            assert.match(error.message, /nothing was changed/);
+            return true;
+        });
+        assert.ok(fs.readFileSync(dbPath).equals(before), "the vault file is byte-identical");
+        assert.deepEqual(fs.readdirSync(root).sort(), filesBefore, "no journal or side file was left behind");
+
+        const check = new DatabaseSync(dbPath);
+        const tables = check.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map((row) => row.name);
+        const columns = check.prepare("PRAGMA table_info(vault_credentials)").all().map((column) => column.name);
+        check.close();
+        assert.deepEqual(tables, ["vault_credentials", "vault_meta"], "no table was created");
+        assert.deepEqual(columns, ["id", "encrypted_value"], "no column was added");
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("a malformed format marker is refused", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-vault-format-bad-"));
+    const dbPath = path.join(root, "hetzer-vault.db");
+    try {
+        for (const marker of ["abc", "0", "-1", "1.5", ""]) {
+            const raw = new DatabaseSync(dbPath);
+            raw.exec(`
+                CREATE TABLE IF NOT EXISTS vault_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
+                DELETE FROM vault_meta;
+                INSERT INTO vault_meta VALUES ('format_version', '${marker}', '2026-01-01T00:00:00.000Z');
+            `);
+            raw.close();
+            assert.throws(() => new Grimoire({ dbPath }), (error) => error.code === "ERR_VAULT_FORMAT_UNSUPPORTED", `marker '${marker}'`);
         }
     } finally {
         fs.rmSync(root, { recursive: true, force: true });

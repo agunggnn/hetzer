@@ -6,23 +6,28 @@
  */
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { DatabaseSync } from "node:sqlite";
 import { PassThrough } from "node:stream";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { createStreamSanitizer, prepareExecutionEnvironment, sanitizeStreamOutput } from "../cli/vault/exec.mjs";
+import { computeAuditEntryHash, GENESIS_HASH, recordAuditEvent, rotateAuditLedger, verifyAuditLedger } from "../cli/vault/audit.mjs";
+import { createStreamSanitizer, executeProcess, prepareExecutionEnvironment, sanitizeStreamOutput } from "../cli/vault/exec.mjs";
 import { loadBrokerPolicy, openHttpCredentialBroker, startHttpCredentialBroker, validateBrokerPolicy } from "../cli/vault/http-broker.mjs";
 import { resolveSecretEnvironment } from "../cli/vault/secret-env.mjs";
-import { detectAgentAncestor } from "../cli/vault/creds.mjs";
+import { detectAgentAncestor, setCredential } from "../cli/vault/creds.mjs";
 import { scanText, redactAndVault } from "../cli/vault/sniffer.mjs";
 import { scanAddedLines } from "../cli/core/git-hook.mjs";
 import { isCanaryCredential, triggerCanaryAlert } from "../cli/vault/canary.mjs";
-import { Grimoire } from "../cli/vault/hetzer-vault.mjs";
+import { computeAuditMac, Grimoire, VAULT_FORMAT_VERSION } from "../cli/vault/hetzer-vault.mjs";
+import * as sdk from "../sdk/index.mjs";
+import { createHetzer, SDK_ERROR_CODES } from "../sdk/index.mjs";
 import { createToolCatalog } from "../cli/mcp/catalog.mjs";
 import { DEFAULT_SANDBOX_IMAGE, executeSandboxedProcess, resolveSandboxMount } from "../cli/vault/sandbox.mjs";
 import {
@@ -957,7 +962,7 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
         fs.mkdirSync(path.join(workspace, "data"), { recursive: true });
         fs.mkdirSync(path.join(workspace, ".hetzer"), { recursive: true });
         fs.writeFileSync(path.join(workspace, "README.md"), "project file\n");
-        fs.writeFileSync(path.join(workspace, ".hetzer", "audit.log"), "synthetic\n");
+        fs.writeFileSync(path.join(workspace, ".hetzer", "audit.log"), "");
         const dbPath = path.join(workspace, "data", "hetzer-vault.db");
         const vault = new Grimoire({ dbPath, masterKey });
         vault.create({ id: "sandbox-cred", projectId: "sandbox-target", secret: secretValue, allowedActions: ["process.start"], rawInjection: "allow" });
@@ -1054,6 +1059,347 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
         observed: `unsafeMountsRefused: ${unsafeMountsRefused}. sensitivePathsHidden: ${sensitivePathsHidden}. projectFilesNotHidden: ${projectFilesNotHidden}. argvHasNoSecretMaterial: ${argvHasNoSecretMaterial}. hostVariablesNotForwarded: ${hostVariablesNotForwarded}. engineEnvHasNoMasterKey: ${engineEnvHasNoMasterKey}. imagePinned: ${imagePinned}. networkStated: ${networkStated}.`,
         pass,
         boundary: "Builder-level evidence: it does not start a container. Container behaviour of the file and directory masks was checked separately on Docker Desktop for Windows. Outbound network access is still open by default, the broker still binds 0.0.0.0 in sandbox mode, `docker inspect` still shows container environment values, and files that appear after the container starts are not masked.",
+    });
+}
+
+// -----------------------------------------------------------------------------
+// Test 15: Unified Audit Ledger Integrity (Gate G2)
+// -----------------------------------------------------------------------------
+{
+    const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-verify-audit-")));
+    const key = "audit-evidence-key-0123456789abcdef0123456789";
+    const otherKey = "audit-evidence-other-0123456789abcdef01234567";
+    const checks = {};
+    const previousLogPath = process.env.HETZER_AUDIT_LOG_PATH;
+    const lineOf = (file) => fs.readFileSync(file, "utf8").trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    const store = (file, entries) => fs.writeFileSync(file, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+    const fill = (file, count, macKey) => {
+        for (let i = 0; i < count; i += 1) {
+            recordAuditEvent({ eventType: "EVIDENCE", target: `t${i}`, result: i === 2 ? "DENY" : "ALLOW", actor: { user: "alice" }, logFile: file, macKey });
+        }
+    };
+    const rewrite = (file, mutate, macKey) => {
+        let prevHash = GENESIS_HASH;
+        const entries = lineOf(file).map((entry, position) => {
+            mutate(entry, position + 1);
+            entry.prevHash = prevHash;
+            entry.hash = computeAuditEntryHash(entry);
+            if (macKey && entry.keep !== false) entry.mac = computeAuditMac(macKey, entry.hash);
+            else delete entry.mac;
+            prevHash = entry.hash;
+            return entry;
+        });
+        store(file, entries);
+        fs.writeFileSync(`${file}.head`, JSON.stringify({ lastIndex: entries.length, lastHash: prevHash }));
+    };
+
+    try {
+        // Keyed ledger: right key verifies, wrong key is rejected.
+        const keyed = path.join(dir, "keyed.log");
+        fill(keyed, 5, key);
+        checks.keyedVerifies = verifyAuditLedger({ logFile: keyed, macKey: key }).ok === true;
+        checks.wrongKeyRejected = verifyAuditLedger({ logFile: keyed, macKey: otherKey }).ok === false;
+
+        // Edits and truncation.
+        const edited = path.join(dir, "edited.log");
+        fill(edited, 5, key);
+        store(edited, lineOf(edited).map((entry) => (entry.index === 3 ? { ...entry, result: "ALLOW" } : entry)));
+        checks.middleEditRejected = verifyAuditLedger({ logFile: edited, macKey: key }).ok === false;
+
+        const actorEdit = path.join(dir, "actor.log");
+        fill(actorEdit, 3, false);
+        store(actorEdit, lineOf(actorEdit).map((entry) => (entry.index === 1 ? { ...entry, actor: { user: "mallory" } } : entry)));
+        checks.actorEditRejected = verifyAuditLedger({ logFile: actorEdit, macKey: false }).ok === false;
+
+        const truncated = path.join(dir, "truncated.log");
+        fill(truncated, 5, key);
+        store(truncated, lineOf(truncated).slice(0, 3));
+        checks.truncationRejected = verifyAuditLedger({ logFile: truncated, macKey: key }).ok === false;
+
+        // Unkeyed tail after keyed entries (downgrade) is visible from the file alone.
+        const downgraded = path.join(dir, "downgraded.log");
+        fill(downgraded, 5, key);
+        rewrite(downgraded, (entry, position) => {
+            if (position >= 3) { entry.result = "ALLOW"; entry.keep = false; }
+        }, key);
+        // The helper marks which entries stay unkeyed through a transient field; remove it so the entry hash is honest.
+        store(downgraded, lineOf(downgraded).map(({ keep, ...rest }) => rest));
+        checks.macDowngradeRejected = verifyAuditLedger({ logFile: downgraded, macKey: false }).ok === false;
+
+        // Whole-chain unkeyed rewrite: boundary. Default verification cannot see it; requireMac does.
+        const wholeRewrite = path.join(dir, "whole.log");
+        fill(wholeRewrite, 5, key);
+        rewrite(wholeRewrite, (entry) => { if (entry.result === "DENY") entry.result = "ALLOW"; }, null);
+        checks.unkeyedRewritePassesByDefault = verifyAuditLedger({ logFile: wholeRewrite, macKey: key, requireMac: false }).ok === true;
+        checks.unkeyedRewriteRejectedWhenKeyRequired = verifyAuditLedger({ logFile: wholeRewrite, macKey: key, requireMac: true }).ok === false;
+
+        // Boundary: someone holding the key can forge a consistent keyed ledger.
+        const forged = path.join(dir, "forged.log");
+        fill(forged, 5, key);
+        rewrite(forged, (entry) => { if (entry.result === "DENY") entry.result = "ALLOW"; }, key);
+        checks.keyHolderCanForge = verifyAuditLedger({ logFile: forged, macKey: key, requireMac: true }).ok === true;
+
+        // Legacy v1 ledger still verifies.
+        const legacy = path.join(dir, "legacy.log");
+        let prevHash = GENESIS_HASH;
+        const oldEntries = [1, 2, 3].map((index) => {
+            const entry = { index, timestamp: new Date().toISOString(), eventType: "OLD", target: "t", result: "ALLOW", actor: { user: "u" }, details: {}, prevHash, hash: "" };
+            entry.hash = computeAuditEntryHash(entry);
+            prevHash = entry.hash;
+            return entry;
+        });
+        store(legacy, oldEntries);
+        fs.writeFileSync(`${legacy}.head`, JSON.stringify({ lastIndex: 3, lastHash: prevHash }));
+        checks.legacyLedgerVerifies = verifyAuditLedger({ logFile: legacy, macKey: key }).ok === true;
+
+        // A writer without the key cannot extend a keyed chain.
+        let keylessCode = "";
+        try { recordAuditEvent({ eventType: "X", logFile: keyed, macKey: false }); } catch (error) { keylessCode = error.code; }
+        checks.keylessWriterRefused = keylessCode === "ERR_AUDIT_KEY_REQUIRED";
+
+        // Damaged tail is refused rather than restarting the chain.
+        const damaged = path.join(dir, "damaged.log");
+        fill(damaged, 3, false);
+        fs.appendFileSync(damaged, "{partial\n");
+        let damagedCode = "";
+        try { recordAuditEvent({ eventType: "X", logFile: damaged, macKey: false }); } catch (error) { damagedCode = error.code; }
+        checks.damagedTailRefused = damagedCode === "ERR_AUDIT_LEDGER_CORRUPT";
+
+        // Entries removed behind the checkpoint anchor: the writer refuses and leaves the anchor alone.
+        const removed = path.join(dir, "removed.log");
+        fill(removed, 4, false);
+        store(removed, lineOf(removed).slice(0, 2));
+        let removedCode = "";
+        try { recordAuditEvent({ eventType: "X", logFile: removed, macKey: false }); } catch (error) { removedCode = error.code; }
+        checks.removedEntriesWriteRefused = removedCode === "ERR_AUDIT_LEDGER_TRUNCATED"
+            && JSON.parse(fs.readFileSync(`${removed}.head`, "utf8")).lastIndex === 4;
+
+        // Rotation recovers the refusals above: the old files are kept, the old head is carried into entry #1,
+        // the new ledger verifies and accepts writers, and a keyed ledger is not silently rotated to unkeyed.
+        const damagedBytes = fs.readFileSync(damaged);
+        const lastGoodHash = lineOf(removed)[1].hash;
+        const rotatedDamaged = rotateAuditLedger({ logFile: damaged, macKey: false, reason: "evidence" });
+        recordAuditEvent({ eventType: "AFTER_ROTATE", logFile: damaged, macKey: false });
+        const rotatedFirst = lineOf(damaged)[0];
+        checks.rotateRecoversDamagedTail = rotatedDamaged.rotated === true
+            && verifyAuditLedger({ logFile: damaged, macKey: false }).ok === true
+            && fs.readFileSync(rotatedDamaged.archive).equals(damagedBytes)
+            && rotatedFirst.eventType === "AUDIT_LEDGER_ROTATED" && rotatedFirst.prevHash === GENESIS_HASH
+            && rotatedFirst.details.previousVerified === false;
+        const rotatedRemoved = rotateAuditLedger({ logFile: removed, macKey: false });
+        checks.rotateCarriesOldHead = rotatedRemoved.previous.lastGood.hash === lastGoodHash
+            && lineOf(removed)[0].details.previousAnchor.lastIndex === 4
+            && lineOf(removed)[0].details.previousLastGood.hash === lastGoodHash;
+        let unkeyedRotateCode = "";
+        try { rotateAuditLedger({ logFile: keyed, macKey: false }); } catch (error) { unkeyedRotateCode = error.code; }
+        checks.rotateRefusesUnkeyedDowngrade = unkeyedRotateCode === "ERR_AUDIT_ROTATE_UNKEYED" && fs.existsSync(keyed);
+        // Boundary: nothing in the new ledger enforces that the archive still exists.
+        for (const suffix of ["", ".head", ".state"]) fs.rmSync(`${rotatedDamaged.archive}${suffix}`, { force: true });
+        checks.deletedArchiveNotDetected = verifyAuditLedger({ logFile: damaged, macKey: false }).ok === true;
+
+        // Concurrent writer processes: one valid chain, no lost events.
+        const concurrent = path.join(dir, "concurrent.log");
+        const writerFile = path.join(dir, "writer.mjs");
+        fs.writeFileSync(writerFile, [
+            `import { recordAuditEvent } from ${JSON.stringify(pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "cli", "vault", "audit.mjs")).href)};`,
+            "const [file, tag] = process.argv.slice(2);",
+            "for (let i = 0; i < 10; i += 1) recordAuditEvent({ eventType: \"CONCURRENT\", target: `${tag}-${i}`, logFile: file, macKey: false });",
+        ].join("\n"));
+        const driver = spawnSync(process.execPath, ["-e", `
+            const { spawn } = require("node:child_process");
+            const runs = Array.from({ length: 4 }, (_, k) => new Promise((resolve) => {
+                spawn(process.execPath, [${JSON.stringify(writerFile)}, ${JSON.stringify(concurrent)}, "w" + k], { stdio: "ignore" }).on("close", resolve);
+            }));
+            Promise.all(runs).then((codes) => process.exit(codes.every((code) => code === 0) ? 0 : 1));
+        `], { encoding: "utf8" });
+        const concurrentResult = verifyAuditLedger({ logFile: concurrent, macKey: false });
+        checks.concurrentWritersConsistent = driver.status === 0 && concurrentResult.ok === true && concurrentResult.count === 40;
+
+        // Vault events reach the same stream, keyed.
+        const workspace = path.join(dir, "workspace");
+        delete process.env.HETZER_AUDIT_LOG_PATH;
+        const vault = new Grimoire({ dbPath: path.join(workspace, "data", "hetzer-vault.db"), masterKey: key });
+        vault.recordAudit({ actor: "evidence", action: "vault.set-credential", credential_id: "evidence-cred", outcome: "allowed" });
+        vault.close();
+        const vaultLedger = path.join(workspace, ".hetzer", "audit.log");
+        const vaultCheck = verifyAuditLedger({ logFile: vaultLedger, macKey: key });
+        checks.vaultEventsInLedger = vaultCheck.ok === true && vaultCheck.macVerified === true
+            && lineOf(vaultLedger)[0]?.eventType === "VAULT_SET_CREDENTIAL";
+
+        // --strict stops before the child runs when the start event cannot be recorded.
+        const blocker = path.join(dir, "blocker");
+        fs.writeFileSync(blocker, "file");
+        const marker = path.join(dir, "ran.txt");
+        const script = path.join(dir, "touch.js");
+        fs.writeFileSync(script, `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran");`);
+        fs.writeFileSync(path.join(dir, ".env"), "PLAIN=value\n");
+        process.env.HETZER_AUDIT_LOG_PATH = path.join(blocker, "sub", "audit.log");
+        let strictCode = "";
+        try {
+            await executeProcess({ root: dir, envFile: path.join(dir, ".env"), strict: true, allowNames: [], command: process.execPath, commandArgs: [script] });
+        } catch (error) {
+            strictCode = error.code;
+        }
+        checks.strictFailsClosed = strictCode === "ERR_AUDIT_WRITE_FAILED" && !fs.existsSync(marker);
+    } finally {
+        if (previousLogPath === undefined) delete process.env.HETZER_AUDIT_LOG_PATH;
+        else process.env.HETZER_AUDIT_LOG_PATH = previousLogPath;
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+
+    const required = [
+        "keyedVerifies", "wrongKeyRejected", "middleEditRejected", "actorEditRejected", "truncationRejected",
+        "macDowngradeRejected", "unkeyedRewriteRejectedWhenKeyRequired", "legacyLedgerVerifies", "keylessWriterRefused",
+        "damagedTailRefused", "removedEntriesWriteRefused", "rotateRecoversDamagedTail", "rotateCarriesOldHead", "rotateRefusesUnkeyedDowngrade",
+        "concurrentWritersConsistent", "vaultEventsInLedger", "strictFailsClosed",
+    ];
+    // unkeyedRewritePassesByDefault, keyHolderCanForge and deletedArchiveNotDetected document known limits. They are reported in
+    // "observed" and "boundary" but do not gate the verdict, so closing a limit later is not a regression.
+    const pass = required.every((name) => checks[name] === true);
+
+    recordTest({
+        id: "VERIFY-SEC-014",
+        name: "Unified Audit Ledger Integrity (Gate G2)",
+        target: "cli/vault/audit.mjs -> recordAuditEvent(), verifyAuditLedger(), rotateAuditLedger(); Grimoire.recordAudit(); executeProcess() under --strict",
+        threat: "Audit entries are edited, truncated or rewritten, vault events are missing from the tamper-evident stream, events are lost under concurrent writers, or a run proceeds without its start record under --strict",
+        input: "Synthetic ledgers written with and without a key, then edited, truncated, rewritten, downgraded and extended by key-less writers, then rotated; four concurrent writer processes; a vault with a workspace layout; an unwritable audit path",
+        method: "Write and tamper ledgers on disk and run the verifier with and without the key; rotate refused ledgers and check the archive and the first entry of the new ledger; run concurrent writer processes; mirror a vault event; run executeProcess under --strict against an unwritable log path",
+        expected: "Edits, actor changes, truncation, MAC downgrade, wrong keys and key-less extension are rejected; legacy ledgers verify; rotation keeps the old files, carries the old head into the new ledger and does not turn a keyed ledger into an unkeyed one; concurrent writers lose nothing; vault events are keyed and verifiable; --strict refuses to start without its start record",
+        observed: Object.entries(checks).map(([name, value]) => `${name}: ${value}`).join(". ") + ".",
+        pass,
+        boundary: "A consistent rewrite of the whole chain without any MAC passes default verification and is only rejected when a keyed ledger is required (requireMac or HETZER_AUDIT_REQUIRE_MAC=1). Anyone who can read the master key can forge a valid keyed ledger. Tail truncation is caught only by the head anchor file, which the same attacker can rewrite. Rotation is an operator action that anyone with shell access can also perform by moving files; it makes the recovery logged and carries the old head forward, but the new ledger does not enforce that the archive still exists, so deleting the archive together with the rotation entry is not detected. The SQLite audit table is a frozen mirror, not a second source of truth. Failures after the child process has started cannot undo it. The writer lock is not a queue: a waiter leaves a marker and writers pause briefly for a fresh one, which reduced rotation timeouts under 16 CPU-bound processes on Windows (5 of 25 rounds before, 1 of 25 after, small samples) but does not remove them or guarantee order, so a waiter (a rotation, a verification, another writer) can still time out after 10 seconds; fail-soft emitters then lose that event and --strict start events refuse to run. Measured on Windows only; Linux and macOS are untested.",
+    });
+}
+
+// -----------------------------------------------------------------------------
+// Test 16: SDK Contract and Vault Format Version (Gate G2)
+// -----------------------------------------------------------------------------
+{
+    const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-verify-contract-")));
+    const checks = {};
+    const masterKey = "contract-evidence-key-0123456789abcdef0123456789";
+    const secretValue = ["contract", "evidence", "value", "0001"].join("-");
+    const forbiddenMember = /resolve|reveal|decrypt|lease/i;
+    const memberNames = (value, prefix = "") => Object.keys(value).flatMap((key) => [
+        `${prefix}${key}`,
+        ...(value[key] && typeof value[key] === "object" ? memberNames(value[key], `${prefix}${key}.`) : []),
+    ]);
+    const codeOf = (action) => {
+        try { action(); return ""; } catch (error) { return error.code || "threw"; }
+    };
+
+    try {
+        // The SDK surface: no member that returns a credential value, and nothing else importable from the package.
+        const sdkRoot = path.join(dir, "sdk");
+        fs.mkdirSync(sdkRoot, { recursive: true });
+        const dbPath = path.join(sdkRoot, "data", "hetzer-vault.db");
+        const vault = new Grimoire({ dbPath, masterKey });
+        vault.create({ id: "contract-key", projectId: "sample-app", keyName: "contract-key", notes: secretValue, secret: secretValue, allowedActions: ["deploy"] });
+        vault.close();
+        const client = createHetzer({ root: sdkRoot, vaultPath: dbPath });
+        const names = [...memberNames(client), ...Object.keys(sdk)];
+        checks.sdkHasNoRevealMember = names.every((name) => !forbiddenMember.test(name));
+        const packageJson = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"));
+        checks.packageExportsOnlySdk = JSON.stringify(Object.keys(packageJson.exports).sort()) === JSON.stringify(["./package.json", "./sdk"]);
+
+        const seen = [];
+        const take = (value) => seen.push(JSON.stringify(value, Object.getOwnPropertyNames(Object(value))), String(value?.stack || ""));
+        take(client.credentials.list());
+        take(client.credentials.metadata("contract-key"));
+        take(client.credentials.validate("secretRef:contract-key", { targetId: "sample-app", action: "deploy" }));
+        for (const attempt of [
+            () => client.credentials.validate("secretRef:contract-key", { action: "read" }),
+            () => client.credentials.validate("secretRef:missing-key"),
+            () => client.credentials.metadata("contract_key"),
+        ]) {
+            try { attempt(); } catch (error) { take(error); }
+        }
+        checks.sdkResultsHaveNoValue = seen.length >= 6 && seen.every((text) => !text.includes(secretValue));
+        checks.idGrammarIsOne = codeOf(() => client.credentials.metadata("a_b")) === SDK_ERROR_CODES.INVALID_CREDENTIAL_ID
+            && codeOf(() => client.credentials.metadata("a.b")) === SDK_ERROR_CODES.INVALID_CREDENTIAL_ID
+            && codeOf(() => client.credentials.validate("secretRef:a_b")) === SDK_ERROR_CODES.INVALID_REFERENCE;
+        client.close();
+
+        // Grant-checked execution through the SDK: a raw-injection request without a vault grant never starts the child.
+        const execRoot = path.join(dir, "exec");
+        fs.mkdirSync(execRoot, { recursive: true });
+        const envFile = path.join(execRoot, ".env");
+        fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${crypto.createHash("sha256").update(masterKey).digest("hex")}\n`);
+        setCredential({ root: execRoot, envFile, id: "npm-token", secret: secretValue, rawInjection: "deny" });
+        const marker = path.join(execRoot, "ran.txt");
+        const execClient = createHetzer({ root: execRoot });
+        let execCode = "";
+        let execMessageClean = false;
+        try {
+            await execClient.execution.run({
+                command: process.execPath,
+                args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran")`],
+                allow: ["npm-token"],
+                allowRawUnmediated: ["npm-token"],
+            });
+        } catch (error) {
+            execCode = error.code;
+            execMessageClean = !`${error.message}${error.stack}`.includes(secretValue);
+        }
+        execClient.close();
+        checks.sdkExecutionChecksGrant = execCode === "ERR_RAW_UNMEDIATED_DENIED_BY_GRANT" && execMessageClean && !fs.existsSync(marker);
+
+        // Vault format version: stamped when new, restamped when missing, newer refused before any change.
+        const formatDb = path.join(dir, "format", "hetzer-vault.db");
+        let formatVault = new Grimoire({ dbPath: formatDb, masterKey });
+        checks.freshVaultStamped = formatVault.formatVersion === VAULT_FORMAT_VERSION && formatVault._meta("format_version") === String(VAULT_FORMAT_VERSION);
+        formatVault.create({ id: "format-key", projectId: "sample-app", keyName: "format-key", secret: secretValue });
+        formatVault.db.prepare("DELETE FROM vault_meta WHERE key = 'format_version'").run();
+        formatVault.close();
+        formatVault = new Grimoire({ dbPath: formatDb, masterKey });
+        checks.unstampedVaultRestamped = formatVault._meta("format_version") === String(VAULT_FORMAT_VERSION) && formatVault.matchesSecret("format-key", secretValue) === true;
+        formatVault.close();
+
+        const newerDb = path.join(dir, "newer.db");
+        const raw = new DatabaseSync(newerDb);
+        raw.exec(`
+            CREATE TABLE vault_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
+            INSERT INTO vault_meta VALUES ('format_version', '${VAULT_FORMAT_VERSION + 1}', '2026-01-01T00:00:00.000Z');
+            CREATE TABLE vault_credentials (id TEXT PRIMARY KEY, encrypted_value TEXT NOT NULL);
+        `);
+        raw.close();
+        const newerBefore = fs.readFileSync(newerDb);
+        const newerCode = codeOf(() => new Grimoire({ dbPath: newerDb, masterKey }));
+        const inspect = new DatabaseSync(newerDb);
+        const tables = inspect.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map((row) => row.name);
+        const columns = inspect.prepare("PRAGMA table_info(vault_credentials)").all().map((column) => column.name);
+        inspect.close();
+        checks.newerVaultRefusedUntouched = newerCode === "ERR_VAULT_FORMAT_UNSUPPORTED"
+            && fs.readFileSync(newerDb).equals(newerBefore)
+            && JSON.stringify(tables) === JSON.stringify(["vault_credentials", "vault_meta"])
+            && JSON.stringify(columns) === JSON.stringify(["id", "encrypted_value"]);
+
+        // Boundary: code in the same process can still import the vault module and ask it for a value.
+        const inProcess = new Grimoire({ dbPath: formatDb, masterKey });
+        checks.inProcessCallerCanStillResolve = typeof inProcess.reveal === "function" && typeof inProcess.resolve === "function";
+        inProcess.close();
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+
+    const required = [
+        "sdkHasNoRevealMember", "packageExportsOnlySdk", "sdkResultsHaveNoValue", "idGrammarIsOne", "sdkExecutionChecksGrant",
+        "freshVaultStamped", "unstampedVaultRestamped", "newerVaultRefusedUntouched",
+    ];
+    // inProcessCallerCanStillResolve documents the R-05 limit; it is reported but does not gate the verdict.
+    const pass = required.every((name) => checks[name] === true);
+
+    recordTest({
+        id: "VERIFY-SEC-015",
+        name: "SDK Contract and Vault Format Version (Gate G2)",
+        target: "sdk/index.mjs -> createHetzer(); cli/vault/hetzer-vault.mjs -> Grimoire format version check",
+        threat: "The public SDK hands a credential value to its caller, accepts ids the vault and secretRef grammar do not, or runs a raw injection the vault did not grant; an older build changes a vault written by a newer format",
+        input: "A synthetic vault with a credential whose value is also in its notes; credential ids with '.' and '_'; a raw-injection request against a credential whose grant denies it; vaults without a marker and with a newer marker, the latter with an old table layout",
+        method: "Walk the client and module member names; collect every SDK result and error for the value; run client.execution.run against the denied grant and check the child marker; open vaults and compare bytes, tables and columns before and after a refused open",
+        expected: `No resolve, reveal, decrypt or lease member; only the SDK entry in the package exports; no value in any result or error; one id grammar; the denied child never starts and the error carries no value; new and unstamped vaults end at format ${VAULT_FORMAT_VERSION} with credentials intact; a newer vault is refused with its bytes, tables and columns unchanged`,
+        observed: Object.entries(checks).map(([name, value]) => `${name}: ${value}`).join(". ") + ".",
+        pass,
+        boundary: "The SDK narrows what a well-behaved caller can ask for. Code in the same process or under the same user can still import the vault module, call resolve() or read the database and key store (R-05 stays open for in-process callers; untrusted agents belong out of process in the sandbox). The package exports map limits specifiers, not file access. Lease interfaces are not part of apiVersion 1. Builds from before the format marker do not check it, so an older build can still open and alter a newer vault.",
     });
 }
 

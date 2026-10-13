@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parseEnv } from "../core/env.mjs";
+import { recordAuditEvent } from "./audit.mjs";
 import { assertInteractiveHumanSession } from "./human-guard.mjs";
 
 export function secureFilePermissions(filePath, { run = spawnSync } = {}) {
@@ -38,7 +39,32 @@ const ALLOWED_ACTION_PATTERN = /^[a-z0-9]+(?:[.:_/-][a-z0-9]+)*$/;
 export const SCOPES = new Set(["header", "query", "env", "basic"]);
 export const REALMS = new Set(["core", "data", "memory", "social", "command", "frontier"]);
 export const ACCESS_ROLES = new Set(["reader", "operator", "admin"]);
-export const SECRET_REF_PATTERN = /^secretRef:([a-z0-9]+(?:[._-][a-z0-9]+)*)$/;
+/**
+ * Where vault events are mirrored into the audit ledger: an explicit option, HETZER_AUDIT_LOG_PATH,
+ * or the workspace default when the database sits in <root>/data. Other layouts and in-memory
+ * vaults record to SQLite only.
+ */
+export function resolveVaultAuditLogFile({ auditLogFile, dbPath } = {}) {
+    if (auditLogFile === false) return null;
+    if (auditLogFile) return path.resolve(auditLogFile);
+    if (process.env.HETZER_AUDIT_LOG_PATH) return path.resolve(process.env.HETZER_AUDIT_LOG_PATH);
+    if (!dbPath || dbPath === ":memory:") return null;
+    const dataDir = path.dirname(path.resolve(dbPath));
+    if (path.basename(dataDir) !== "data") return null;
+    return path.join(path.dirname(dataDir), ".hetzer", "audit.log");
+}
+
+export const SECRET_REF_PATTERN = /^secretRef:([a-z0-9]+(?:-[a-z0-9]+)*)$/;
+
+/**
+ * Fresh global matcher for secretRef tokens embedded in longer text. A reference only matches when
+ * the whole token is a valid credential id: "secretRef:github.pat" or "secretRef:npm_token" are left
+ * untouched instead of resolving the shorter prefix ("github", "npm"). A sentence-ending period or
+ * comma still ends the token; a trailing hyphen, underscore or dotted suffix does not.
+ */
+export function createSecretRefScanner() {
+    return /secretRef:([a-z0-9]+(?:-[a-z0-9]+)*)(?![A-Za-z0-9_-]|\.[A-Za-z0-9])/g;
+}
 
 function sha256(text) {
     return crypto.createHash("sha256").update(String(text)).digest("hex");
@@ -58,6 +84,29 @@ export function normalizeMasterKey(raw) {
 
 export function generateMasterKey() {
     return crypto.randomBytes(48).toString("base64url");
+}
+
+/** Ledger event type for a vault audit action: `vault.set-credential` -> `VAULT_SET_CREDENTIAL`, `policy.loaded` -> `VAULT_POLICY_LOADED`. */
+export function vaultAuditEventType(action) {
+    const name = String(action || "unknown").replace(/^vault[._-]/i, "").replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    return `VAULT_${name}`.toUpperCase();
+}
+
+/** The one credential id grammar: what the vault accepts on create, and what a secretRef can name. */
+export function isCredentialId(id) {
+    return typeof id === "string" && ID_PATTERN.test(id);
+}
+
+export function isSecretRef(reference) {
+    return typeof reference === "string" && SECRET_REF_PATTERN.test(reference.trim());
+}
+
+export function formatSecretRef(id) {
+    const trimmed = String(id || "").trim();
+    if (!trimmed || !ID_PATTERN.test(trimmed)) {
+        throw new Error(`Invalid credential ID '${id}' for secretRef formatting (must be lowercase kebab-case).`);
+    }
+    return `secretRef:${trimmed}`;
 }
 
 export function parseSecretRef(reference) {
@@ -225,6 +274,17 @@ export function verifyGrantSignature(masterKey, row) {
     }
 }
 
+export function computeAuditMac(masterKey, entryHash) {
+    // Writers hold the key in different forms (raw text from the environment, normalized inside the vault).
+    // normalizeMasterKey is idempotent, so every form maps to the same MAC key.
+    const normalizedKey = normalizeMasterKey(masterKey);
+    if (!normalizedKey) return "";
+    const subkey = crypto.createHmac("sha256", keyBuffer(normalizedKey))
+        .update("hetzer:audit-integrity:v1")
+        .digest();
+    return crypto.createHmac("sha256", subkey).update(String(entryHash)).digest("hex");
+}
+
 export function computeApprovalSignature(masterKey, { credentialId, policyHash, targetOrigin } = {}) {
     if (!masterKey) return "";
     const subkey = crypto.createHmac("sha256", keyBuffer(masterKey))
@@ -298,17 +358,32 @@ function ensureParent(file) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
 }
 
+/**
+ * The on-disk vault format this build reads and writes. A vault stamped with a higher number was made
+ * by a newer Hetzer and is refused before anything in it is changed. A vault without a stamp predates
+ * the marker and is version 1. Builds before the marker do not check it, so the protection starts here.
+ */
+export const VAULT_FORMAT_VERSION = 1;
+
 export class Grimoire {
-    constructor({ dbPath, file, legacyFile, masterKey, root }) {
+    constructor({ dbPath, file, legacyFile, masterKey, root, auditLogFile }) {
         const rootDir = root || process.cwd();
         const envPath = resolveVaultPath(rootDir);
         const resolvedDb = dbPath || file || envPath || path.join(rootDir, "data", "hetzer-vault.db");
         this.dbPath = resolvedDb;
         this.legacyFile = legacyFile || (String(file || "").endsWith(".json") ? file : "");
         this.masterKey = normalizeMasterKey(masterKey);
+        this.auditLogFile = resolveVaultAuditLogFile({ auditLogFile, dbPath: resolvedDb });
         ensureParent(this.dbPath);
         this.db = new DatabaseSync(this.dbPath);
-        this._initSchema();
+        try {
+            this._assertFormatSupported();
+            this._initSchema();
+        } catch (error) {
+            try { this.db.close(); } catch {}
+            throw error;
+        }
+        if (!this._meta("format_version")) this._setMeta("format_version", String(VAULT_FORMAT_VERSION));
         this.migration = this._migrateLegacy();
         if (this.dbPath !== ":memory:") {
             secureFilePermissions(this.dbPath);
@@ -321,6 +396,29 @@ export class Grimoire {
 
     get unlocked() {
         return Boolean(this.masterKey);
+    }
+
+    get formatVersion() {
+        return Number(this._meta("format_version")) || VAULT_FORMAT_VERSION;
+    }
+
+    /** Read-only: runs before any DDL, migration or stamp, so a refused vault is left untouched. */
+    _assertFormatSupported() {
+        const hasMeta = this.db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'vault_meta'").get();
+        if (!hasMeta) return;
+        const stored = this.db.prepare("SELECT value FROM vault_meta WHERE key = 'format_version'").get()?.value;
+        if (stored === undefined) return;
+        const version = /^[1-9][0-9]*$/.test(String(stored)) ? Number(stored) : 0;
+        if (version < 1) {
+            const error = new Error("The vault format marker is not a valid version number; refusing to open it.");
+            error.code = "ERR_VAULT_FORMAT_UNSUPPORTED";
+            throw error;
+        }
+        if (version > VAULT_FORMAT_VERSION) {
+            const error = new Error(`This vault uses format ${version}, but this Hetzer reads format ${VAULT_FORMAT_VERSION}. Upgrade Hetzer to open it; nothing was changed.`);
+            error.code = "ERR_VAULT_FORMAT_UNSUPPORTED";
+            throw error;
+        }
     }
 
     _initSchema() {
@@ -932,6 +1030,7 @@ export class Grimoire {
     }
 
     recordAudit(event) {
+        this._mirrorAuditToLedger(event);
         const metadata = event.metadata && typeof event.metadata === "object" ? event.metadata : {};
         this.db.prepare(`
             INSERT INTO vault_audit_events (
@@ -947,6 +1046,33 @@ export class Grimoire {
             JSON.stringify(metadata).slice(0, 4000),
             new Date().toISOString(),
         );
+    }
+
+    /**
+     * Vault events also go to the hash-chained file ledger (the single audit stream). The SQLite
+     * table is kept as a mirror for existing readers. A ledger failure never blocks a vault
+     * operation; the last failure is kept on `auditLedgerError` for callers that need to know.
+     */
+    _mirrorAuditToLedger(event) {
+        if (!this.auditLogFile) return;
+        try {
+            const action = String(event.action || "unknown");
+            recordAuditEvent({
+                eventType: vaultAuditEventType(action),
+                target: String(event.credentialId || event.credential_id || event.targetId || event.target_id || ""),
+                result: String(event.outcome || "unknown"),
+                actor: { user: String(event.actor || "unknown").slice(0, 120) },
+                details: {
+                    reason: String(event.reason || "").slice(0, 500) || undefined,
+                    metadata: event.metadata && typeof event.metadata === "object" ? event.metadata : undefined,
+                },
+                logFile: this.auditLogFile,
+                macKey: this.masterKey || false,
+            });
+            this.auditLedgerError = null;
+        } catch (error) {
+            this.auditLedgerError = error;
+        }
     }
 
     listAudit(options = {}) {

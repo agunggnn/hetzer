@@ -5,7 +5,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { Grimoire, resolveVaultPath } from "./hetzer-vault.mjs";
 import { setCredential } from "./creds.mjs";
 import { recordAuditEvent } from "./audit.mjs";
 
@@ -64,27 +63,6 @@ export function triggerCanaryAlert({
             details: { threatVector, timestamp },
             root,
         });
-    } catch {
-        // Fail soft
-    }
-
-    try {
-        const envVault = resolveVaultPath(root);
-        const dbPath = envVault || path.join(root, "data", "hetzer-vault.db");
-        if (fs.existsSync(dbPath)) {
-            const masterKey = process.env.HETZER_GRIMOIRE_KEY || "incident-audit-mode";
-            const vault = new Grimoire({ dbPath, masterKey });
-            vault.recordAudit({
-                actor,
-                action: "canary.tripwire",
-                target_id: "canary-honeytoken",
-                credential_id: id,
-                reason: "Canary honey-token accessed by untrusted caller",
-                outcome: "blocked_canary_tripped",
-                metadata: { timestamp },
-            });
-            vault.close();
-        }
     } catch {
         // Fail soft
     }

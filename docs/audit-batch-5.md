@@ -74,6 +74,15 @@ flowchart TD
 5. **Elimination of Bypass Flags**: Removed all environment bypass flags (`HETZER_TEST_BYPASS_GUARD`, `HETZER_ALLOW_NON_INTERACTIVE_REVEAL`) in commit `b88924a` to prevent agent environment manipulation from disabling security boundaries.
 6. **Sub-ms Process Ancestry Caching**: Added in-process memoization for `checkProcessAncestors()` in [`cli/vault/human-guard.mjs`](../cli/vault/human-guard.mjs), preventing repeated PowerShell/WMIC spawns on Windows and preserving sub-millisecond command execution.
 
+### 1.4 Boundary Clarification & Threat Ceiling (Review R-05)
+> [!IMPORTANT]
+> **Defense-in-Depth vs. OS Privilege Boundary**:  
+> Attaching `assertInteractiveHumanSession()` to `Grimoire.reveal()` blocks naive agents and CLI scrapers from dumping credentials via TTY-less execution. However, as documented in review **R-05**:
+> - `Grimoire.resolve()` is an internal runtime primitive requiring action capability grants (`process.start`, `broker.proxy`, `mcp.tools/call`). It intentionally bypasses the human TTY check to allow headless process execution and broker proxies.
+> - A programmatic caller executing under the same OS user account with access to the master key (`.env` or `~/.hetzer/grimoire.key`) can still call internal `resolve(id, { action })` or decrypt the SQLite database directly.
+> - Within a single Node.js runtime process, software heuristics cannot enforce an OS-level memory boundary against same-user code.
+> - Therefore, the public SDK contract (`sdk/`) **strictly excludes `resolve()`** and never returns plaintext in-process. Untrusted agents must be executed out-of-process via `hetzer exec` or `execution.run()` (with `--sandbox` container isolation).
+
 ---
 
 ## 2. [SEC-24] Master Key Isolation Precedence & Separation Boundaries

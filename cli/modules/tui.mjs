@@ -12,7 +12,7 @@ import { findGitDir, checkStagedDiff } from "../core/git-hook.mjs";
 import { createToolCatalog } from "../mcp/catalog.mjs";
 import { isCanaryCredential } from "../vault/canary.mjs";
 import { listCredentials } from "../vault/creds.mjs";
-import { getIsolatedKeyPath } from "../vault/hetzer-vault.mjs";
+import { createSecretRefScanner, getIsolatedKeyPath } from "../vault/hetzer-vault.mjs";
 import { scanText } from "../vault/sniffer.mjs";
 import { verifyAuditLedger, readAuditEvents } from "../vault/audit.mjs";
 import { detectContainerEngine } from "../vault/sandbox.mjs";
@@ -303,7 +303,7 @@ export function vaultPostureSnapshot(root, fileEnv = {}) {
     if (fs.existsSync(envFile)) {
         try {
             const content = fs.readFileSync(envFile, "utf8");
-            const matches = content.match(/secretRef:[a-zA-Z0-9._-]+/g);
+            const matches = content.match(createSecretRefScanner());
             secretRefCount = matches ? matches.length : 0;
             const sniffer = scanText(content);
             rawSecretCount = sniffer.matches.length;
