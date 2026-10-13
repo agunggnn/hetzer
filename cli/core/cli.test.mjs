@@ -222,7 +222,7 @@ test("protect command includes CLI PATH notice when running via npx", async () =
         process.env.HETZER_INSTALL_HOME = path.join(tempDir, "home");
         await main(["protect"], { root: tempDir });
         assert.match(output, /CLI PATH NOTICE/);
-        assert.match(output, /npm install -g @agunggnn\/hetzer/);
+        assert.match(output, /npm install -g hetzer\n/);
     } finally {
         if (originalTestGlobal === undefined) delete process.env.HETZER_TEST_GLOBAL_CLI;
         else process.env.HETZER_TEST_GLOBAL_CLI = originalTestGlobal;

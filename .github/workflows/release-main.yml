@@ -16,6 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      tag: ${{ steps.metadata.outputs.tag }}
+      version: ${{ steps.metadata.outputs.version }}
     steps:
       - name: Checkout full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -100,3 +103,88 @@ jobs:
       contents: read
       packages: write
     uses: ./.github/workflows/publish-package.yml
+
+  publish-npm:
+    # Stages the unscoped `hetzer` package on npmjs through npm trusted publishing (OIDC), so no npm token is
+    # stored in this repository. npmjs.com trusts this file by name: the trusted publisher for `hetzer` must name
+    # owner `agunggnn`, repository `hetzer` and workflow `release-main.yml`. Keep this job in this file; npm checks
+    # the calling workflow, not a reusable one. A maintainer approves each staged version with 2FA on npmjs.com.
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Setup Node.js 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      # Trusted publishing needs npm 11.5.1 or later and `npm stage publish` needs 11.15.0 or later; Node 22
+      # bundles npm 10.
+      - name: Install npm with staged publishing
+        run: npm install -g npm@11.20.0
+
+      - name: Check whether this version is already on npmjs
+        id: npm
+        env:
+          RELEASE_VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          if npm view "hetzer@$RELEASE_VERSION" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Publish the tarball attached to the GitHub Release, so npmjs serves the same bytes as checksums.txt.
+      - name: Download and verify the released tarball
+        if: steps.npm.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          tarball="hetzer-$RELEASE_VERSION.tgz"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir release \
+            --pattern "$tarball" --pattern checksums.txt
+          cd release
+          awk -v file="$tarball" '$2 == file && length($1) == 64' checksums.txt > expected.sha256
+          test "$(wc -l < expected.sha256)" -eq 1
+          sha256sum --check --strict expected.sha256
+          # shellcheck disable=SC2016 # ${...} below is a JavaScript template literal, not shell.
+          tar -xzOf "$tarball" package/package.json | node -e '
+            let text = "";
+            process.stdin.on("data", (chunk) => { text += chunk; }).on("end", () => {
+              const manifest = JSON.parse(text);
+              const expected = { name: "hetzer", version: process.env.RELEASE_VERSION,
+                repository: "git+https://github.com/agunggnn/hetzer.git" };
+              const actual = { name: manifest.name, version: manifest.version, repository: manifest.repository?.url };
+              if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+                console.error(`Tarball manifest ${JSON.stringify(actual)} does not match ${JSON.stringify(expected)}.`);
+                process.exit(1);
+              }
+            });'
+
+      - name: Stage the package on npmjs
+        if: steps.npm.outputs.exists != 'true'
+        env:
+          RELEASE_VERSION: ${{ needs.release.outputs.version }}
+        run: npm stage publish "./release/hetzer-$RELEASE_VERSION.tgz"
+
+      - name: Report the approval step
+        env:
+          RELEASE_VERSION: ${{ needs.release.outputs.version }}
+          ALREADY_PUBLISHED: ${{ steps.npm.outputs.exists }}
+        run: |
+          if [ "$ALREADY_PUBLISHED" = "true" ]; then
+            echo "hetzer@$RELEASE_VERSION is already published on npmjs; nothing staged." >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "hetzer@$RELEASE_VERSION is staged on npmjs and is not public until a maintainer approves it with 2FA:"
+              echo ""
+              echo "- npmjs.com: https://www.npmjs.com/package/hetzer, Staged Packages tab, Approve"
+              echo "- CLI: \`npm stage list hetzer\`, then \`npm stage approve <stage-id>\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

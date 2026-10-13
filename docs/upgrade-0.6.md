@@ -51,7 +51,7 @@ Each of these now prints a pointer and exits with code 1.
 | Command | Use instead |
 |---|---|
 | `hetzer up`, `down`, `status`, `logs`, `tui`, `update`, `modules`, `install`, `remove`, `module`, `validate` | [Jagdpanzer](https://github.com/agunggnn/jagdpanzer) for multi-container stacks |
-| `hetzer upgrade`, `hetzer check-update` | `npm install -g @agunggnn/hetzer` |
+| `hetzer upgrade`, `hetzer check-update` | `npm install -g hetzer@latest` |
 | `hetzer publish` | the release scripts in `scripts/` |
 
 `hetzer init` no longer writes a `docker-compose.yml` or generates gateway passwords.
@@ -82,7 +82,7 @@ rows are counted in the audit record and not copied. Credentials, grants and app
 ## SDK
 
 `apiVersion` is the number `1` (it was the string `experimental-1`). Credential ids must match the vault's grammar
-(lower-case letters and digits separated by single hyphens). The package exports only `@agunggnn/hetzer/sdk`. Contract:
+(lower-case letters and digits separated by single hyphens). The package exports only `hetzer/sdk` (`@agunggnn/hetzer/sdk` from GitHub Packages). Contract:
 [sdk-contract.md](sdk-contract.md).
 
 ## What this release does not change
