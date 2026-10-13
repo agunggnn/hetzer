@@ -290,7 +290,7 @@ export async function callMcpTool({
                         throw new Error(`Credential 'secretRef:${id}' is not permitted for MCP tool execution.`);
                     }
                     return secret;
-                }, resolvedSecrets);
+                }, resolvedSecrets, { root });
             } finally {
                 vault.close();
             }

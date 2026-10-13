@@ -187,11 +187,24 @@ test("resolveSecretRefsInPayload resolves exact, inline, and nested secretRef re
         /not found in Grimoire Vault/
     );
 
-    // Canary tripwire triggered on decoy references
-    assert.throws(
-        () => resolveSecretRefsInPayload("secretRef:canary-token", resolver),
-        (err) => err.code === "ERR_CANARY_TRIPWIRE_TRIGGERED" && err.exitCode === 43
-    );
+    // Canary tripwire triggered on decoy references, recorded under the given instance root and not the process directory
+    const incidentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-mcp-canary-"));
+    const cwdIncidents = path.join(process.cwd(), "data", "hetzer-incidents.log");
+    const cwdIncidentsBefore = fs.existsSync(cwdIncidents) ? fs.readFileSync(cwdIncidents, "utf8") : null;
+    try {
+        for (const payload of ["secretRef:canary-token", "use secretRef:canary-token here", { nested: ["secretRef:canary-token"] }]) {
+            assert.throws(
+                () => resolveSecretRefsInPayload(payload, resolver, [], { root: incidentRoot }),
+                (err) => err.code === "ERR_CANARY_TRIPWIRE_TRIGGERED" && err.exitCode === 43
+            );
+        }
+        const recorded = fs.readFileSync(path.join(incidentRoot, "data", "hetzer-incidents.log"), "utf8").trim().split(/\r?\n/);
+        assert.equal(recorded.length, 3, "each decoy reference is recorded under the instance root");
+        assert.equal(fs.existsSync(path.join(incidentRoot, ".hetzer", "audit.log")), true);
+        assert.equal(fs.existsSync(cwdIncidents) ? fs.readFileSync(cwdIncidents, "utf8") : null, cwdIncidentsBefore, "nothing is written under the process directory");
+    } finally {
+        fs.rmSync(incidentRoot, { recursive: true, force: true });
+    }
 
     // Collects resolved credentials into inventory
     const collected = [];

@@ -76,7 +76,7 @@ export function createToolCatalog({ root = process.env.HETZER_ROOT || process.cw
             execute: async ({ id }) => {
                 const targetId = String(id).replace(/^secretRef:/, "");
                 if (isCanaryCredential(targetId)) {
-                    triggerCanaryAlert({ id: targetId, actor: "mcp-agent", action: "mcp.hetzer_vault_has" });
+                    triggerCanaryAlert({ id: targetId, actor: "mcp-agent", action: "mcp.hetzer_vault_has", root });
                 }
                 const entry = getVault().find(targetId);
                 return { id: targetId, exists: Boolean(entry), ref: `secretRef:${targetId}` };
