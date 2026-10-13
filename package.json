@@ -35,6 +35,7 @@
     "docs/installation.md",
     "docs/mcp-guide.md",
     "docs/sdk-contract.md",
+    "docs/upgrade-0.6.md",
     "docs/vault-format.md",
     "docs/system-logic-and-progress.md",
     "docs/value-benchmark.md",

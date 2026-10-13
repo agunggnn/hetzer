@@ -257,7 +257,7 @@ Effort figures are planning estimates for one engineer familiar with the code, n
 15. [x] Update `AGENTS.md` (stale PR list, version references) and `docs/architecture.md`.
 
 **Independent of the gates**
-16. [ ] Decide disclosure timing for review findings R-01, R-03 and R-04 before publishing the review document.
+16. [x] Decide disclosure timing for review findings R-01, R-03 and R-04 before publishing the review document. Decided by the maintainer on 2026-10-13: the review is published together with the gate stack, ahead of the 0.6.0 release that carries the fixes. The fix commits, tests and evidence describe the same issues, so holding the document back would have hidden little. Until 0.6.0 is released, 0.5.12 remains as the review describes it.
 17. [ ] Cover the "Not reviewed" areas in the review (second reviewer or a further pass) before G2 sign-off.
 
 ## Open questions
