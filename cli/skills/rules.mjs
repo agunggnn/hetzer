@@ -26,7 +26,7 @@ Hetzer is defense in depth. It does not intercept arbitrary prompts, files, proc
   1. DO NOT repeat, paste, or quote the raw secret into the conversation or chat history.
   2. Redact the secret immediately using \`secretRef:<credential-id>\`.
   3. Trigger an automatic finding report: record a structured finding (location, credential type, redaction status).
-  4. Automatically create a branch, apply redaction/patch, verify tests, and open a PR with zero plaintext trace.
+  4. Automatically create a branch, apply redaction/patch, verify tests, and open a PR whose diff, commit messages, and description do not contain the plaintext value.
 
 ## Boundaries
 - A raw-opted-out child receives plaintext in memory and may transform it or send it through files, networks, IPC, debuggers, or direct device output. Output scanning cannot prevent those actions.
