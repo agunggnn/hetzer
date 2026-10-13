@@ -424,6 +424,10 @@ export class Grimoire {
         ensureParent(this.dbPath);
         this.db = new DatabaseSync(this.dbPath);
         try {
+            // Before the first query: another process opening, migrating or closing the same vault can hold the
+            // file for a moment, and without a timeout that first query fails at once with "database is locked".
+            // A connection setting only; nothing is written, so a refused vault still stays byte-identical.
+            this.db.exec("PRAGMA busy_timeout = 5000;");
             this._assertFormatSupported();
             this._initSchema();
         } catch (error) {
