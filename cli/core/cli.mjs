@@ -9,12 +9,6 @@ import { fileURLToPath } from "node:url";
 import { listMcpTools, runMcpToolCommand } from "../mcp/call.mjs";
 import { configureMcp } from "../mcp/configure.mjs";
 import { diagnoseMcpService } from "../mcp/ping.mjs";
-import { createModuleRecipe, createModuleRecipeFromSource } from "../modules/create.mjs";
-import { runInstallWizard } from "../modules/install-wizard.mjs";
-import { loadModuleRegistry } from "../modules/registry.mjs";
-import { resolveModuleProfiles } from "../modules/resolve.mjs";
-import { setModuleEnabled } from "../modules/toggle.mjs";
-import { formatValidationReport, validateAllModules, validateModuleRecipe } from "../modules/validate.mjs";
 import { KNOWN_CREDENTIALS, assertInteractiveHumanSession, authorizeCredentialReveal, listCredentials, promptSecret, revealCredential, setCredential } from "../vault/creds.mjs";
 import { approveCredentialRequest, createCredentialRequest, getCredentialRequest } from "../vault/credential-request.mjs";
 import { isolateMasterKey, resolveMasterKey } from "../vault/hetzer-vault.mjs";
@@ -26,24 +20,8 @@ import { getHetzerAsciiBanner, printHetzerBanner } from "./banner.mjs";
 import { runDoctor } from "./doctor.mjs";
 import { auditAgentContext } from "../skills/audit.mjs";
 import { parseEnv } from "./env.mjs";
-import {
-    migrateBundledImagePins,
-    moduleIdsForProfiles,
-    resolveLifecycleTarget,
-    updateComposeCommands,
-} from "./update.mjs";
-import {
-    checkForUpdates,
-    formatUpdateBanner,
-    getUpdateCachePath,
-    isNewerVersion,
-    readUpdateCache,
-} from "./version-check.mjs";
-import { runCliUpgrade } from "./upgrade.mjs";
-import { verifyModuleDeployment } from "./verifier.mjs";
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const builtinFile = path.join(cliRoot, "modules", "builtin.json");
 const templatesDir = path.join(cliRoot, "templates");
 
 export function defaultHetzerHome() {
@@ -52,16 +30,25 @@ export function defaultHetzerHome() {
 }
 
 export function isHetzerWorkspace(dir) {
-    const composeFile = path.join(dir, "docker-compose.yml");
     const envFile = path.join(dir, ".env");
     const exampleFile = path.join(dir, ".env.example");
+    const vaultDb = path.join(dir, "data", "hetzer-vault.db");
+    if (fs.existsSync(vaultDb)) return true;
+    for (const f of [envFile, exampleFile]) {
+        if (fs.existsSync(f)) {
+            try {
+                const content = fs.readFileSync(f, "utf8");
+                if (content.includes("HETZER_") || content.includes("hetzer")) return true;
+            } catch {
+                // ignore
+            }
+        }
+    }
+    const composeFile = path.join(dir, "docker-compose.yml");
     if (fs.existsSync(composeFile)) {
         try {
             const content = fs.readFileSync(composeFile, "utf8");
-            const isHetzer = content.includes("hetzer") || content.includes("nine-router") || content.includes("NINE_ROUTER");
-            if (isHetzer && (fs.existsSync(envFile) || fs.existsSync(exampleFile))) {
-                return true;
-            }
+            return content.includes("hetzer") || content.includes("nine-router") || content.includes("NINE_ROUTER");
         } catch {
             return false;
         }
@@ -125,10 +112,8 @@ export function levenshteinDistance(a, b) {
 export function suggestCommand(input) {
     const primaryCommands = [
         "help", "doctor", "init", "protect", "skill", "hook",
-        "sniffer", "install", "remove", "creds", "canary", "audit",
-        "modules", "up", "update", "upgrade", "down", "status", "logs",
-        "module", "validate", "mcp", "publish", "exec", "broker", "tui",
-        "version", "check-update",
+        "sniffer", "creds", "canary", "audit", "exec", "broker",
+        "mcp", "version",
     ];
     const lower = String(input || "").toLowerCase();
     for (const cmd of primaryCommands) {
@@ -156,32 +141,33 @@ export function suggestCommand(input) {
 export const KNOWN_COMMANDS = new Set([
     "help", "--help", "-h",
     "version", "--version", "-v",
-    "check-update", "check_update",
     "doctor",
     "init",
     "protect", "armor", "protec",
     "skill", "skills",
     "hook", "hooks",
     "sniffer", "sniff",
-    "install",
-    "remove",
     "creds", "credentials",
     "canary",
     "audit",
-    "modules",
+    "exec",
+    "broker",
+    "mcp",
+    // Deprecated commands retained for informative redirection
     "up",
-    "update",
-    "upgrade",
     "down",
     "status",
     "logs",
+    "modules",
+    "install",
+    "remove",
     "module",
     "validate",
-    "mcp",
-    "publish",
-    "exec",
-    "broker",
     "tui",
+    "update",
+    "upgrade",
+    "check-update", "check_update",
+    "publish",
 ]);
 
 function replaceEnvValue(text, name, value) {
@@ -195,10 +181,6 @@ function copyIfMissing(source, target) {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.cpSync(source, target, { recursive: true, errorOnExist: true });
     return true;
-}
-
-function randomHex(bytes = 32) {
-    return crypto.randomBytes(bytes).toString("hex");
 }
 
 function run(file, args, options = {}) {
@@ -236,38 +218,9 @@ function projectEnvironment(root) {
     return { envFile, values };
 }
 
-function registryFor(root, values) {
-    return loadModuleRegistry({
-        builtinFile,
-        root,
-        disabledModules: process.env.HETZER_DISABLED_MODULES || values.HETZER_DISABLED_MODULES,
-        enabledModules: process.env.HETZER_ENABLED_MODULES || values.HETZER_ENABLED_MODULES,
-    });
-}
-
-function compose(root, envFile, args) {
-    run(process.execPath, [
-        path.join(cliRoot, "vault", "compose-runner.mjs"),
-        "--root", root,
-        "--env-file", envFile,
-        "--",
-        ...args,
-    ], { cwd: root });
-}
-
-function warnOrchestrationDeprecated(command) {
-    process.stderr.write(`[!] DEPRECATED: Multi-container stack orchestration in Hetzer ('hetzer ${command}') is deprecated. Use Jagdpanzer (https://github.com/agunggnn/jagdpanzer) for full ops stacks.\n`);
-}
-
-function profileArguments(root, values, target) {
-    const registry = registryFor(root, values);
-    const resolvedTarget = resolveLifecycleTarget(registry, target);
-    const profiles = resolveModuleProfiles({ registry, target: resolvedTarget });
-    return {
-        registry,
-        profiles,
-        arguments: profiles.flatMap((profile) => ["--profile", profile]),
-    };
+function handleDeprecatedCommand(command) {
+    process.stderr.write(`[!] DEPRECATED: Multi-container stack orchestration in Hetzer ('hetzer ${command}') has been removed. Use Jagdpanzer (https://github.com/agunggnn/jagdpanzer) for full ops stacks.\n`);
+    process.exitCode = 1;
 }
 
 export function initializeProject(root) {
@@ -277,17 +230,7 @@ export function initializeProject(root) {
     resolveMasterKey({ root: resolvedRoot, envValues: fs.existsSync(priorEnvFile) ? parseEnv(fs.readFileSync(priorEnvFile, "utf8")) : {} });
     fs.mkdirSync(resolvedRoot, { recursive: true, mode: 0o700 });
     try { fs.chmodSync(resolvedRoot, 0o700); } catch { /* Windows */ }
-    copyIfMissing(path.join(templatesDir, "docker-compose.yml"), path.join(resolvedRoot, "docker-compose.yml"));
     copyIfMissing(path.join(templatesDir, ".env.example"), path.join(resolvedRoot, ".env.example"));
-    const modulesTemplateDir = path.join(templatesDir, "modules");
-    if (fs.existsSync(modulesTemplateDir)) {
-        const entries = fs.readdirSync(modulesTemplateDir, { withFileTypes: true });
-        for (const entry of entries) {
-            if (entry.isDirectory()) {
-                copyIfMissing(path.join(modulesTemplateDir, entry.name), path.join(resolvedRoot, "modules", entry.name));
-            }
-        }
-    }
 
     const dataDir = path.join(resolvedRoot, "data");
     fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
@@ -297,15 +240,8 @@ export function initializeProject(root) {
     copyIfMissing(path.join(resolvedRoot, ".env.example"), envFile);
     let text = fs.readFileSync(envFile, "utf8");
     const values = parseEnv(text);
-    const generated = {
-        NINE_ROUTER_JWT_SECRET: randomHex(),
-        NINE_ROUTER_INITIAL_PASSWORD: randomHex(16),
-        NINE_ROUTER_API_KEY_SECRET: randomHex(),
-        NINE_ROUTER_MACHINE_ID_SALT: randomHex(),
-        HETZER_GRIMOIRE_KEY: crypto.randomBytes(48).toString("base64url"),
-    };
-    for (const [name, value] of Object.entries(generated)) {
-        if (!values[name] || String(values[name]).startsWith("replace-")) text = replaceEnvValue(text, name, value);
+    if (!values.HETZER_GRIMOIRE_KEY || String(values.HETZER_GRIMOIRE_KEY).startsWith("replace-")) {
+        text = replaceEnvValue(text, "HETZER_GRIMOIRE_KEY", crypto.randomBytes(48).toString("base64url"));
     }
     fs.writeFileSync(envFile, text, { encoding: "utf8", mode: 0o600 });
     try { fs.chmodSync(envFile, 0o600); } catch { /* Windows ACLs are managed by the host. */ }
@@ -323,12 +259,13 @@ export function initializeProject(root) {
     return {
         root: resolvedRoot,
         envFile,
-        initialPasswordRef: "secretRef:nine-router-initial-password",
     };
 }
 
 function printInitWizard(result) {
     const isGlobal = result.root === defaultHetzerHome();
+    const globalCli = isGlobalCliInstalled();
+    const prefix = globalCli ? "hetzer" : "npx hetzer";
     process.stdout.write("================================================================================\n");
     process.stdout.write("  HETZER - INITIALIZATION SUCCESSFUL\n");
     process.stdout.write("================================================================================\n");
@@ -336,157 +273,19 @@ function printInitWizard(result) {
     process.stdout.write(`[v] Configuration File: .env (permissions secured chmod 600)\n`);
     process.stdout.write(`[v] Grimoire Vault    : data/hetzer-vault.db (AES-256-GCM Encrypted)\n`);
     process.stdout.write(`[v] MCP Server        : .mcp.json configured\n`);
-    const globalCli = isGlobalCliInstalled();
-    if (isGlobal) {
-        if (globalCli) {
-            process.stdout.write(`[v] Global Access     : 'hetzer' is in your PATH. You can run it from any directory!\n`);
-        } else {
-            process.stdout.write(`[!] Global Access     : 'hetzer' is NOT in your system PATH (running via npx or local script).\n`);
-            process.stdout.write(`                        To run direct commands (e.g. 'hetzer up'), install globally:\n`);
-            process.stdout.write(`                          npm install -g hetzer\n`);
-            process.stdout.write(`                        Or prefix commands with npx: 'npx hetzer <command>'\n`);
-        }
+    if (isGlobal && !globalCli) {
+        process.stdout.write(`[!] Global Access     : 'hetzer' is NOT in your system PATH (running via npx or local script).\n`);
+        process.stdout.write(`                        To run direct commands, install globally:\n`);
+        process.stdout.write(`                          npm install -g @agunggnn/hetzer\n`);
+        process.stdout.write(`                        Or prefix commands with npx: 'npx hetzer <command>'\n`);
     }
-    const prefix = globalCli ? "hetzer" : "npx hetzer";
-    process.stdout.write("--------------------------------------------------------------------------------\n");
-    process.stdout.write("  9ROUTER INITIAL LOGIN & CREDENTIAL INFORMATION:\n");
-    process.stdout.write("--------------------------------------------------------------------------------\n");
-    process.stdout.write("  Web UI URL       : http://127.0.0.1:20140\n");
-    process.stdout.write("  Login Form       : 9Router requires the password stored in Grimoire Vault\n");
-    process.stdout.write(`  Password Ref     : ${result.initialPasswordRef}\n`);
-    process.stdout.write(`  Human retrieval  : ${prefix} creds reveal nine-router-initial-password\n\n`);
-    process.stdout.write("  IMPORTANT INITIALIZATION NOTE:\n");
-    process.stdout.write("  9Router only reads the Initial Password when its database is first created.\n");
-    process.stdout.write("  If 9Router was previously initialized, run:\n");
-    process.stdout.write(`    ${prefix} down -v && ${prefix} up\n`);
-    process.stdout.write("  to reset existing volumes so the new password takes effect.\n\n");
-    process.stdout.write("  SECURITY CONTRACT (ZERO-PLAINTEXT):\n");
-    process.stdout.write("  This password is encrypted in Grimoire Vault (data/hetzer-vault.db).\n");
-    process.stdout.write("  The .env file only stores an opaque reference:\n");
-    process.stdout.write("    NINE_ROUTER_INITIAL_PASSWORD=secretRef:nine-router-initial-password\n");
-    process.stdout.write("  protecting your secrets from accidental git exposure.\n\n");
-    process.stdout.write("  CREDENTIAL MANAGEMENT:\n");
-    process.stdout.write(`  - Reveal password anytime   : ${prefix} creds reveal nine-router-initial-password\n`);
-    process.stdout.write(`  - Update password in vault  : ${prefix} creds set nine-router-initial-password\n`);
-    process.stdout.write(`  - Inspect all credentials   : ${prefix} creds list\n`);
     process.stdout.write("--------------------------------------------------------------------------------\n");
     process.stdout.write("  NEXT STEPS:\n");
     process.stdout.write("--------------------------------------------------------------------------------\n");
-    process.stdout.write(`  1. Start services      : ${prefix} up\n`);
-    process.stdout.write(`  2. Retrieve password   : ${prefix} creds reveal nine-router-initial-password\n`);
-    process.stdout.write(`  3. Open Web UI         : http://127.0.0.1:20140\n`);
-    process.stdout.write(`  4. Open live dashboard : ${prefix} tui\n`);
-    process.stdout.write(`  5. View extra modules  : ${prefix} modules\n`);
-    process.stdout.write("================================================================================\n");
-}
-
-function printModuleGuide(moduleId, action) {
-    if (action === "install") {
-        process.stdout.write(`Module '${moduleId}' successfully enabled.\n`);
-        if (moduleId === "9router") {
-            process.stdout.write("\n================================================================================\n");
-            process.stdout.write("  MODULE GUIDE: 9router\n");
-            process.stdout.write("================================================================================\n");
-            process.stdout.write("The '9router' module is a local AI Gateway for smart model routing and fallbacks.\n\n");
-            process.stdout.write("HOW TO ACCESS & LOGIN:\n");
-            process.stdout.write("  1. Start service    : hetzer up 9router\n");
-            process.stdout.write("  2. Open browser     : http://127.0.0.1:20140\n");
-            process.stdout.write("  3. Check password   : hetzer creds reveal nine-router-initial-password\n");
-            process.stdout.write("================================================================================\n");
-        } else {
-            process.stdout.write(`Run 'hetzer up ${moduleId}' to start this module.\n`);
-        }
-    } else {
-        process.stdout.write(`Module '${moduleId}' successfully disabled.\n`);
-        process.stdout.write(`[i] Run 'hetzer up' to apply Compose profile changes.\n`);
-    }
-}
-
-export function printModuleHelp(moduleId, root, values) {
-    const registry = registryFor(root, values);
-    const module = registry.modules.find((m) => m.id === moduleId);
-    if (!module) {
-        process.stdout.write(`Module '${moduleId}' not found.\n`);
-        process.stdout.write("Run 'hetzer modules' to view available modules.\n");
-        return;
-    }
-
-    const isEnabled = module.enabled;
-    const isCompose = module.lifecycle === "compose";
-    const service = module.services[0] || {};
-    const composeService = service.composeService || moduleId;
-
-    process.stdout.write("================================================================================\n");
-    process.stdout.write(`  NATIVE MODULE GUIDE: ${module.label || moduleId} (${module.id})\n`);
-    process.stdout.write("================================================================================\n");
-    process.stdout.write(`  Status      : ${isEnabled ? "Enabled" : "Disabled"}\n`);
-    process.stdout.write(`  Lifecycle   : ${module.lifecycle}${isCompose ? " (Docker Compose Container)" : " (Host Process)"}\n`);
-    if (module.sourceUrl) process.stdout.write(`  Source Repo : ${module.sourceUrl}\n`);
-    if (service.role) process.stdout.write(`  Role        : ${service.role}\n`);
-    if (service.lore) process.stdout.write(`  Description : ${service.lore}\n`);
-    if (service.portEnv && values[service.portEnv]) {
-        process.stdout.write(`  Web UI/Port : http://127.0.0.1:${values[service.portEnv]}\n`);
-    } else if (service.fallbackPort) {
-        process.stdout.write(`  Web UI/Port : http://127.0.0.1:${service.fallbackPort}\n`);
-    }
-    if (service.mcpServer) {
-        process.stdout.write(`  MCP Server  : ${service.mcpServer.name} (${service.mcpServer.transport} at ${service.mcpServer.path})\n`);
-        process.stdout.write(`  Tools Check : hetzer mcp tools ${service.mcpServer.name}\n`);
-        process.stdout.write(`  Ping Test   : hetzer mcp ping ${service.mcpServer.name}\n`);
-    }
-
-    process.stdout.write("--------------------------------------------------------------------------------\n");
-    process.stdout.write("  AVAILABLE NATIVE COMMANDS:\n");
-    process.stdout.write("--------------------------------------------------------------------------------\n");
-
-    if (isCompose) {
-        process.stdout.write("1. DOCKER CONTAINER MANAGEMENT:\n");
-        process.stdout.write(`   - Start container           : hetzer up ${module.id}\n`);
-        process.stdout.write(`   - Update image to new digest: hetzer update ${module.id}\n`);
-        process.stdout.write(`   - Stream live logs          : hetzer logs ${composeService}\n`);
-        process.stdout.write(`   - Inspect container status  : hetzer status\n\n`);
-    }
-
-    const creds = Object.entries(KNOWN_CREDENTIALS)
-        .filter(([_, def]) => def.moduleId === module.id)
-        .map(([id, def]) => ({ id, ...def }));
-
-    if (creds.length > 0) {
-        process.stdout.write("2. CREDENTIALS & SECRETS (GRIMOIRE VAULT):\n");
-        for (const cred of creds) {
-            process.stdout.write(`   - Reveal secret '${cred.id}':\n`);
-            process.stdout.write(`       hetzer creds reveal ${cred.id}\n`);
-            process.stdout.write(`   - Configure secret '${cred.id}':\n`);
-            process.stdout.write(`       hetzer creds set ${cred.id}\n`);
-        }
-        process.stdout.write("\n");
-    }
-
-    process.stdout.write("3. MODULE ACTIVATION & STATUS:\n");
-    process.stdout.write(`   - Enable module             : hetzer install ${module.id}\n`);
-    process.stdout.write(`   - Disable module            : hetzer remove ${module.id}\n`);
-
-    if (module.runtime?.actions?.length) {
-        process.stdout.write("\n4. HOST-PROCESS ACTIONS:\n");
-        for (const act of module.runtime.actions) {
-            process.stdout.write(`   - hetzer module ${module.id} ${act} [args]\n`);
-        }
-    }
-
-    if (module.id === "9router") {
-        process.stdout.write("\n4. WEB UI ACCESS & LOGIN NOTES:\n");
-        process.stdout.write("   - Web UI URL                : http://127.0.0.1:20140\n");
-        process.stdout.write("   - Login Form                : Enter Initial Password (no username required)\n");
-        process.stdout.write("   - Reset Volume (Password)   : hetzer down -v && hetzer up 9router\n");
-    }
-
-    if (service.mcpServer) {
-        process.stdout.write(`\n4. MCP TOOL INTEGRATION (${service.mcpServer.name}):\n`);
-        process.stdout.write(`   - List tools & nature       : hetzer mcp tools ${service.mcpServer.name}\n`);
-        process.stdout.write(`   - Call tool directly in CLI : hetzer mcp call ${service.mcpServer.name} <tool> [args]\n`);
-        process.stdout.write(`   - Register to AI clients    : hetzer mcp configure\n`);
-    }
-
+    process.stdout.write(`  1. Guard execution   : ${prefix} exec -- <command>\n`);
+    process.stdout.write(`  2. Protect workspace : ${prefix} protect\n`);
+    process.stdout.write(`  3. Manage secrets    : ${prefix} creds [list|set|reveal]\n`);
+    process.stdout.write(`  4. Inspect audit log : ${prefix} audit [tail|verify]\n`);
     process.stdout.write("================================================================================\n");
 }
 
@@ -500,38 +299,27 @@ Options:
   --root <path>             Specify instance root directory (default: ~/.hetzer)
 
 Commands:
-  init [directory]          Initialize a new instance (default: ~/.hetzer or current workspace)
-  doctor [--fix]            Check system & Docker compatibility (--fix to auto-repair)
-  up [module|all] [--wait]  Start containers [deprecated; use Jagdpanzer]
-  update [module]           Update Hetzer CLI or update module images [deprecated]
-  down [-v]                 Stop services [deprecated; use Jagdpanzer]
-  status                    View container states [deprecated; use Jagdpanzer]
-  logs [service]            Stream service logs [deprecated; use Jagdpanzer]
-  modules [module]          List available modules [deprecated; use Jagdpanzer]
-  install <module>          Enable module [deprecated; use Jagdpanzer]
-  remove <module>           Disable module [deprecated; use Jagdpanzer]
-  module <id> [action|help] Host module actions [deprecated; use Jagdpanzer]
-  module create <id> [--source <repo>] Scaffold new module recipe [deprecated]
-  validate [module]         Validate module integrity, security, and compose recipe
-  creds [list|request|approve|status|reveal|set] Manage encrypted secrets in Grimoire Vault (AES-256-GCM)
+  init [directory]          Initialize a new instance (.env, Grimoire Vault, and MCP configuration)
+  doctor [--fix]            Check system compatibility (--fix to auto-repair)
+  protect                   Install credential-safety guidance, Git hook, and .env protection
+  skill [install|status]    Deploy Universal AI Skills to Hermes, AGY, OpenCode, Cursor, Claude
+  hook [install|uninstall|check] Manage Git Pre-Commit Guard to prevent accidental token leaks
+  sniffer [scan|redact] <t> Detect or redact credentials supported by the scanner rules
+  creds [list|request|approve|status|reveal|set|grant|isolate-key] Manage encrypted secrets in Grimoire Vault (AES-256-GCM)
   canary [setup]            Deploy decoy canary honey-token tripwire to catch prompt injections
   audit [verify [--require-mac]|tail [n]|rotate [--yes] [--reason <text>] [--allow-unkeyed]]
                               Verify the hash-chain (and MACs), inspect the ledger, or archive it and start a new one
   exec [--allow <ids>] [--policy <file>] [--sandbox [image]] [--sandbox-mount <dir>] [--host] [--strict] [--canary] [--timeout <t>] -- <c>
                               Run with mediated credentials; raw injection requires an audited opt-out
   broker --policy <file> -- <command>   Run an HTTP client using a short-lived capability instead of the real credential
-  sniffer [scan|redact] <t> Detect or redact credentials supported by the scanner rules
-  protect                   Install credential-safety guidance, Git hook, and .env protection
-  skill [install|status]    Deploy Universal AI Skills to Hermes, AGY, OpenCode, Cursor, Claude
-  hook [install|uninstall|check] Manage Git Pre-Commit Guard to prevent accidental token leaks
   mcp configure|serve|ping  Configure, start bridge, or run MCP diagnostic ping
   mcp tools <service>       List MCP tools with Offline / Hybrid / LLM classification
   mcp call <srv> <tool> [a] Call MCP tool directly from CLI without external AI client
-  publish                   Build, verify test suite, and publish package to npm
-  version [--check]         Display Hetzer version (use --check to query latest release)
-  check-update              Check if a newer version of Hetzer is available
-  upgrade [--yes|--check]   Upgrade Hetzer CLI to latest release
-  tui                       Tactical security and runtime armor HUD
+  version                   Display Hetzer version
+
+Deprecated Commands (Delegated to Jagdpanzer):
+  up, down, status, logs, modules, install, remove, module, validate, tui
+                            Use Jagdpanzer (https://github.com/agunggnn/jagdpanzer) for full ops stacks
 `;
 }
 
@@ -560,47 +348,20 @@ export async function main(argv = process.argv.slice(2), options = {}) {
     if (["version", "--version", "-v"].includes(command)) {
         const manifest = JSON.parse(fs.readFileSync(path.join(cliRoot, "..", "package.json"), "utf8"));
         process.stdout.write(`hetzer v${manifest.version}\n`);
-        const wantsCheck = args.includes("--check") || args.includes("-c");
-        if (wantsCheck) {
-            process.stdout.write("Checking for updates...\n");
-            const update = await checkForUpdates({ currentVersion: manifest.version, force: true });
-            if (update.updateAvailable) {
-                process.stdout.write(formatUpdateBanner(update));
-            } else if (update.networkFailed) {
-                process.stdout.write("Unable to reach update registry. Check your internet connection.\n");
-            } else {
-                process.stdout.write("You are using the latest version of Hetzer.\n");
-            }
-        } else {
-            const cached = readUpdateCache(getUpdateCachePath());
-            if (cached && cached.latestVersion && isNewerVersion(manifest.version, cached.latestVersion)) {
-                process.stdout.write(formatUpdateBanner({
-                    currentVersion: manifest.version,
-                    latestVersion: cached.latestVersion,
-                    url: cached.url || "https://github.com/agunggnn/hetzer/releases",
-                }));
-            }
-        }
         return;
     }
-    if (["check-update", "check_update"].includes(command)) {
-        const manifest = JSON.parse(fs.readFileSync(path.join(cliRoot, "..", "package.json"), "utf8"));
-        process.stdout.write(`Checking for updates (current: v${manifest.version})...\n`);
-        const update = await checkForUpdates({ currentVersion: manifest.version, force: true });
-        if (update.updateAvailable) {
-            process.stdout.write(formatUpdateBanner(update));
-        } else if (update.networkFailed) {
-            process.stdout.write("Unable to reach update registry. Check your internet connection.\n");
-        } else {
-            process.stdout.write(`Hetzer is up to date (v${manifest.version}).\n`);
-        }
+    if (["check-update", "check_update", "upgrade"].includes(command)) {
+        process.stderr.write("Hetzer CLI upgrades are managed via npm: run 'npm install -g @agunggnn/hetzer' to update.\n");
+        process.exitCode = 1;
         return;
     }
-    if (command === "upgrade" || (command === "update" && (!args[0] || args[0] === "--cli" || args[0] === "cli" || args[0].startsWith("-")))) {
-        const manifest = JSON.parse(fs.readFileSync(path.join(cliRoot, "..", "package.json"), "utf8"));
-        const cleanArgs = args.filter((a) => a !== "--cli" && a !== "cli");
-        const res = await runCliUpgrade(cleanArgs, { cliRoot, manifest });
-        if (!res.ok) process.exitCode = 1;
+    if (command === "publish") {
+        process.stderr.write("Package publishing is managed via release scripts: run 'node scripts/publish.mjs' or 'npm run publish:npm'.\n");
+        process.exitCode = 1;
+        return;
+    }
+    if (["up", "down", "status", "logs", "modules", "install", "remove", "module", "validate", "tui", "update"].includes(command)) {
+        handleDeprecatedCommand(command);
         return;
     }
     if (command === "doctor") {
@@ -675,7 +436,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             process.stdout.write("      'hetzer' is not in your system PATH (running via npx or local script).\n");
             process.stdout.write("      * Passive Guards (Active) : Prompt protection & Git hook work immediately.\n");
             process.stdout.write("      * Scoped Execution        : For agents to run 'hetzer exec', install globally:\n");
-            process.stdout.write("                                  npm install -g hetzer\n");
+            process.stdout.write("                                  npm install -g @agunggnn/hetzer\n");
             process.stdout.write("                                  (or prefix commands with npx: npx hetzer <cmd>)\n");
         }
         process.stdout.write("================================================================================\n");
@@ -795,7 +556,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             // A refused ledger is what --strict stops on, so clearing it is not left to an agent session.
             // The check is the same heuristic as the other human-only commands, not a guarantee.
             assertInteractiveHumanSession({ operation: "'hetzer audit rotate --yes'", ...(options.humanSession || {}) });
-            const result =rotateAuditLedger({ root, reason, allowUnkeyed: args.includes("--allow-unkeyed") });
+            const result = rotateAuditLedger({ root, reason, allowUnkeyed: args.includes("--allow-unkeyed") });
             process.stdout.write(rule);
             process.stdout.write("  HETZER - AUDIT LEDGER ROTATION\n");
             process.stdout.write(rule);
@@ -819,30 +580,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
     }
 
     const { envFile, values } = projectEnvironment(root);
-    if (["install", "remove"].includes(command)) {
-        warnOrchestrationDeprecated(command);
-        if (!args[0]) throw new Error(`Usage: hetzer ${command} <module>`);
-        const moduleId = args[0];
-        if (command === "install") {
-            const templateModuleDir = path.join(templatesDir, "modules", moduleId);
-            const targetModuleDir = path.join(root, "modules", moduleId);
-            if (!fs.existsSync(targetModuleDir) && fs.existsSync(templateModuleDir)) {
-                copyIfMissing(templateModuleDir, targetModuleDir);
-            }
-            const nonInteractive = args.includes("--yes") || args.includes("--default");
-            await runInstallWizard({ root, envFile, moduleId, nonInteractive });
-        }
-        setModuleEnabled({
-            root,
-            envFile,
-            moduleId,
-            enabled: command === "install",
-            builtinFile,
-        });
-        configureMcp(root);
-        printModuleGuide(moduleId, command);
-        return;
-    }
+
     if (["creds", "credentials"].includes(command)) {
         const subCommand = args[0] || "list";
         if (subCommand === "list") {
@@ -900,12 +638,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             if (result.usage) {
                 process.stdout.write(`  Usage       : ${result.usage}\n`);
             }
-            if (result.id.startsWith("npm-")) {
-                process.stdout.write("  Apply       : Run 'npm run publish-pkg' or 'node scripts/publish.mjs' to publish to npm.\n");
-            } else {
-                const upTarget = result.module && result.module !== "core" ? `hetzer up ${result.module}` : "hetzer up";
-                process.stdout.write(`  Apply       : Run '${upTarget}' (or 'hetzer up') to reload containers.\n`);
-            }
+            process.stdout.write(`  Apply       : Execute guarded processes with 'hetzer exec --allow ${result.id} -- <cmd>'\n`);
             process.stdout.write("================================================================================\n");
             return;
         }
@@ -971,6 +704,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         }
         throw new Error(`Unknown creds subcommand: '${subCommand}'. Use 'list', 'request', 'approve', 'status', 'reveal', 'set', 'grant', or 'isolate-key'.`);
     }
+
     if (["sniffer", "sniff"].includes(command)) {
         const sub = args[0] || "scan";
         const input = args.slice(1).join(" ");
@@ -995,6 +729,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         }
         throw new Error(`Unknown sniffer subcommand: '${sub}'. Use 'scan' or 'redact'.`);
     }
+
     if (command === "canary") {
         const sub = args[0] || "setup";
         if (sub === "setup" || sub === "enable") {
@@ -1011,247 +746,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         }
         throw new Error(`Unknown canary subcommand: '${sub}'. Use 'setup'.`);
     }
-    if (command === "modules") {
-        warnOrchestrationDeprecated(command);
-        if (args[0] && !args[0].startsWith("-")) {
-            printModuleHelp(args[0], root, values);
-            return;
-        }
-        run(process.execPath, [path.join(cliRoot, "modules", "list.mjs"), "--root", root, ...args], { cwd: root });
-        return;
-    }
-    if (command === "up") {
-        warnOrchestrationDeprecated(command);
-        printHetzerBanner();
-        const hasVerify = args.includes("--verify") || args.includes("--wait");
-        const filteredArgs = args.filter((a) => a !== "--verify" && a !== "--wait");
-        const target = filteredArgs[0] === "all" ? "*" : (filteredArgs[0] || "*");
-        const selection = profileArguments(root, values, target);
-        compose(root, envFile, [...selection.arguments, "pull", "--policy", "always", "--ignore-buildable"]);
-        compose(root, envFile, [...selection.arguments, "up", "-d"]);
-        if (hasVerify || (target !== "*" && target !== "all")) {
-            const serviceId = target === "9router" ? "nine-router" : target;
-            const composeFile = path.join(root, "modules", target, `docker-compose.${target}.yml`);
-            const endpointUrl = target === "9router" ? `http://127.0.0.1:${values.NINE_ROUTER_PORT || 20140}/api/health` : null;
-            const timeoutMs = 35000;
-            await verifyModuleDeployment({
-                root,
-                moduleId: target,
-                serviceId,
-                composeFile,
-                endpointUrl,
-                timeoutMs,
-            });
-        }
-        return;
-    }
-    if (command === "update") {
-        const requestedTarget = args[0] || "all";
-        const selection = profileArguments(root, values, requestedTarget);
-        const currentEnv = fs.readFileSync(envFile, "utf8");
-        const migration = migrateBundledImagePins({
-            envText: currentEnv,
-            moduleIds: moduleIdsForProfiles(selection.registry, selection.profiles),
-        });
-        if (migration.text !== currentEnv) {
-            fs.writeFileSync(envFile, migration.text, { encoding: "utf8", mode: 0o600 });
-        }
-        for (const change of migration.changes) {
-            process.stdout.write(`Pinned ${change.serviceId} ${change.version} in ${path.basename(envFile)}.\n`);
-        }
-        for (const custom of migration.custom) {
-            process.stdout.write(`Keeping custom ${custom.variable}; only known Hetzer release pins are migrated.\n`);
-        }
-        for (const composeArgs of updateComposeCommands(selection.arguments)) {
-            compose(root, envFile, composeArgs);
-        }
-        process.stdout.write(`Updated '${requestedTarget}' from its configured image digests.\n`);
-        return;
-    }
-    if (command === "down") {
-        warnOrchestrationDeprecated(command);
-        compose(root, envFile, [...profileArguments(root, values, "*").arguments, "down", ...args]);
-        return;
-    }
-    if (command === "status") {
-        warnOrchestrationDeprecated(command);
-        compose(root, envFile, [...profileArguments(root, values, "*").arguments, "ps", "--all"]);
-        return;
-    }
-    if (command === "logs") {
-        warnOrchestrationDeprecated(command);
-        const registry = registryFor(root, values);
-        const mappedArgs = [];
-        for (const arg of args) {
-            if (arg.startsWith("-")) {
-                mappedArgs.push(arg);
-                continue;
-            }
-            let foundModule = null;
-            let foundService = null;
-            for (const mod of registry.modules) {
-                if (mod.id === arg) {
-                    foundModule = mod;
-                    foundService = mod.services[0];
-                    break;
-                }
-                const s = mod.services.find((cand) => cand.id === arg || cand.composeService === arg);
-                if (s) {
-                    foundModule = mod;
-                    foundService = s;
-                    break;
-                }
-            }
-            if (foundModule) {
-                if (!foundModule.enabled) {
-                    process.stderr.write(`[!] Module '${foundModule.id}' is not yet enabled.\n    Run 'hetzer install ${foundModule.id} && hetzer up ${foundModule.id}' first.\n`);
-                    return;
-                }
-                mappedArgs.push(foundService?.composeService || arg);
-            } else {
-                mappedArgs.push(arg);
-            }
-        }
-        compose(root, envFile, [...profileArguments(root, values, "*").arguments, "logs", "-f", ...mappedArgs]);
-        return;
-    }
-    if (command === "validate") {
-        const targetModule = args[0];
-        if (targetModule) {
-            const result = validateModuleRecipe({ root, moduleId: targetModule });
-            process.stdout.write(formatValidationReport(result));
-            if (!result.valid) process.exitCode = 1;
-        } else {
-            const results = validateAllModules({ root });
-            if (!results.length) {
-                process.stdout.write("No module recipes found in 'modules/' directory.\n");
-                return;
-            }
-            let hasError = false;
-            for (const r of results) {
-                process.stdout.write(formatValidationReport(r));
-                if (!r.valid) hasError = true;
-            }
-            if (hasError) process.exitCode = 1;
-        }
-        return;
-    }
-    if (command === "module") {
-        warnOrchestrationDeprecated(command);
-        const moduleId = args[0];
-        const action = args[1];
-        if (moduleId === "create") {
-            const targetId = action;
-            if (!targetId || targetId.startsWith("-")) {
-                throw new Error("Usage: hetzer module create <id> [--source <repo/url>] [--label <label>] [--port <port>] [--mcp] [--web-ui]");
-            }
-            let label = "";
-            let port = 0;
-            let mcp = false;
-            let webUi = false;
-            let source = "";
-            for (let i = 2; i < args.length; i++) {
-                if (args[i] === "--label" && args[i + 1]) {
-                    label = args[++i];
-                } else if (args[i] === "--port" && args[i + 1]) {
-                    port = parseInt(args[++i], 10) || 0;
-                } else if (args[i] === "--mcp") {
-                    mcp = true;
-                } else if (args[i] === "--web-ui") {
-                    webUi = true;
-                } else if (args[i] === "--source" && args[i + 1]) {
-                    source = args[++i];
-                }
-            }
 
-            let created;
-            if (source) {
-                process.stdout.write(`[i] Analyzing module source via 9Router AI Engine: ${source}...\n`);
-                created = await createModuleRecipeFromSource({
-                    root,
-                    moduleId: targetId,
-                    source,
-                    label,
-                    port: port || undefined,
-                    mcp: mcp || undefined,
-                    webUi: webUi || undefined,
-                });
-            } else {
-                created = createModuleRecipe({
-                    root,
-                    moduleId: targetId,
-                    label,
-                    port: port || 8080,
-                    mcp,
-                    webUi,
-                });
-            }
-
-            process.stdout.write("================================================================================\n");
-            process.stdout.write(`  HETZER - MODULE GENERATOR: ${created.moduleId}\n`);
-            process.stdout.write("================================================================================\n");
-            process.stdout.write(`  [v] Directory created   : modules/${created.moduleId}/\n`);
-            process.stdout.write(`  [v] Manifest created    : modules/${created.moduleId}/module.json\n`);
-            process.stdout.write(`  [v] Compose created     : modules/${created.moduleId}/docker-compose.${created.moduleId}.yml\n`);
-            process.stdout.write(`  [v] Documentation       : modules/${created.moduleId}/README.md\n`);
-            if (created.sourceUrl) {
-                process.stdout.write(`  [v] Upstream Source     : ${created.sourceUrl}\n`);
-            }
-            process.stdout.write("--------------------------------------------------------------------------------\n");
-            process.stdout.write("  Next steps:\n");
-            process.stdout.write(`    1. Validate recipe    : hetzer validate ${created.moduleId}\n`);
-            process.stdout.write(`    2. Enable module      : hetzer install ${created.moduleId}\n`);
-            process.stdout.write(`    3. Start container    : hetzer up ${created.moduleId}\n`);
-            process.stdout.write("================================================================================\n");
-            return;
-        }
-        if (moduleId === "validate") {
-            const targetModule = action;
-            if (targetModule) {
-                const result = validateModuleRecipe({ root, moduleId: targetModule });
-                process.stdout.write(formatValidationReport(result));
-                if (!result.valid) process.exitCode = 1;
-            } else {
-                const results = validateAllModules({ root });
-                if (!results.length) {
-                    process.stdout.write("No module recipes found in 'modules/' directory.\n");
-                    return;
-                }
-                let hasError = false;
-                for (const r of results) {
-                    process.stdout.write(formatValidationReport(r));
-                    if (!r.valid) hasError = true;
-                }
-                if (hasError) process.exitCode = 1;
-            }
-            return;
-        }
-        if (action === "validate") {
-            const result = validateModuleRecipe({ root, moduleId });
-            process.stdout.write(formatValidationReport(result));
-            if (!result.valid) process.exitCode = 1;
-            return;
-        }
-        if (!moduleId || ["help", "--help", "-h"].includes(moduleId)) {
-            process.stdout.write("Usage: hetzer module <id> [action|help|validate]\n");
-            process.stdout.write("       hetzer module create <id> [options]\n\n");
-            process.stdout.write("Native module guides:\n");
-            process.stdout.write("  hetzer module 9router help\n");
-            process.stdout.write("  hetzer module validate [id]     (Validate module recipes & security standards)\n");
-            process.stdout.write("  hetzer module create <id>       (Generate boilerplate recipe for a new module)\n\n");
-            process.stdout.write("Run 'hetzer modules' to list all available modules.\n");
-            return;
-        }
-        if (!action || ["help", "--help", "-h"].includes(action)) {
-            printModuleHelp(moduleId, root, values);
-            return;
-        }
-        run(process.execPath, [path.join(cliRoot, "modules", "runtime.mjs"), ...args], {
-            cwd: root,
-            env: { ...process.env, HETZER_ROOT: root, HETZER_ENV_FILE: envFile },
-        });
-        return;
-    }
     if (command === "mcp") {
         const action = args[0] || "serve";
         if (action === "configure") {
@@ -1267,7 +762,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         if (action === "tools") {
             const targetService = args[1];
             if (!targetService) {
-                throw new Error("Usage: hetzer mcp tools <service>\nExample: hetzer mcp tools 9router");
+                throw new Error("Usage: hetzer mcp tools <service>");
             }
             const result = await listMcpTools({ root, targetService });
             process.stdout.write("================================================================================\n");
@@ -1302,7 +797,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             const toolName = args[2];
             const argsJson = args[3] || "{}";
             if (!targetService || !toolName) {
-                throw new Error("Usage: hetzer mcp call <service> <tool> [argsJson]\nExample: hetzer mcp call 9router query '{\"prompt\": \"hello\"}'");
+                throw new Error("Usage: hetzer mcp call <service> <tool> [argsJson]");
             }
             const ok = await runMcpToolCommand({
                 root,
@@ -1326,11 +821,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         ], { cwd: root });
         return;
     }
-    if (command === "publish") {
-        const publishScript = path.join(cliRoot, "..", "scripts", "publish.mjs");
-        run(process.execPath, [publishScript], { cwd: root });
-        return;
-    }
+
     if (command === "exec") {
         const marker = args.indexOf("--");
         if (marker === -1 || !args[marker + 1]) {
@@ -1359,6 +850,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         process.exitCode = result.status;
         return;
     }
+
     if (command === "broker") {
         if (args[0] === "approve") {
             const policyFile = args[1];
@@ -1388,11 +880,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         ], { cwd: root });
         return;
     }
-    if (command === "tui") {
-        const { startTui } = await import("../modules/tui.mjs");
-        await startTui({ root, args });
-        return;
-    }
+
     const suggested = suggestCommand(command);
     const suggestionMsg = suggested ? ` Did you mean 'hetzer ${suggested}'?` : "";
     throw new Error(`Unknown command '${command}'.${suggestionMsg} Run 'hetzer help'.`);

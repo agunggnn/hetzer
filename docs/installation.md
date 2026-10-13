@@ -60,18 +60,8 @@ npx hetzer hook install
 npx hetzer creds set openai-api-key
 ```
 
-If using full stack container services:
-```bash
-# 4. Initialize and launch services with active healthcheck verification
-hetzer init
-hetzer up --wait
-hetzer tui
-```
-
-Your 9Router AI Gateway will immediately be live at `http://127.0.0.1:20140`. Retrieve the generated password anytime with:
-```bash
-hetzer creds reveal nine-router-initial-password
-```
+Hetzer no longer starts container stacks. `hetzer up`, `hetzer down` and `hetzer tui` were removed and print a pointer
+to [Jagdpanzer](https://github.com/agunggnn/jagdpanzer), which runs multi-container stacks.
 
 ---
 
@@ -258,39 +248,18 @@ cd my-hetzer-instance
 ### What Happens During `hetzer init`?
 1. Generates `data/hetzer-vault.db` (AES-256-GCM encrypted SQLite database).
 2. Generates a secure master key (`HETZER_GRIMOIRE_KEY`) if not already present.
-3. Generates a 16-character hexadecimal password for 9Router admin access.
-4. Creates `.env` with strict `chmod 600` permissions.
-5. Populates `.env` using credential references:
-   ```dotenv
-   NINE_ROUTER_INITIAL_PASSWORD=secretRef:nine-router-initial-password
-   ```
+3. Creates `.env` with strict `chmod 600` permissions.
+4. For the fixed list of variable names in `cli/vault/migrate-env.mjs` (`BINDINGS`), moves a plaintext value found in
+   `.env` into the vault and leaves a `secretRef:<id>` reference in its place. Other variables are left alone.
 
-To reveal your 9Router password anytime:
-```bash
-hetzer creds reveal nine-router-initial-password
-```
+`hetzer init` no longer generates gateway passwords: the bundled stack was removed.
 
 ---
 
 ## 7. Starting Services & Active Healthchecks
 
-Start your container services:
-
-```bash
-hetzer up --wait
-```
-
-The `--wait` flag automatically:
-1. Merges active Compose configurations.
-2. Injects decrypted credentials ephemerally into container memory.
-3. Spawns Docker containers.
-4. Actively probes HTTP healthcheck endpoints until `healthy` is reached.
-5. Displays a live status table with loopback URLs and ports.
-
-To monitor running services continuously:
-```bash
-hetzer tui
-```
+This section described `hetzer up --wait` and `hetzer tui`. Both were removed together with the Compose runner; each
+now prints a pointer to [Jagdpanzer](https://github.com/agunggnn/jagdpanzer) and exits with code 1. See the next section for what Hetzer still runs.
 
 ---
 
@@ -314,24 +283,20 @@ For persistent cognitive memory pipelines, multi-service Docker Compose clusters
 ## 9. Updating & Maintenance
 
 ### Upgrade Hetzer CLI
-Hetzer includes an integrated upgrade manager that queries GitHub Releases and updates your installation safely:
+Hetzer is upgraded through npm. The built-in upgrade manager was removed: `hetzer check-update` and `hetzer upgrade`
+only print the command below, and `hetzer version --check` prints the installed version without looking for a newer one.
 
 ```bash
-# Check if an update is available:
-hetzer check-update
+# Show the installed version:
+hetzer version
 
-# View current version and check for newer releases:
-hetzer version --check
-
-# Upgrade Hetzer CLI to the latest version:
-hetzer upgrade
+# Upgrade Hetzer CLI:
+npm install -g @agunggnn/hetzer
 ```
 
-### Update Docker Container Digests (Deprecated)
-Multi-container topology orchestration is deprecated and delegated to [Jagdpanzer](https://github.com/agunggnn/jagdpanzer). To pull updated container digests for existing modules:
-```bash
-hetzer update <module>
-```
+### Update Docker Container Digests (Removed)
+`hetzer update <module>` was removed with the module system. Container stacks and their image digests are managed in
+[Jagdpanzer](https://github.com/agunggnn/jagdpanzer).
 
 ### Backup Grimoire Vault
 ```bash
@@ -344,16 +309,13 @@ cp .env .env.backup
 ## 10. Uninstallation & Teardown
 
 ```bash
-# 1. Stop containers and destroy named Docker volumes:
-hetzer down -v
-
-# 2. Remove the project directory:
+# 1. Remove the project directory:
 cd .. && rm -rf hetzer
 
-# 3. Uninstall the global CLI binary:
+# 2. Uninstall the global CLI binary:
 npm uninstall -g hetzer
 
-# 4. (Optional) Prune unused Docker images:
+# 3. (Optional) Prune unused Docker images:
 docker image prune -a
 ```
 

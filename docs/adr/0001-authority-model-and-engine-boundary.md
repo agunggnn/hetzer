@@ -252,9 +252,9 @@ Effort figures are planning estimates for one engineer familiar with the code, n
 12. [x] Remove the duplicate guard logic (agent-ancestry copy in `creds.mjs` unified into `human-guard.mjs`); vault schema v2 migration (format version 2, dropped `vault_targets`, `vault_audit_findings`, `REALMS` enum restriction, `SHADOW_GRIMOIRE_KEY`, and legacy `vault.json` migration; `vault_audit_events` retained as frozen mirror per `VERIFY-SEC-014`). The migration runs in one transaction, records the row count of each dropped table, and keeps its ledger record owed until the ledger takes it; the retired key alias is refused with a rename instruction (also by `hetzer init`) and an unimported legacy `vault.json` is reported (`cli/vault/vault-migration.test.mjs`, `VERIFY-SEC-015`). [ ] **Open:** the migration is one-way (a build that checks the marker at format 1 refuses the migrated vault, although the schema change alone would not need that) and rows in the dropped tables are not copied; `upsertTarget` and `recordAuditFinding` still accept data and store nothing; `realm` is free text.
 13. [x] Narrow SEC-23 and R-05 wording in `docs/audit-batch-5.md`, `AGENTS.md`, and `docs/system-logic-and-progress.md` (clarifying that `reveal()` blocks naive TTY/CLI dumps, while internal `resolve()` and direct SQLite reads operate under same-user trust; untrusted agents must run out-of-process in a sandbox).
 
-**G3: Cut (about 1 week, mostly deletion)**
-14. [ ] Move or archive the module system, Compose runner, 9Router helpers, TUI placement and release tooling per the Cut table; keep a one-release deprecation pointer for removed commands.
-15. [ ] Update `AGENTS.md` (stale PR list, version references) and `docs/architecture.md`.
+**G3: Cut (Completed in Gate G3)**
+14. [x] Move or archive the module system, Compose runner, 9Router helpers, TUI placement and release tooling per the Cut table; keep a one-release deprecation pointer for removed commands.
+15. [x] Update `AGENTS.md` (stale PR list, version references) and `docs/architecture.md`.
 
 **Independent of the gates**
 16. [ ] Decide disclosure timing for review findings R-01, R-03 and R-04 before publishing the review document.

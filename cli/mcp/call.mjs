@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parseEnv } from "../core/env.mjs";
-import { loadModuleRegistry } from "../modules/registry.mjs";
+import { loadModuleRegistry } from "./service-loader.mjs";
 import { Grimoire, resolveMasterKey, resolveVaultPath } from "../vault/hetzer-vault.mjs";
 import { resolveSecretRefsInPayload, sanitizeMcpValue } from "./protocol.mjs";
 
@@ -290,7 +290,7 @@ export async function callMcpTool({
                         throw new Error(`Credential 'secretRef:${id}' is not permitted for MCP tool execution.`);
                     }
                     return secret;
-                }, resolvedSecrets);
+                }, resolvedSecrets, { root });
             } finally {
                 vault.close();
             }

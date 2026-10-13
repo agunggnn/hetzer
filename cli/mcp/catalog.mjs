@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parseEnv } from "../core/env.mjs";
-import { loadModuleRegistry, publicModuleSummary } from "../modules/registry.mjs";
+import { loadModuleRegistry, publicModuleSummary } from "./service-loader.mjs";
 import { Grimoire, resolveMasterKey, resolveVaultPath } from "../vault/hetzer-vault.mjs";
 import { isCanaryCredential, triggerCanaryAlert } from "../vault/canary.mjs";
 import { scanText, redactAndVault } from "../vault/sniffer.mjs";
@@ -76,7 +76,7 @@ export function createToolCatalog({ root = process.env.HETZER_ROOT || process.cw
             execute: async ({ id }) => {
                 const targetId = String(id).replace(/^secretRef:/, "");
                 if (isCanaryCredential(targetId)) {
-                    triggerCanaryAlert({ id: targetId, actor: "mcp-agent", action: "mcp.hetzer_vault_has" });
+                    triggerCanaryAlert({ id: targetId, actor: "mcp-agent", action: "mcp.hetzer_vault_has", root });
                 }
                 const entry = getVault().find(targetId);
                 return { id: targetId, exists: Boolean(entry), ref: `secretRef:${targetId}` };
