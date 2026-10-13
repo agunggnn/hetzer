@@ -143,18 +143,20 @@ whoever rebases.
 
 ## Action Items
 
-1. [ ] Decide whether the schema v2 migration (`8bca6d0`) is accepted as written. The review is done (findings V1 to
-       V10 below); the decision and any change before G2b opens are still open.
+1. [x] Review the schema v2 migration (`8bca6d0`) and fix what the review found (findings V1 to V10 and "Follow-up"
+       below). [ ] Still a maintainer decision: whether the format number should rise at all (V5).
 2. [x] Check #37 and #38 for overlap with the stack's files (findings P1 and P2). [ ] Decide what happens to #37.
-3. [x] Check that G3 carries the deprecation pointer from ADR-0001 item 14 (finding C1). [ ] Fix the stale documents
-       (finding C2). `docs/architecture.md` changed by two lines in G3 and its content was not reviewed here.
+3. [x] Check that G3 carries the deprecation pointer from ADR-0001 item 14 (finding C1) and fix the stale documents
+       (finding C2, see "Follow-up"). `docs/architecture.md` changed by two lines in G3 and its content was not
+       reviewed here.
 4. [x] Run the gate at each existing tip from a clean detached worktree (table below). The G2a and G2b tips do not
        exist yet and still need their own run.
 5. [ ] Open the five independent PRs from their existing branches.
 6. [ ] Rebuild G2a and G2b from the current G2 content, regenerating evidence at each tip in its own commit.
 7. [ ] Decide the version bump and release notes for G3's removals (outside this ADR).
 8. [ ] When the last PR merges, archive or delete the local gate branches.
-9. [ ] Find which gate step writes into `<cwd>/.hetzer/audit.log` and give it its own directory (finding T1).
+9. [x] Find which gate step writes into `<cwd>/.hetzer/audit.log` and give it its own directory (finding T1, see
+       "Follow-up").
 
 ## Findings from the action items (2026-10-13)
 
@@ -249,3 +251,43 @@ V6 and V7 in place of silence; a decision on V5; and a mandatory, retried audit 
   diagram. A user who follows either gets the deprecation message.
 - **C3.** The test count falls from 380 to 318 with the removed code. That is expected from a deletion and was not
   checked test by test.
+
+## Follow-up (2026-10-13)
+
+The maintainer asked for the findings to be fixed and merged into the gate branches. The work was done in a separate
+worktree on `fix/vault-v2-migration-safety` (from the G2 tip) and merged into G3; `feat/gate-g2-contract` was
+fast-forwarded to it. Nothing was pushed.
+
+- **V2, V4.** The drops, the marker and the SQLite audit row are one transaction. Four concurrent openers produce one
+  migration row, and a failure inside the migration leaves the format 1 vault unchanged.
+- **V3.** The ledger record is owed through a `vault_meta` marker and retried on every open until the ledger takes
+  it. A process that opened the vault locked leaves it to one that has the key. It is written at least once, not
+  exactly once: openers that overlap the writer can each write it.
+- **V1.** The record carries the row count of each dropped table. The rows themselves are still not copied. No code in
+  the repository before the migration wrote host, port or source-path values or any finding, so for a vault only
+  Hetzer wrote, those tables held target ids that the credentials also carry. A vault another tool wrote into can
+  lose more.
+- **V6.** An unimported legacy JSON vault is reported once per file and process (`HETZER_LEGACY_VAULT_NOT_IMPORTED`)
+  and in `status()`. It is still not imported.
+- **V7.** Key lookup refuses with `ERR_MASTER_KEY_ALIAS_RETIRED` and a rename instruction when the retired alias is
+  the key the previous build would have used. `hetzer init` refuses the same way: by reading its code, it would
+  otherwise have written a new key into `.env` over a vault encrypted with the old one.
+- **V10.** `cli/vault/vault-migration.test.mjs` has twelve tests. Each fix was removed in turn and at least one test
+  failed for every removal (nine mutations). `VERIFY-SEC-015` gained three checks.
+- **Not changed:** V5 (the format number), V8 (`realm` is free text) and V9 (`upsertTarget` and
+  `recordAuditFinding` store nothing). They are listed as open under ADR-0001 item 12.
+- **T1.** The writer was the MCP path, not a gate script: `resolveSecretRefsInPayload` and the `hetzer_vault_has`
+  tool raised canary alerts without a root, so the incident log and the audit event went to the process directory, in
+  the tests and in a real server started outside its instance directory. The callers now pass their root. A full gate
+  run no longer changes `.hetzer/audit.log` or `data/hetzer-incidents.log` in the checkout.
+- **C1.** The remaining names (`down`, `status`, `logs`, `modules`, `install`, `remove`, `module`) were run and
+  behave the same; `check-update` prints the npm instruction and `version --check` prints the version only.
+- **C2.** `README.md` and `docs/installation.md` no longer instruct users to run the removed commands or to reveal a
+  gateway password that `init` does not generate. Left as it was: the requirements table still has a "Full Stack"
+  row, and `init` still migrates only the four gateway variable names in `cli/vault/migrate-env.mjs`.
+
+Gate on the merged tree (G3 with the fixes), key-free: `check` passed, 330 of 330 tests passed, `verify` VERIFIED. On
+the fix branch alone (G2 with the fixes): 391 of 392 passed, 1 skipped, `verify` VERIFIED.
+
+Consequence for the landing order: the fix commits sit on top of G2, so they belong to the G2b pull request together
+with `8bca6d0`.
