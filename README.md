@@ -368,7 +368,7 @@ All Hetzer commands are executed via the `hetzer` CLI:
 | `hetzer down [-v]` | Stops services [deprecated; multi-container orchestration delegated to Jagdpanzer] |
 | `hetzer status` | Displays container states [deprecated; multi-container orchestration delegated to Jagdpanzer] |
 | `hetzer logs [service]` | Streams container logs [deprecated; multi-container orchestration delegated to Jagdpanzer] |
-| `hetzer tui` | Tactical security radar, audit log, canary tripwires, and runtime armor HUD |
+| `hetzer tui` | Tactical security HUD [deprecated; multi-container orchestration delegated to Jagdpanzer] |
 | `hetzer creds [list|request|approve|status|reveal|set]` | Lists, requests, approves, checks, reveals, or saves Grimoire Vault credentials |
 | `hetzer creds reveal <id>` | Decrypts and prints plaintext after TTY, process-tree, and required native-modal checks |
 | `hetzer creds set <id>` | Encrypts and saves a credential via AES-256-GCM using a masked prompt; requires a direct human TTY |
@@ -388,7 +388,7 @@ All Hetzer commands are executed via the `hetzer` CLI:
 | `hetzer install <module>` | Enables an extension module [deprecated; use Jagdpanzer] |
 | `hetzer remove <module>` | Disables an extension module [deprecated; use Jagdpanzer] |
 | `hetzer module create <id>` | Scaffolds module recipe [deprecated; use Jagdpanzer] |
-| `hetzer validate [module]` | Validates module integrity, security, and compose recipe |
+| `hetzer validate [module]` | Validates module integrity [deprecated; use Jagdpanzer] |
 | `hetzer mcp ping [service]` | Diagnoses JSON-RPC handshake and latency for MCP endpoints |
 | `hetzer mcp tools [service]` | Lists MCP tools and their execution classification |
 | `hetzer mcp call <srv> <tool>` | Invokes an MCP tool directly from the terminal without an AI client |

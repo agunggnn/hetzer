@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parseEnv } from "../core/env.mjs";
-import { loadModuleRegistry, publicModuleSummary } from "../modules/registry.mjs";
+import { loadModuleRegistry, publicModuleSummary } from "./service-loader.mjs";
 import { Grimoire, resolveMasterKey, resolveVaultPath } from "../vault/hetzer-vault.mjs";
 import { isCanaryCredential, triggerCanaryAlert } from "../vault/canary.mjs";
 import { scanText, redactAndVault } from "../vault/sniffer.mjs";

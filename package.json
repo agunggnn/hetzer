@@ -14,7 +14,6 @@
     "cli/bin",
     "cli/core",
     "cli/mcp",
-    "cli/modules",
     "cli/templates",
     "cli/vault",
     "cli/skills",
@@ -42,7 +41,6 @@
     "docs/verification-evidence.json",
     "docs/vibe-coders.md",
     ".env.example",
-    "docker-compose.yml",
     "LICENSE",
     "NOTICE",
     "README.md",
@@ -61,7 +59,6 @@
     "claude",
     "opencode",
     "commandcode",
-    "9router",
     "encryption",
     "local-first",
     "pre-commit-hook"
