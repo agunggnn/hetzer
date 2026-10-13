@@ -133,18 +133,43 @@ export function getIsolatedKeyPath(homeDir) {
     }
 }
 
+/** The master key variable name read before vault format 2. It is no longer read; see `resolveMasterKey`. */
+export const RETIRED_MASTER_KEY_ALIAS = "SHADOW_GRIMOIRE_KEY";
+
+function retiredKeyAliasError(where) {
+    const error = new Error(
+        `${RETIRED_MASTER_KEY_ALIAS} is set in ${where} but is no longer read (retired with vault format 2). `
+        + `Rename it to HETZER_GRIMOIRE_KEY and keep its value. Do not run 'hetzer init' instead: `
+        + "it would generate a different key, and the credentials already in the vault could not be decrypted with it.",
+    );
+    error.code = "ERR_MASTER_KEY_ALIAS_RETIRED";
+    return error;
+}
+
+/**
+ * Lookup order: runtime environment, workspace `.env`, isolated key file. Throws
+ * `ERR_MASTER_KEY_ALIAS_RETIRED` when the retired alias is the key the previous build would have used
+ * and the current name is not set in either place, so an upgrade never continues with no key or with
+ * another key in silence.
+ */
 export function resolveMasterKey({ root = process.cwd(), envValues = {}, baseEnv = process.env, homeDir } = {}) {
     // 1. Explicit runtime environment variable (highest priority)
-    const envKey = baseEnv.HETZER_GRIMOIRE_KEY || baseEnv.SHADOW_GRIMOIRE_KEY;
+    const envKey = baseEnv.HETZER_GRIMOIRE_KEY;
     if (envKey && !String(envKey).startsWith("secretRef:")) {
         return String(envKey).trim();
     }
 
     // 2. Local .env file (explicit workspace configuration)
-    const fileKey = envValues.HETZER_GRIMOIRE_KEY || envValues.SHADOW_GRIMOIRE_KEY;
+    const fileKey = envValues.HETZER_GRIMOIRE_KEY;
     if (fileKey && !String(fileKey).startsWith("secretRef:")) {
         return String(fileKey).trim();
     }
+
+    const usable = (value) => Boolean(value) && !String(value).startsWith("secretRef:");
+    const aliasWhere = usable(baseEnv[RETIRED_MASTER_KEY_ALIAS])
+        ? "the environment"
+        : (usable(envValues[RETIRED_MASTER_KEY_ALIAS]) ? "the workspace .env" : "");
+    const alias = aliasWhere === "the environment" ? baseEnv[RETIRED_MASTER_KEY_ALIAS] : envValues[RETIRED_MASTER_KEY_ALIAS];
 
     // 3. User-level Home Isolated Store (~/.hetzer/grimoire.key) fallback.
     // Isolated outside project workspace so workspace agents cannot read it!
@@ -154,13 +179,17 @@ export function resolveMasterKey({ root = process.cwd(), envValues = {}, baseEnv
         try {
             const val = fs.readFileSync(isolatedFile, "utf8").trim();
             if (val && !val.startsWith("secretRef:")) {
+                // The alias used to take precedence over the isolated file. Same key: nothing changes.
+                if (aliasWhere && normalizeMasterKey(alias) !== normalizeMasterKey(val)) throw retiredKeyAliasError(aliasWhere);
                 return val;
             }
-        } catch {
+        } catch (error) {
+            if (error?.code === "ERR_MASTER_KEY_ALIAS_RETIRED") throw error;
             // Continue to fallback
         }
     }
 
+    if (aliasWhere) throw retiredKeyAliasError(aliasWhere);
     return "";
 }
 
@@ -171,10 +200,10 @@ export function isolateMasterKey({ root = process.cwd(), envFile } = {}) {
     if (fs.existsSync(targetEnv)) {
         envContent = fs.readFileSync(targetEnv, "utf8");
         const values = parseEnv(envContent);
-        currentKey = values.HETZER_GRIMOIRE_KEY || values.SHADOW_GRIMOIRE_KEY || "";
+        currentKey = values.HETZER_GRIMOIRE_KEY || "";
     }
     if (!currentKey) {
-        currentKey = process.env.HETZER_GRIMOIRE_KEY || process.env.SHADOW_GRIMOIRE_KEY || "";
+        currentKey = process.env.HETZER_GRIMOIRE_KEY || "";
     }
     currentKey = String(currentKey).trim();
     if (!currentKey) {
@@ -194,7 +223,7 @@ export function isolateMasterKey({ root = process.cwd(), envFile } = {}) {
     if (fs.existsSync(targetEnv)) {
         const cleanedEnv = envContent
             .split(/\r?\n/)
-            .filter((line) => !line.startsWith("HETZER_GRIMOIRE_KEY=") && !line.startsWith("SHADOW_GRIMOIRE_KEY="))
+            .filter((line) => !line.startsWith("HETZER_GRIMOIRE_KEY="))
             .join("\n");
         fs.writeFileSync(targetEnv, cleanedEnv, { encoding: "utf8", mode: 0o600 });
         secureFilePermissions(targetEnv);
@@ -363,7 +392,26 @@ function ensureParent(file) {
  * by a newer Hetzer and is refused before anything in it is changed. A vault without a stamp predates
  * the marker and is version 1. Builds before the marker do not check it, so the protection starts here.
  */
-export const VAULT_FORMAT_VERSION = 1;
+export const VAULT_FORMAT_VERSION = 2;
+
+/** Tables that format 2 removes, and the marker that keeps the migration's ledger record owed until it is written. */
+const FORMAT_2_DROPPED_TABLES = ["vault_targets", "vault_audit_findings", "vault_metadata"];
+const MIGRATION_V2_PENDING_AUDIT = "pending-audit:migrate-schema-v2";
+
+const warnedLegacyFiles = new Set();
+
+/** Once per file and process. A warning, not an error: the vault itself is intact and still usable. */
+function warnLegacyJsonNotImported({ file, ids }) {
+    if (warnedLegacyFiles.has(file)) return;
+    warnedLegacyFiles.add(file);
+    const shown = ids.slice(0, 10).join(", ") + (ids.length > 10 ? ` and ${ids.length - 10} more` : "");
+    process.emitWarning(
+        `${file} holds ${ids.length} credential(s) that were never imported into this vault (${shown}). `
+        + "This Hetzer no longer imports the legacy JSON vault. Add those credentials again with 'hetzer creds set <id>', "
+        + "or import the file with the Hetzer version that created it before upgrading. Rename or remove the file to stop this warning.",
+        { type: "HetzerVaultWarning", code: "HETZER_LEGACY_VAULT_NOT_IMPORTED" },
+    );
+}
 
 export class Grimoire {
     constructor({ dbPath, file, legacyFile, masterKey, root, auditLogFile }) {
@@ -371,7 +419,6 @@ export class Grimoire {
         const envPath = resolveVaultPath(rootDir);
         const resolvedDb = dbPath || file || envPath || path.join(rootDir, "data", "hetzer-vault.db");
         this.dbPath = resolvedDb;
-        this.legacyFile = legacyFile || (String(file || "").endsWith(".json") ? file : "");
         this.masterKey = normalizeMasterKey(masterKey);
         this.auditLogFile = resolveVaultAuditLogFile({ auditLogFile, dbPath: resolvedDb });
         ensureParent(this.dbPath);
@@ -384,10 +431,11 @@ export class Grimoire {
             throw error;
         }
         if (!this._meta("format_version")) this._setMeta("format_version", String(VAULT_FORMAT_VERSION));
-        this.migration = this._migrateLegacy();
         if (this.dbPath !== ":memory:") {
             secureFilePermissions(this.dbPath);
         }
+        this.legacyImport = this._legacyJsonState(legacyFile);
+        if (this.legacyImport.pending) warnLegacyJsonNotImported(this.legacyImport);
     }
 
     get file() {
@@ -444,24 +492,17 @@ export class Grimoire {
             PRAGMA journal_mode = WAL;
             PRAGMA foreign_keys = ON;
             PRAGMA busy_timeout = 5000;`);
+        const hasExisting = Boolean(this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vault_credentials'").get());
+        const hasMeta = Boolean(this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vault_meta'").get());
+        const storedVersion = hasMeta ? this.db.prepare("SELECT value FROM vault_meta WHERE key = 'format_version'").get()?.value : undefined;
+        const currentVersion = storedVersion !== undefined ? (Number(storedVersion) || 1) : (hasExisting ? 1 : VAULT_FORMAT_VERSION);
+
         // Remaining DDL uses standard exec (already has busy_timeout guard)
         this.db.exec(`
 
             CREATE TABLE IF NOT EXISTS vault_meta (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS vault_targets (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                target_type TEXT NOT NULL DEFAULT 'service',
-                host_address TEXT,
-                port INTEGER,
-                source_code_path TEXT,
-                status TEXT NOT NULL DEFAULT 'discovered',
-                created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
 
@@ -517,17 +558,6 @@ export class Grimoire {
                 created_at TEXT NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS vault_audit_findings (
-                id TEXT PRIMARY KEY,
-                target_id TEXT NOT NULL,
-                vulnerability_type TEXT NOT NULL,
-                severity TEXT NOT NULL,
-                description TEXT NOT NULL,
-                exploitation_vector TEXT,
-                is_resolved INTEGER NOT NULL DEFAULT 0,
-                discovered_at TEXT NOT NULL
-            );
-
             CREATE INDEX IF NOT EXISTS idx_vault_credentials_target
                 ON vault_credentials(target_id, is_valid);
             CREATE INDEX IF NOT EXISTS idx_vault_approved_policies_hash
@@ -535,6 +565,10 @@ export class Grimoire {
             CREATE INDEX IF NOT EXISTS idx_vault_audit_created
                 ON vault_audit_events(created_at);
         `);
+
+        // Migration to format version 2: drop legacy pentest tables on older existing vaults
+        if (hasExisting && currentVersion < 2) this._migrateToFormat2();
+        this._flushMigrationAudit();
 
         // Migration check for existing tables lacking new Gate G0 grant columns
         try {
@@ -562,6 +596,83 @@ export class Grimoire {
                 this.db.exec("ALTER TABLE vault_approved_policies ADD COLUMN sig TEXT;");
             }
         } catch { /* best effort migration */ }
+    }
+
+    /**
+     * Drops the tables format 2 removes and stamps the vault, in one transaction, so concurrent openers run it
+     * once and an interruption leaves either the old vault or the migrated one. The SQLite audit row is written
+     * in the same transaction. The ledger record is owed through a marker and written by `_flushMigrationAudit`.
+     */
+    _migrateToFormat2() {
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+            const stored = this.db.prepare("SELECT value FROM vault_meta WHERE key = 'format_version'").get()?.value;
+            if ((Number(stored) || 1) >= 2) {
+                this.db.exec("COMMIT");
+                return;
+            }
+            const droppedTables = {};
+            for (const table of FORMAT_2_DROPPED_TABLES) {
+                if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) continue;
+                droppedTables[table] = Number(this.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count);
+                this.db.exec(`DROP TABLE ${table}`);
+            }
+            const event = {
+                actor: "hetzer-migration",
+                action: "vault.migrate-schema-v2",
+                reason: "One-time migration to format version 2 (dropped legacy pentest tables).",
+                outcome: "allowed",
+                metadata: { fromFormat: Number(stored) || 1, toFormat: 2, droppedTables, migratedAt: new Date().toISOString() },
+            };
+            this._setMeta("format_version", "2");
+            this._setMeta(MIGRATION_V2_PENDING_AUDIT, JSON.stringify(event));
+            this._insertAuditRow(event);
+            this.db.exec("COMMIT");
+        } catch (error) {
+            try { this.db.exec("ROLLBACK"); } catch {}
+            throw error;
+        }
+    }
+
+    /**
+     * Writes the migration's ledger record if it is still owed, and clears the marker only once the ledger took
+     * it. A ledger that refuses now (for example a damaged one) is tried again on every later open, and a process
+     * that opened the vault locked leaves the record to one that has the key, so it is written with a MAC. Two
+     * processes opening at the same moment can both write it: at least once, not exactly once.
+     */
+    _flushMigrationAudit() {
+        const owed = this._meta(MIGRATION_V2_PENDING_AUDIT);
+        if (!owed) return;
+        if (this.auditLogFile) {
+            if (!this.unlocked) return;
+            let event;
+            try { event = JSON.parse(owed); } catch { event = null; }
+            if (event) {
+                this._mirrorAuditToLedger(event);
+                if (this.auditLedgerError) return;
+            }
+        }
+        this.db.prepare("DELETE FROM vault_meta WHERE key = ?").run(MIGRATION_V2_PENDING_AUDIT);
+    }
+
+    /**
+     * Format 2 no longer imports the legacy JSON vault. This only reports it: the ids in an existing legacy
+     * file that are not in this vault, unless an earlier build recorded that it imported that file.
+     */
+    _legacyJsonState(legacyFile) {
+        const none = { pending: false, file: "", ids: [] };
+        try {
+            if (!legacyFile || !fs.existsSync(legacyFile)) return none;
+            const resolved = path.resolve(legacyFile);
+            if (this._meta(`legacy-json:${sha256(resolved)}`)) return none;
+            const parsed = JSON.parse(fs.readFileSync(resolved, "utf8"));
+            if (!Array.isArray(parsed?.entries)) return none;
+            const ids = [...new Set(parsed.entries.map((entry) => String(entry?.id || "")))]
+                .filter((id) => isCredentialId(id) && !this.find(id));
+            return ids.length ? { pending: true, file: resolved, ids } : none;
+        } catch {
+            return none;
+        }
     }
 
     /**
@@ -624,60 +735,6 @@ export class Grimoire {
             INSERT INTO vault_meta (key, value, updated_at) VALUES (?, ?, ?)
             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
         `).run(key, String(value), now);
-    }
-
-    _migrateLegacy() {
-        if (!this.legacyFile || !fs.existsSync(this.legacyFile)) return { pending: false, imported: 0 };
-        const marker = `legacy-json:${sha256(path.resolve(this.legacyFile))}`;
-        if (this._meta(marker)) return { pending: false, imported: 0 };
-        if (!this.unlocked) return { pending: true, imported: 0 };
-
-        let parsed;
-        try {
-            parsed = JSON.parse(fs.readFileSync(this.legacyFile, "utf8"));
-        } catch {
-            return { pending: true, imported: 0 };
-        }
-        if (!Array.isArray(parsed?.entries)) return { pending: true, imported: 0 };
-
-        let imported = 0;
-        for (const entry of parsed.entries) {
-            if (!entry?.id || this.find(entry.id)) continue;
-            const plaintext = decryptSecret(
-                this.masterKey,
-                entry.secret,
-                grimoireAad(entry.id, entry.createdAt),
-            );
-            if (plaintext === null) continue;
-            this.create({
-                id: entry.id,
-                projectId: entry.projectId,
-                keyName: entry.keyName || entry.id,
-                label: entry.label,
-                realm: entry.realm,
-                authType: entry.authType,
-                scope: entry.scope,
-                accessRole: entry.accessRole || "operator",
-                headerName: entry.headerName,
-                username: entry.username,
-                notes: entry.notes,
-                allowedActions: entry.allowedActions || [],
-                secret: plaintext,
-                source: "legacy-json-import",
-                createdAt: entry.createdAt,
-                lastUsedAt: entry.lastUsedAt,
-            });
-            imported += 1;
-        }
-        this._setMeta(marker, JSON.stringify({ imported, importedAt: new Date().toISOString() }));
-        this.recordAudit({
-            actor: "hetzer-migration",
-            action: "vault.import-legacy-json",
-            reason: "One-time migration from Grimoire JSON to the canonical SQLite vault.",
-            outcome: "allowed",
-            metadata: { imported, source: path.basename(this.legacyFile) },
-        });
-        return { pending: false, imported };
     }
 
     _rowToPublic(row) {
@@ -797,7 +854,7 @@ export class Grimoire {
         const authType = ["api-key", "bearer", "basic", "password", "cookie"].includes(input.authType)
             ? input.authType
             : (existing?.auth_type || "api-key");
-        const realm = REALMS.has(input.realm) ? input.realm : (existing?.realm || "frontier");
+        const realm = String(input.realm || existing?.realm || "frontier").trim().slice(0, 60);
 
         const grantSig = computeGrantSignature(this.masterKey, id, {
             allowedActions,
@@ -945,32 +1002,8 @@ export class Grimoire {
     }
 
     upsertTarget(target) {
-        const id = slug(target.id || target.name);
+        const id = slug(target?.id || target?.name);
         if (!id) throw new Error("target id is required.");
-        const now = new Date().toISOString();
-        this.db.prepare(`
-            INSERT INTO vault_targets (
-                id, name, target_type, host_address, port, source_code_path, status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                name = excluded.name,
-                target_type = excluded.target_type,
-                host_address = excluded.host_address,
-                port = excluded.port,
-                source_code_path = excluded.source_code_path,
-                status = excluded.status,
-                updated_at = excluded.updated_at
-        `).run(
-            id,
-            String(target.name || id).slice(0, 160),
-            String(target.target_type || target.targetType || "service").slice(0, 60),
-            target.host_address || target.hostAddress || null,
-            target.port || null,
-            target.source_code_path || target.sourceCodePath || null,
-            String(target.status || "discovered").slice(0, 40),
-            now,
-            now,
-        );
         return id;
     }
 
@@ -1021,16 +1054,25 @@ export class Grimoire {
     }
 
     listTargets() {
-        const targets = this.db.prepare("SELECT * FROM vault_targets ORDER BY name ASC").all();
+        const rows = this.db.prepare("SELECT DISTINCT target_id FROM vault_credentials WHERE is_valid = 1 ORDER BY target_id ASC").all();
         const credentials = this.db.prepare(`
             SELECT key_name, auth_type, access_role, transport_scope, expires_at, updated_at, is_valid
-            FROM vault_credentials WHERE target_id = ?
+            FROM vault_credentials WHERE target_id = ? AND is_valid = 1
         `);
-        return targets.map((target) => ({ ...target, credentials: credentials.all(target.id) }));
+        return rows.map(({ target_id }) => ({
+            id: target_id,
+            name: target_id,
+            target_type: "service",
+            credentials: credentials.all(target_id),
+        }));
     }
 
     recordAudit(event) {
         this._mirrorAuditToLedger(event);
+        this._insertAuditRow(event);
+    }
+
+    _insertAuditRow(event) {
         const metadata = event.metadata && typeof event.metadata === "object" ? event.metadata : {};
         this.db.prepare(`
             INSERT INTO vault_audit_events (
@@ -1148,22 +1190,7 @@ export class Grimoire {
     }
 
     recordAuditFinding(targetId, finding) {
-        const id = crypto.randomUUID();
-        this.db.prepare(`
-            INSERT INTO vault_audit_findings (
-                id, target_id, vulnerability_type, severity, description,
-                exploitation_vector, is_resolved, discovered_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 0, ?)
-        `).run(
-            id,
-            slug(targetId),
-            finding.vulnerabilityType || "hardcoded_secret",
-            finding.severity || "high",
-            String(finding.description || "").slice(0, 1000),
-            finding.exploitationVector || null,
-            new Date().toISOString(),
-        );
-        return id;
+        return crypto.randomUUID();
     }
 
     status() {
@@ -1173,7 +1200,9 @@ export class Grimoire {
             totalKeys: Number(total),
             file: path.basename(this.dbPath),
             storage: "sqlite",
-            legacyImportPending: Boolean(this.migration?.pending),
+            formatVersion: this.formatVersion,
+            legacyImportPending: this.legacyImport.pending,
+            migrationAuditPending: Boolean(this._meta(MIGRATION_V2_PENDING_AUDIT)),
         };
     }
 
