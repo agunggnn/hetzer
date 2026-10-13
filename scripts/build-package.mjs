@@ -54,9 +54,10 @@ try {
         `${publicNpm.integrity}  ${publicNpm.filename}`,
     ].join("\n") + "\n";
     fs.writeFileSync(path.join(artifactRoot, "checksums.txt"), checksums);
+    fs.writeFileSync(path.join(artifactRoot, "SHASUMS256.txt"), checksums);
     process.stdout.write(`Built ${scoped.filename} (sha256: ${scopedSha256})\n`);
     process.stdout.write(`Built ${publicNpm.filename} (sha256: ${publicSha256})\n`);
-    process.stdout.write(`Generated ${path.join(artifactRoot, "checksums.txt")}\n`);
+    process.stdout.write(`Generated ${path.join(artifactRoot, "checksums.txt")} and ${path.join(artifactRoot, "SHASUMS256.txt")}\n`);
 } finally {
     removeStagedPackage(scopedStage);
     removeStagedPackage(publicStage);

@@ -1,6 +1,6 @@
 import { sanitizeStreamOutput } from "../vault/exec.mjs";
 import { isCanaryCredential, triggerCanaryAlert } from "../vault/canary.mjs";
-import { SECRET_REF_PATTERN } from "../vault/hetzer-vault.mjs";
+import { createSecretRefScanner, SECRET_REF_PATTERN } from "../vault/hetzer-vault.mjs";
 
 const MODERN_VERSION = "2026-07-28";
 const LEGACY_VERSION = "2025-11-25";
@@ -84,13 +84,15 @@ export function sanitizeMcpValue(value, secretsToRedact = []) {
     return sanitizeMcpValueInner(value, expanded);
 }
 
-export function resolveSecretRefsInPayload(value, resolver, collectedSecrets = []) {
+/** `options.root` is the Hetzer instance a canary incident is recorded under; without it the process directory is used. */
+export function resolveSecretRefsInPayload(value, resolver, collectedSecrets = [], options = {}) {
+    const incidentRoot = options.root ? { root: options.root } : {};
     if (typeof value === "string") {
         const exactMatch = SECRET_REF_PATTERN.exec(value.trim());
         if (exactMatch) {
             const id = exactMatch[1];
             if (isCanaryCredential(id)) {
-                triggerCanaryAlert({ id, actor: "mcp-agent", action: "mcp.tools/call" });
+                triggerCanaryAlert({ id, actor: "mcp-agent", action: "mcp.tools/call", ...incidentRoot });
             }
             if (typeof resolver === "function") {
                 const resolved = resolver(id);
@@ -105,9 +107,9 @@ export function resolveSecretRefsInPayload(value, resolver, collectedSecrets = [
             return value;
         }
         if (value.includes("secretRef:")) {
-            return value.replace(/secretRef:([a-z0-9]+(?:[._-][a-z0-9]+)*)/g, (match, id) => {
+            return value.replace(createSecretRefScanner(), (match, id) => {
                 if (isCanaryCredential(id)) {
-                    triggerCanaryAlert({ id, actor: "mcp-agent", action: "mcp.tools/call" });
+                    triggerCanaryAlert({ id, actor: "mcp-agent", action: "mcp.tools/call", ...incidentRoot });
                 }
                 if (typeof resolver === "function") {
                     const resolved = resolver(id);
@@ -125,11 +127,11 @@ export function resolveSecretRefsInPayload(value, resolver, collectedSecrets = [
         return value;
     }
     if (Array.isArray(value)) {
-        return value.map((item) => resolveSecretRefsInPayload(item, resolver, collectedSecrets));
+        return value.map((item) => resolveSecretRefsInPayload(item, resolver, collectedSecrets, options));
     }
     if (value && typeof value === "object") {
         return Object.fromEntries(
-            Object.entries(value).map(([k, v]) => [k, resolveSecretRefsInPayload(v, resolver, collectedSecrets)])
+            Object.entries(value).map(([k, v]) => [k, resolveSecretRefsInPayload(v, resolver, collectedSecrets, options)])
         );
     }
     return value;

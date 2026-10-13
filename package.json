@@ -14,7 +14,6 @@
     "cli/bin",
     "cli/core",
     "cli/mcp",
-    "cli/modules",
     "cli/templates",
     "cli/vault",
     "cli/skills",
@@ -28,18 +27,21 @@
     "scripts/render-banner.mjs",
     "docs/agent-sandbox-threat-model.md",
     "docs/architecture.md",
+    "docs/audit-event-schema.md",
     "docs/banner-spec.md",
     "docs/enterprise-readiness.md",
     "docs/hardware-root-of-trust-roadmap.md",
     "docs/http-credential-broker.md",
     "docs/installation.md",
     "docs/mcp-guide.md",
+    "docs/sdk-contract.md",
+    "docs/upgrade-0.6.md",
+    "docs/vault-format.md",
     "docs/system-logic-and-progress.md",
     "docs/value-benchmark.md",
     "docs/verification-evidence.json",
     "docs/vibe-coders.md",
     ".env.example",
-    "docker-compose.yml",
     "LICENSE",
     "NOTICE",
     "README.md",
@@ -58,7 +60,6 @@
     "claude",
     "opencode",
     "commandcode",
-    "9router",
     "encryption",
     "local-first",
     "pre-commit-hook"
@@ -85,12 +86,17 @@
     "test:verbose": "node --test \"**/*.test.mjs\"",
     "verify": "node scripts/verify-evidence.mjs",
     "build:package": "node scripts/build-package.mjs",
-    "lint": "node scripts/check.mjs",
+    "lint": "eslint .",
     "render:banner": "node scripts/render-banner.mjs",
     "hetzer": "node cli/bin/hetzer.js",
     "publish:github": "node scripts/publish-github.mjs",
     "publish:npm": "node scripts/publish.mjs",
     "publish-pkg": "node scripts/publish-github.mjs"
   },
-  "preferGlobal": true
+  "preferGlobal": true,
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0"
+  }
 }

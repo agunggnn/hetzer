@@ -545,7 +545,7 @@ export function resolveCommandForSpawn(command, commandArgs = []) {
 export function parseArguments(argv) {
     const marker = argv.indexOf("--");
     if (marker === -1 || !argv[marker + 1]) {
-        throw new Error("Usage: exec --root <path> --env-file <path> [--policy <path>] [--policy-hash <sha256>] [--broker-policy <path>] [--allow NAME,NAME] [--allow-raw-unmediated NAME,NAME] [--strict] [--canary] [--sandbox [image]] [--sandbox-network <net>] [--sandbox-ro] [--timeout <duration>] -- <command> [args]");
+        throw new Error("Usage: exec --root <path> --env-file <path> [--policy <path>] [--policy-hash <sha256>] [--broker-policy <path>] [--allow NAME,NAME] [--allow-raw-unmediated NAME,NAME] [--strict] [--canary] [--sandbox [image]] [--sandbox-network <net>] [--sandbox-mount <dir>] [--sandbox-ro] [--timeout <duration>] -- <command> [args]");
     }
     const options = argv.slice(0, marker);
     const value = (name) => {
@@ -561,6 +561,9 @@ export function parseArguments(argv) {
     const rawSandboxVal = value("--sandbox");
     const sandboxImage = value("--sandbox-image") || (rawSandboxVal && !rawSandboxVal.startsWith("-") ? rawSandboxVal : undefined);
     const sandboxNetwork = value("--sandbox-network") || undefined;
+    // The CLI works on the directory it is run from unless told otherwise. This is the project the sandbox
+    // mounts; it is not the Hetzer instance root.
+    const sandboxMountDir = isSandbox ? path.resolve(value("--sandbox-mount") || process.cwd()) : undefined;
     const root = path.resolve(value("--root") || process.cwd());
     const rawEnvFile = value("--env-file");
     const envFile = rawEnvFile ? path.resolve(rawEnvFile) : path.join(root, ".env");
@@ -578,6 +581,7 @@ export function parseArguments(argv) {
         sandbox: isSandbox,
         sandboxImage: sandboxImage || undefined,
         sandboxNetwork,
+        sandboxMountDir,
         sandboxRo: options.includes("--sandbox-ro"),
         strict: options.includes("--strict"),
         canary: options.includes("--canary"),
@@ -671,6 +675,51 @@ export async function prepareExecutionEnvironment(effectiveOptions, {
         throw error;
     }
 
+    if (rawBindings.length) {
+        const { Grimoire, grantIntegrityError, resolveMasterKey, resolveVaultPath } = await import("./hetzer-vault.mjs");
+        const envValues = effectiveOptions.envFile && fs.existsSync(effectiveOptions.envFile)
+            ? parseEnv(fs.readFileSync(effectiveOptions.envFile, "utf8"))
+            : {};
+        const masterKey = resolveMasterKey({ root: effectiveOptions.root, envValues, baseEnv });
+        if (masterKey && !String(masterKey).startsWith("secretRef:")) {
+            const vault = new Grimoire({
+                dbPath: resolveVaultPath(effectiveOptions.root, effectiveOptions.vaultPath)
+                    || path.join(effectiveOptions.root, "data", "hetzer-vault.db"),
+                legacyFile: path.join(effectiveOptions.root, "data", "vault.json"),
+                masterKey,
+            });
+            try {
+                for (const binding of rawBindings) {
+                    const cred = vault.find(binding.id);
+                    const integrityError = grantIntegrityError(cred);
+                    if (integrityError) throw integrityError;
+                    if (cred && cred.rawInjection !== "allow") {
+                        const error = new Error(
+                            `Credential '${binding.id}' does not have a rawInjection grant in Grimoire Vault (grant status: '${cred.rawInjection || "deny"}').\n`
+                            + `--allow-raw-unmediated is a request that is only honored when the vault grant permits raw injection.\n`
+                            + `An operator must set rawInjection to 'allow' in the vault first.`
+                        );
+                        error.code = "ERR_RAW_UNMEDIATED_DENIED_BY_GRANT";
+                        throw error;
+                    }
+                    if (cred && cred.bindHosts && cred.bindHosts.length > 0) {
+                        const currentHost = String(effectiveOptions.host || os.hostname() || "").toLowerCase();
+                        const allowed = cred.bindHosts.map((h) => String(h).toLowerCase());
+                        if (!allowed.includes(currentHost)) {
+                            const error = new Error(
+                                `Credential '${binding.id}' is bound to hosts [${cred.bindHosts.join(", ")}], but current host '${currentHost}' is not permitted.`
+                            );
+                            error.code = "ERR_HOST_BINDING_MISMATCH";
+                            throw error;
+                        }
+                    }
+                }
+            } finally {
+                vault.close();
+            }
+        }
+    }
+
     const env = resolveSecretEnvironment({
         ...effectiveOptions,
         baseEnv,
@@ -706,7 +755,7 @@ export async function prepareExecutionEnvironment(effectiveOptions, {
                     credentialId: id,
                     reason: "User explicitly allowed raw unmediated credential injection",
                     outcome: "allowed",
-                    metadata: { envName, command: path.basename(effectiveOptions.command) },
+                    metadata: { envName, command: effectiveOptions.command ? path.basename(effectiveOptions.command) : "" },
                 });
             }
         } finally {
@@ -715,6 +764,11 @@ export async function prepareExecutionEnvironment(effectiveOptions, {
     }
     const brokers = [];
     const claimedBrokerEnvNames = new Set();
+    // Names Hetzer itself placed in the child environment. A sandbox forwards only these (plus a small
+    // terminal/locale allowlist), never the rest of the host environment.
+    const injectedNames = new Set(rawBindings.map(({ envName }) => envName));
+    if (Object.hasOwn(env, "HETZER_CANARY_TOKEN")) injectedNames.add("HETZER_CANARY_TOKEN");
+    const brokerUrlNames = new Set();
     try {
         for (const [credentialId, descriptor] of policyByCredential) {
             if (!requestedIds.has(credentialId)) continue;
@@ -740,6 +794,11 @@ export async function prepareExecutionEnvironment(effectiveOptions, {
             const suffix = brokerEnvSuffix(credentialId);
             env[`HETZER_BROKER_URL_${suffix}`] = brokerUrl;
             env[`HETZER_BROKER_CAPABILITY_${suffix}`] = opened.broker.capability;
+            for (const name of [opened.policy.baseUrlEnv, opened.policy.tokenEnv, `HETZER_BROKER_URL_${suffix}`, `HETZER_BROKER_CAPABILITY_${suffix}`]) {
+                injectedNames.add(name);
+            }
+            brokerUrlNames.add(opened.policy.baseUrlEnv);
+            brokerUrlNames.add(`HETZER_BROKER_URL_${suffix}`);
             secretsToRedact.push(
                 { id: credentialId, secret: opened.secret },
                 { id: `broker-capability-${credentialId}`, secret: opened.broker.capability },
@@ -750,8 +809,11 @@ export async function prepareExecutionEnvironment(effectiveOptions, {
             const opened = brokers[0];
             env.HETZER_BROKER_URL = `${opened.broker.url}${opened.policy.basePath === "/" ? "" : opened.policy.basePath}`;
             env.HETZER_BROKER_CAPABILITY = opened.broker.capability;
+            injectedNames.add("HETZER_BROKER_URL");
+            injectedNames.add("HETZER_BROKER_CAPABILITY");
+            brokerUrlNames.add("HETZER_BROKER_URL");
         }
-        return { env, secretsToRedact, brokers };
+        return { env, secretsToRedact, brokers, injectedNames: [...injectedNames], brokerUrlNames: [...brokerUrlNames] };
     } catch (error) {
         await Promise.all(brokers.map(async (opened) => {
             await opened.broker.close();
@@ -817,6 +879,8 @@ export async function executeProcess(options, {
                     result: "BLOCK",
                     details: { command: effectiveOptions.command, error: err.message },
                     root: effectiveOptions.root,
+                    baseEnv,
+                    envFile: effectiveOptions.envFile,
                 });
             } catch {}
             throw err;
@@ -833,6 +897,8 @@ export async function executeProcess(options, {
                     result: "BLOCK",
                     details: { command: effectiveOptions.command, error: err.message },
                     root: effectiveOptions.root,
+                    baseEnv,
+                    envFile: effectiveOptions.envFile,
                 });
             } catch {}
             throw err;
@@ -848,6 +914,8 @@ export async function executeProcess(options, {
                 result: "BLOCK",
                 details: { command: effectiveOptions.command },
                 root: effectiveOptions.root,
+                baseEnv,
+                envFile: effectiveOptions.envFile,
             });
         } catch {}
         const err = new Error(
@@ -877,9 +945,19 @@ export async function executeProcess(options, {
                 sandbox: Boolean(effectiveOptions.sandbox),
             },
             root: effectiveOptions.root,
+            baseEnv,
+            envFile: effectiveOptions.envFile,
         });
-    } catch {
-        // Fail soft
+    } catch (error) {
+        // The start event is the record that this run happened. Under --strict a run that cannot be
+        // recorded does not start; otherwise the gap is reported instead of staying silent.
+        if (effectiveOptions.strict) {
+            const failure = new Error(`Audit event could not be recorded and --strict requires it: ${error.message}`);
+            failure.code = "ERR_AUDIT_WRITE_FAILED";
+            throw failure;
+        }
+        process.stderr.write(`[hetzer] warning: audit event not recorded (${error.code || error.message})
+`);
     }
 
     if (effectiveOptions.sandbox) {

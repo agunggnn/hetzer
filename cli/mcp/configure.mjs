@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parseEnv } from "../core/env.mjs";
-import { loadModuleRegistry } from "../modules/registry.mjs";
+import { loadModuleRegistry } from "./service-loader.mjs";
 
 function environmentValue(fileEnv, name, fallback = "") {
     return process.env[name] || fileEnv[name] || fallback;

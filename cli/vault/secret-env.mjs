@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { parseEnv } from "../core/env.mjs";
 import { generateCanaryToken, isCanaryCredential, triggerCanaryAlert } from "./canary.mjs";
-import { Grimoire, resolveMasterKey, resolveVaultPath } from "./hetzer-vault.mjs";
+import { Grimoire, grantIntegrityError, resolveMasterKey, resolveVaultPath } from "./hetzer-vault.mjs";
 
 const STRICT_BASE_ENV_NAMES = new Set([
     "APPDATA", "COLORTERM", "COMSPEC", "HOME", "LANG", "LC_ALL", "LC_CTYPE",
@@ -70,6 +70,8 @@ export function resolveSecretEnvironment({
             }
             const credential = vault.find(id);
             if (!credential) throw new Error(`Credential '${id}' referenced by ${name} was not found.`);
+            const integrityError = grantIntegrityError(credential);
+            if (integrityError) throw integrityError;
             const value = vault.resolveRef(reference, { targetId: credential.projectId, action });
             if (value === null) throw new Error(`Credential '${id}' is not allowed for ${action}.`);
             resolved[name] = value;

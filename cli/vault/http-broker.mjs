@@ -16,7 +16,7 @@ import { recordAuditEvent } from "./audit.mjs";
 import { isCanaryCredential, triggerCanaryAlert } from "./canary.mjs";
 import { assertNoShellMetacharacters } from "./exec-policy.mjs";
 import { isReflectionCommand, parseDuration, pipeSanitizedChild, resolveCommandForSpawn } from "./exec.mjs";
-import { Grimoire, parseSecretRef, resolveMasterKey, resolveVaultPath } from "./hetzer-vault.mjs";
+import { Grimoire, grantIntegrityError, parseSecretRef, resolveMasterKey, resolveVaultPath } from "./hetzer-vault.mjs";
 import { strictBaseEnvironment } from "./secret-env.mjs";
 
 const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
@@ -445,12 +445,30 @@ export function validateBrokerPolicy(input) {
         allowedMethods: Object.freeze(methods),
         allowedPathPrefixes: Object.freeze(pathPrefixes),
         forwardHeaders: Object.freeze(forwardHeaders),
-        ttlSeconds: integerInRange(input.ttlSeconds, 300, 10, 3600, "ttlSeconds"),
+        ttlSeconds: integerInRange(input.ttlSeconds, 60, 5, 3600, "ttlSeconds"),
         maxRequests: integerInRange(input.maxRequests, 100, 1, 1000, "maxRequests"),
         maxRequestBytes: integerInRange(input.maxRequestBytes, 1048576, 1, 10485760, "maxRequestBytes"),
         maxResponseBytes: integerInRange(input.maxResponseBytes, 8388608, 1, 16777216, "maxResponseBytes"),
         timeoutMs: integerInRange(input.timeoutMs, 30000, 1000, 120000, "timeoutMs"),
     });
+}
+
+export function computeBrokerPolicyHash(policy) {
+    if (policy?.policyHash) return policy.policyHash;
+    const canonical = {
+        version: policy.version || 1,
+        target: policy.targetOrigin || policy.target,
+        credential: policy.credential || `secretRef:${policy.credentialId}`,
+        baseUrlEnv: policy.baseUrlEnv,
+        tokenEnv: policy.tokenEnv,
+        basePath: policy.basePath,
+        clientAuth: { header: policy.clientHeader, scheme: policy.clientScheme },
+        upstreamAuth: { header: policy.upstreamHeader, scheme: policy.upstreamScheme },
+        allowedMethods: policy.allowedMethods ? [...policy.allowedMethods].sort() : [],
+        allowedPathPrefixes: policy.allowedPathPrefixes ? [...policy.allowedPathPrefixes].sort() : [],
+        forwardHeaders: policy.forwardHeaders ? [...policy.forwardHeaders].sort() : [],
+    };
+    return crypto.createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
 export function loadBrokerPolicy(policyFile, { expectedHash } = {}) {
@@ -492,7 +510,7 @@ export function loadBrokerPolicy(policyFile, { expectedHash } = {}) {
 
     const validated = validateBrokerPolicy(parsed);
 
-    const requiredHash = expectedHash || parsed.integrity?.sha256;
+    const requiredHash = expectedHash;
     if (requiredHash && requiredHash.toLowerCase() !== policyHash.toLowerCase()) {
         const err = new Error(
             `Broker policy integrity verification failed for '${resolved}'.\n` +
@@ -692,6 +710,7 @@ export async function startHttpCredentialBroker({
     randomBytes = crypto.randomBytes,
     host,
     allowSandbox = false,
+    root,
 } = {}) {
     const policy = rawPolicy?.[VALIDATED_POLICY] ? rawPolicy : validateBrokerPolicy(rawPolicy);
     if (typeof secret !== "string" || !secret) throw new Error("Broker credential is required.");
@@ -711,6 +730,22 @@ export async function startHttpCredentialBroker({
     const deadline = Date.now() + (policy.ttlSeconds * 1000);
     let forwardedRequests = 0;
 
+    try {
+        recordAuditEvent({
+            eventType: "BROKER_LEASE_ISSUED",
+            target: policy.credentialId,
+            result: "ALLOW",
+            root,
+            details: {
+                targetOrigin: policy.targetOrigin,
+                basePath: policy.basePath,
+                ttlSeconds: policy.ttlSeconds,
+                maxRequests: policy.maxRequests,
+                expiresAt: new Date(deadline).toISOString(),
+            },
+        });
+    } catch { /* fail soft */ }
+
     const resolvedLookupFn = lookupFn || (fetchFn && fetchFn !== globalThis.fetch ? async (h, opts) => {
         if (String(h).endsWith(".test") || String(h).endsWith(".example")) {
             return [{ address: "93.184.216.34", family: 4 }];
@@ -728,13 +763,56 @@ export async function startHttpCredentialBroker({
             if (!clientAllowed) {
                 return sendJson(response, 403, allowSandbox ? "Loopback or container bridge clients only." : "Loopback clients only.");
             }
-            if (Date.now() >= deadline) return sendJson(response, 410, "Broker capability expired.");
+            if (Date.now() >= deadline) {
+                try {
+                    recordAuditEvent({
+                        eventType: "BROKER_LEASE_EXPIRED",
+                        target: policy.credentialId,
+                        result: "DENY",
+                        root,
+                        details: {
+                            targetOrigin: policy.targetOrigin,
+                            url: request.url,
+                            expiredAt: new Date(deadline).toISOString(),
+                        },
+                    });
+                } catch { /* fail soft */ }
+                return sendJson(response, 410, "Broker capability expired.");
+            }
             if (!matchesCapability(request.headers[policy.clientHeader], expectedAuth)) {
+                try {
+                    recordAuditEvent({
+                        eventType: "BROKER_CAPABILITY_INVALID",
+                        target: policy.credentialId,
+                        result: "DENY",
+                        root,
+                        details: {
+                            targetOrigin: policy.targetOrigin,
+                            url: request.url,
+                            clientHeader: policy.clientHeader,
+                        },
+                    });
+                } catch { /* fail soft */ }
                 return sendJson(response, 401, "Invalid broker capability.");
             }
             const method = String(request.method || "GET").toUpperCase();
             if (!policy.allowedMethods.includes(method)) return sendJson(response, 403, "HTTP method is not allowed by the broker policy.");
-            if (forwardedRequests >= policy.maxRequests) return sendJson(response, 429, "Broker request limit reached.");
+            if (forwardedRequests >= policy.maxRequests) {
+                try {
+                    recordAuditEvent({
+                        eventType: "BROKER_LIMIT_REACHED",
+                        target: policy.credentialId,
+                        result: "DENY",
+                        root,
+                        details: {
+                            targetOrigin: policy.targetOrigin,
+                            maxRequests: policy.maxRequests,
+                            forwardedRequests,
+                        },
+                    });
+                } catch { /* fail soft */ }
+                return sendJson(response, 429, "Broker request limit reached.");
+            }
             forwardedRequests += 1;
             slotReserved = true;
 
@@ -811,6 +889,21 @@ export async function startHttpCredentialBroker({
             responseHeaders["cache-control"] ||= "no-store";
             response.writeHead(upstream.status, responseHeaders);
             response.end(sanitizedBody);
+
+            try {
+                recordAuditEvent({
+                    eventType: "BROKER_REQUEST_ALLOWED",
+                    target: policy.credentialId,
+                    result: "ALLOW",
+                    root,
+                    details: {
+                        targetOrigin: policy.targetOrigin,
+                        method,
+                        path: target.pathname,
+                        status: upstream.status,
+                    },
+                });
+            } catch { /* fail soft */ }
         } catch (error) {
             if (slotReserved && !requestDispatched) {
                 forwardedRequests = Math.max(0, forwardedRequests - 1);
@@ -879,7 +972,46 @@ export async function openHttpCredentialBroker({
     try {
         const credential = vault.find(policy.credentialId);
         if (!credential) throw new Error(`Credential '${policy.credentialId}' was not found.`);
-        secret = vault.resolve(policy.credentialId, { targetId: credential.projectId, action: "process.start" });
+        const integrityError = grantIntegrityError(credential);
+        if (integrityError) throw integrityError;
+        if (!credential.allowedOrigins || !credential.allowedOrigins.includes(policy.targetOrigin)) {
+            const err = new Error(
+                `Broker policy target origin '${policy.targetOrigin}' is not granted for credential '${policy.credentialId}'.\n` +
+                `Grants live in the vault; workspace policy files cannot grant access.\n` +
+                `To approve this policy, an operator must run: hetzer broker approve ${policy.policyFile || "<policy-file>"}`
+            );
+            err.code = "ERR_BROKER_ORIGIN_NOT_GRANTED";
+            throw err;
+        }
+
+        const policyHash = policy.policyHash || computeBrokerPolicyHash(policy);
+        const approvedRecord = vault.getApprovedBrokerPolicy(policy.credentialId, policyHash);
+        if (!approvedRecord) {
+            const err = new Error(
+                `Broker policy '${policy.policyFile || "<in-memory>"}' (SHA-256: ${policyHash}) is not approved for credential '${policy.credentialId}' in Grimoire Vault.\n` +
+                `Workspace policy pinning is enforced; arbitrary or modified policy files cannot open the broker.\n` +
+                `To approve this policy, an operator must run: hetzer broker approve ${policy.policyFile || "<policy-file>"}`
+            );
+            err.code = "ERR_BROKER_POLICY_NOT_APPROVED";
+            throw err;
+        }
+        if (approvedRecord.target_origin !== policy.targetOrigin) {
+            const err = new Error(
+                `Approved broker policy origin mismatch: policy targets '${policy.targetOrigin}', but approval was for '${approvedRecord.target_origin}'.`
+            );
+            err.code = "ERR_BROKER_ORIGIN_MISMATCH";
+            throw err;
+        }
+
+        const hasBrokerAction = credential.allowedActions && credential.allowedActions.includes("broker.proxy");
+        if (!hasBrokerAction) {
+            const err = new Error(
+                `Credential '${policy.credentialId}' does not have the 'broker.proxy' action grant in Grimoire Vault.`
+            );
+            err.code = "ERR_BROKER_ACTION_NOT_GRANTED";
+            throw err;
+        }
+        secret = vault.resolve(policy.credentialId, { targetId: credential.projectId, action: "broker.proxy" });
         if (secret === null) throw new Error(`Credential '${policy.credentialId}' is not allowed for broker execution.`);
         vault.recordAudit({
             actor: "hetzer-cli",
@@ -895,7 +1027,7 @@ export async function openHttpCredentialBroker({
     }
 
     try {
-        const broker = await startHttpCredentialBroker({ policy, secret, fetchFn, randomBytes, allowSandbox });
+        const broker = await startHttpCredentialBroker({ policy, secret, fetchFn, randomBytes, allowSandbox, root });
         return { broker, policy, secret };
     } catch (error) {
         secret = "";

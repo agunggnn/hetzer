@@ -121,9 +121,9 @@ Hetzer provides the missing second barrier through the **HTTP Credential Broker*
 │     - Windows C:\Users, %LOCALAPPDATA%, Chrome cookies, Steam: INVISIBLE│
 │                                                                         │
 │   Barrier 2 (Hetzer Broker):                                            │
-│     - Real ANTHROPIC_API_KEY: NEVER ENTERS CONTAINER MEMORY             │
-│     - Adversary dumps env -> Obtains useless local capability token     │
-│     - Outbound leak attempt -> Fails outside loopback boundary          │
+│     - Brokered ANTHROPIC_API_KEY: not placed in the container env       │
+│     - Env dump shows a short-lived local capability token only          │
+│     - Outbound network is open unless the engine restricts it           │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -133,12 +133,12 @@ Hetzer provides the missing second barrier through the **HTTP Credential Broker*
 
 | Attack Vector in Incident | Standalone Agent on Host | Standalone Docker Sandbox | Hetzer + Container Sandbox |
 |---|---|---|---|
-| **Chrome / Edge Cookie Theft** | ❌ Vulnerable (Reads `%LOCALAPPDATA%`) | 🟢 Protected (No host filesystem mount) | 🟢 Protected (No host filesystem mount) |
-| **API Key Exfiltration via Env Dump** | ❌ Vulnerable (Plaintext in env/config) | ❌ Vulnerable (Plaintext in container env) | 🟢 Protected (Broker mediates; secret never in env) |
-| **API Key Drain / Runaway Loops** | ❌ Unbounded billing drain | ❌ Unbounded billing drain | 🟢 Protected (Atomic quota reservation & timeout) |
-| **Steam / Instagram Session Hijack** | ❌ Vulnerable (Pass-the-Cookie) | 🟢 Protected (Host apps inaccessible) | 🟢 Protected (Host apps inaccessible) |
-| **Cloudflare DNS / BotFix Tampering** | ❌ Vulnerable (Browser session hijacked) | ❌ Vulnerable (If CF API token in container) | 🟢 Protected (Path-restricted broker policy) |
-| **Canary Tripwire Alerting** | ❌ None (Silent compromise) | ❌ None (Silent compromise) | 🟢 Protected (Process tree killed on honeytoken access) |
+| **Chrome / Edge Cookie Theft** | ❌ Vulnerable (Reads `%LOCALAPPDATA%`) | 🟢 Not mounted (only the project directory is mounted) | 🟢 Not mounted (only the project directory is mounted; Hetzer-owned paths inside it are hidden) |
+| **API Key Exfiltration via Env Dump** | ❌ Vulnerable (Plaintext in env/config) | ❌ Vulnerable (Plaintext in container env) | 🟡 Reduced (A brokered key is not in the env; a raw-injected key is; outbound network is open by default) |
+| **API Key Drain / Runaway Loops** | ❌ Unbounded billing drain | ❌ Unbounded billing drain | 🟡 Bounded (Per-lease request quota, lease TTL and process timeout) |
+| **Steam / Instagram Session Hijack** | ❌ Vulnerable (Pass-the-Cookie) | 🟢 Not mounted (Host apps inaccessible) | 🟢 Not mounted (Host apps inaccessible) |
+| **Cloudflare DNS / BotFix Tampering** | ❌ Vulnerable (Browser session hijacked) | ❌ Vulnerable (If CF API token in container) | 🟡 Reduced (Path-restricted broker policy, if the token is brokered and not supplied another way) |
+| **Canary Tripwire Alerting** | ❌ None (Silent compromise) | ❌ None (Silent compromise) | 🟡 Detects reads of decoy credentials and decoy tokens in output (process tree killed); other paths are not watched |
 
 ---
 
@@ -152,10 +152,11 @@ To operate agents safely on Windows:
    hetzer creds set openrouter-api-key
    ```
 2. **Execute with Mediated HTTP Broker & Ephemeral Sandbox (`hetzer exec --sandbox`)**:
-   Use Hetzer's native sandbox runner to automatically spin up a capability-dropped container (`--cap-drop=ALL`) that mounts only `./` workspace, isolates host AppData and home directories, and translates loopback broker endpoints:
+   Use Hetzer's native sandbox runner to automatically spin up a capability-dropped container (`--cap-drop=ALL`) that mounts only the project directory (the current directory, or `--sandbox-mount <dir>`), hides the Hetzer vault, env file, key and audit log if they sit inside it, forwards only the injected variables, and translates loopback broker endpoints:
    ```bash
    hetzer exec --allow anthropic-api-key --sandbox -- node agent.js
    ```
+   Limits to keep in mind: outbound network access is open by default (the sandbox prints the mode; `--sandbox-network none` cannot be combined with a brokered credential); a raw-injected credential is inside the container; `docker inspect` shows a running container's environment; files created after the container starts are not hidden; and on Windows the host firewall must allow the container to reach the broker.
 3. **Automated Sensitive Host Path & Living-Off-The-Land Downloader Deny-List**:
    Even if run locally on bare-metal without `--sandbox`, `hetzer exec` automatically blocks child processes from reading host cookies (`%LOCALAPPDATA%`, Chrome, Edge, Brave, Opera), crypto wallets (`solana/id.json`), or executing unpermitted living-off-the-land downloaders (`certutil -urlcache`, `bitsadmin`, `mshta`, `powershell irm | iex`).
 4. **Audit Configuration Regularly**:

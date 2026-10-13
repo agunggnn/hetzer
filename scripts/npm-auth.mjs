@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-import { strictBaseEnvironment } from "../vault/secret-env.mjs";
+import { strictBaseEnvironment } from "../cli/vault/secret-env.mjs";
 
 export function redactExactValues(text, values = []) {
     let result = String(text || "");

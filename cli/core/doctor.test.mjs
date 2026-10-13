@@ -115,6 +115,43 @@ test("runDoctor formats report and returns health status", () => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
+test("runDoctor validates a Compose file only when the project has one", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-doctor-compose-"));
+    fs.writeFileSync(path.join(tempRoot, ".env"), "HETZER_VAULT_PATH=\n");
+    const run = () => {
+        let output = "";
+        const composeConfigCalls = [];
+        const exec = (cmd, args) => {
+            if (args.includes("config")) {
+                composeConfigCalls.push(args);
+                return { status: 1, stderr: "no configuration file provided: not found" };
+            }
+            if (args.includes("--version")) return { status: 0, stdout: "Docker version 27.1.1\n" };
+            if (args.includes("info")) return { status: 0, stdout: '"27.1.1"\n' };
+            if (args.includes("compose")) return { status: 0, stdout: "Docker Compose version v2.29.1\n" };
+            return { status: 0 };
+        };
+        const result = runDoctor({ root: tempRoot, defaultHome: tempRoot, exec, out: { write: (chunk) => { output += chunk; } } });
+        return { result, output, composeConfigCalls };
+    };
+    try {
+        // A project as 'hetzer init' leaves it: no Compose file, so nothing to validate and nothing to fail on.
+        const initialized = run();
+        assert.equal(initialized.composeConfigCalls.length, 0);
+        assert.equal(initialized.result.issues.some((issue) => issue.title === "Docker Compose Validation Failed"), false);
+        assert.doesNotMatch(initialized.output, /Compose Config/);
+
+        // A project that brings its own Compose file still gets it checked.
+        fs.writeFileSync(path.join(tempRoot, "docker-compose.yml"), "services: {}\n");
+        const withCompose = run();
+        assert.equal(withCompose.composeConfigCalls.length, 1);
+        assert.equal(withCompose.result.issues.some((issue) => issue.title === "Docker Compose Validation Failed"), true);
+        assert.match(withCompose.output, /Compose Config\s+: Configuration issue \[FAIL\]/);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
 test("applyDoctorFixes automatically creates missing data directory", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-doctor-fix-"));
     try {

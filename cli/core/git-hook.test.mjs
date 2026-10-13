@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,8 +13,14 @@ import {
     findGitDir,
     installGitHook,
     scanAddedLines,
+    stripLockfileIntegrity,
     uninstallGitHook,
 } from "./git-hook.mjs";
+
+// Deterministic SRI value shaped like the integrity hashes npm writes to lockfiles.
+const SRI = `sha512-${crypto.createHash("sha512").update("hetzer-lockfile-fixture").digest("base64")}`;
+// Assembled at runtime so no credential-shaped literal appears in this file.
+const SYNTHETIC_TOKEN = ["gh", "p_", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"].join("");
 
 test("findGitDir locates current git root directory", () => {
     const gitDir = findGitDir(process.cwd());
@@ -190,6 +198,63 @@ test("installGitHook and uninstallGitHook manage hooks in common directory when 
         assert.ok(uninstallRes.uninstalled);
         assert.ok(!fs.existsSync(expectedPreCommit));
         assert.ok(!fs.existsSync(expectedCommitMsg));
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test("stripLockfileIntegrity removes integrity values from known lockfiles only", () => {
+    assert.equal(
+        stripLockfileIntegrity("package-lock.json", `      "integrity": "${SRI}",`),
+        '      "integrity": "",',
+    );
+    assert.equal(
+        stripLockfileIntegrity("sub/dir/yarn.lock", `  integrity ${SRI}`),
+        "  integrity ",
+    );
+    assert.equal(
+        stripLockfileIntegrity("pnpm-lock.yaml", `    resolution: {integrity: ${SRI}}`),
+        "    resolution: {integrity: }",
+    );
+    // Other files keep the value so a real secret named "integrity" is still scanned.
+    const untouched = `"integrity": "${SRI}"`;
+    assert.equal(stripLockfileIntegrity("config/settings.json", untouched), untouched);
+    // Lines in a lockfile that are not integrity fields are returned unchanged.
+    const resolved = `"resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz"`;
+    assert.equal(stripLockfileIntegrity("package-lock.json", resolved), resolved);
+});
+
+test("scanAddedLines ignores lockfile integrity hashes but still flags other secrets in lockfiles", () => {
+    const integrityOnly = scanAddedLines([
+        { file: "package-lock.json", line: 10, text: `      "integrity": "${SRI}",` },
+    ]);
+    assert.equal(integrityOnly.length, 0);
+
+    const outsideLockfile = scanAddedLines([
+        { file: "config/settings.json", line: 3, text: `  "integrity": "${SRI}",` },
+    ]);
+    assert.ok(outsideLockfile.length > 0, "same value outside a lockfile must still be reported");
+
+    const leakedInLockfile = scanAddedLines([
+        { file: "package-lock.json", line: 11, text: `      "resolved": "https://registry.example.test/pkg.tgz?token=${SYNTHETIC_TOKEN}",` },
+    ]);
+    assert.ok(leakedInLockfile.length > 0, "a credential in a lockfile must still be reported");
+});
+
+test("checkStagedDiff permits a staged lockfile with integrity hashes", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-lockfile-diff-"));
+    try {
+        const git = (...args) => spawnSync("git", args, { cwd: tempDir, encoding: "utf8", windowsHide: true });
+        assert.equal(git("init", "-q").status, 0);
+        const lock = {
+            name: "fixture",
+            lockfileVersion: 3,
+            packages: { "node_modules/example": { version: "1.0.0", integrity: SRI } },
+        };
+        fs.writeFileSync(path.join(tempDir, "package-lock.json"), `${JSON.stringify(lock, null, 2)}\n`);
+        assert.equal(git("add", "package-lock.json").status, 0);
+        const result = checkStagedDiff(tempDir);
+        assert.equal(result.ok, true, JSON.stringify(result.violations));
     } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });
     }

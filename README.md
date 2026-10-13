@@ -57,6 +57,13 @@ npx hetzer creds set openai-api-key
   npm install -g git+https://github.com/agunggnn/hetzer.git
   ```
 
+> [!TIP]
+> **Upgrade**: Hetzer is upgraded through npm. `hetzer upgrade` and `hetzer check-update` only print this command:
+> ```bash
+> npm install -g @agunggnn/hetzer
+> ```
+> Coming from 0.5.x? Read [docs/upgrade-0.6.md](docs/upgrade-0.6.md) first: 0.6.0 migrates the vault file and removes commands.
+
 ---
 
 ## 📑 Modular Documentation
@@ -78,7 +85,7 @@ For structured navigation and deep architectural insights, explore the dedicated
 | ☣️ **[Agent Threat Model & Sandbox Case Study (`docs/agent-sandbox-threat-model.md`)](docs/agent-sandbox-threat-model.md)** | Incident analysis of un-sandboxed agent session hijacking (*Pass-the-Cookie*), why antivirus fails, and the Sandbox-Credential Paradox. |
 | 🛡️ **[Jagdpanzer Multi-Container Fleet Ops](https://github.com/agunggnn/jagdpanzer)** | Multi-container stack orchestration, persistent cognitive memory (Cognee), and automated agent networks. |
 
-## 📦 Node.js SDK (experimental)
+## 📦 Node.js SDK (apiVersion 1)
 
 Hetzer now exposes a metadata-first SDK for local Node.js applications and trusted deployment tooling:
 
@@ -101,7 +108,7 @@ hetzer.close();
 
 The SDK currently exposes credential metadata, metadata-only authorization checks, and strict scoped execution. It does not return decrypted values, replace application authentication, or provide a browser-side vault. Applications should keep references such as `secretRef:service-api-key` in configuration and run from a trusted local/CI process with an explicit allowlist.
 
-This is an experimental public export. The CLI remains the supported human interface while the SDK contract is hardened.
+`apiVersion` is the number `1` (earlier builds reported the string `experimental-1`). Version 1 is the member list in [`docs/sdk-contract.md`](docs/sdk-contract.md), which a test keeps fixed; it has no way to resolve, reveal or lease a credential value, and lease interfaces are not part of it. The package exports only `@agunggnn/hetzer/sdk`, but code running as the same user can still import the vault module or read the vault file directly, so the SDK is not a boundary against untrusted code in the same process; run untrusted agents out of process in the sandbox. The CLI remains the supported human interface.
 
 ---
 
@@ -116,7 +123,7 @@ With Hetzer, you get:
 4. **Dual Git Guards (`pre-commit` & `commit-msg`)**: Inspects staged filenames, diff additions before commit, and validates commit messages against raw credentials.
 5. **Canary Honey-Tokens & Active Stream Tripwires**: Deploys decoy canary tokens (`HETZER_CANARY_TOKEN`, `canary-*`). Guarded resolution aborts with exit code 43. Guarded subprocesses (`hetzer exec --canary`) terminate child processes if canary tokens leak into stdout/stderr.
 6. **HTTP Credential Broker**: Loopback proxy (`127.0.0.1`) injecting upstream credentials via ephemeral capabilities without exposing raw secrets to child environments.
-7. **Ephemeral Container Sandbox (`hetzer exec --sandbox`) & Fleet Separation**: Isolates untrusted agent commands in transient containers (`--cap-drop=ALL`, `--pids-limit=100`, unmounting host AppData), cleanly delegating multi-container cluster ops to [Jagdpanzer](https://github.com/agunggnn/jagdpanzer).
+7. **Ephemeral Container Sandbox (`hetzer exec --sandbox`) & Fleet Separation**: Runs agent commands in transient containers (`--cap-drop=ALL`, `--pids-limit=100`, project-only mount with Hetzer-owned paths hidden), cleanly delegating multi-container cluster ops to [Jagdpanzer](https://github.com/agunggnn/jagdpanzer).
 
 All built with **0 external npm dependencies** (100% Node.js standard library: `node:crypto`, `node:sqlite`, `node:fs`, `node:perf_hooks`).
 
@@ -142,7 +149,6 @@ All built with **0 external npm dependencies** (100% Node.js standard library: `
 flowchart TB
     subgraph Clients["AI Clients & Developer Interfaces"]
         CLI["Hetzer CLI\n(hetzer exec / creds / mcp)"]
-        TUI["Terminal Live Monitor\n(hetzer tui)"]
         Claude["Claude Desktop / Code"]
         Cursor["Cursor IDE"]
         Hermes["Hermes Agent"]
@@ -357,12 +363,6 @@ All Hetzer commands are executed via the `hetzer` CLI:
 |---|---|
 | `hetzer doctor [--fix]` | Validates system prerequisites, Node.js version, and container engine compatibility |
 | `hetzer init [dir]` | Initializes a new Hetzer instance, creates Grimoire Vault, and secures `.env` |
-| `hetzer up [srv\|all] [--wait]` | Launches containers [deprecated; multi-container orchestration delegated to Jagdpanzer] |
-| `hetzer update [module]` | Updates Hetzer CLI, or pulls module image digests [deprecated; use Jagdpanzer] |
-| `hetzer down [-v]` | Stops services [deprecated; multi-container orchestration delegated to Jagdpanzer] |
-| `hetzer status` | Displays container states [deprecated; multi-container orchestration delegated to Jagdpanzer] |
-| `hetzer logs [service]` | Streams container logs [deprecated; multi-container orchestration delegated to Jagdpanzer] |
-| `hetzer tui` | Tactical security radar, audit log, canary tripwires, and runtime armor HUD |
 | `hetzer creds [list|request|approve|status|reveal|set]` | Lists, requests, approves, checks, reveals, or saves Grimoire Vault credentials |
 | `hetzer creds reveal <id>` | Decrypts and prints plaintext after TTY, process-tree, and required native-modal checks |
 | `hetzer creds set <id>` | Encrypts and saves a credential via AES-256-GCM using a masked prompt; requires a direct human TTY |
@@ -371,25 +371,31 @@ All Hetzer commands are executed via the `hetzer` CLI:
 | `hetzer creds status <request-id>` | Reports only `pending`, `approved`, or `expired` |
 | `hetzer creds isolate-key` | Moves master key outside workspace to `~/.hetzer/grimoire.key` (mode 0600) |
 | `hetzer canary [setup]` | Deploys decoy canary honey-tokens to catch prompt injection & scraping |
-| `hetzer audit [verify\|tail [n]]` | Verifies cryptographic SHA-256 hash-chain or inspects tamper-evident audit ledger |
-| `hetzer exec [--allow <ids>] [--policy <file>] [--sandbox [image]] [--host] [--strict] [--canary] [--timeout <t>] -- <c>` | Runs with broker-mediated credentials, transient container sandbox, stream redaction, and canary tripwire |
+| `hetzer audit [verify [--require-mac]\|tail [n]\|rotate --yes]` | Verifies the SHA-256 hash-chain (and MACs), inspects the tamper-evident audit ledger, or archives it and starts a new one |
+| `hetzer exec [--allow <ids>] [--policy <file>] [--sandbox [image]] [--sandbox-mount <dir>] [--host] [--strict] [--canary] [--timeout <t>] -- <c>` | Runs with broker-mediated credentials, transient container sandbox, stream redaction, and canary tripwire |
 | `hetzer broker --policy <file> -- <c>` | Runs an HTTP client using short-lived capability instead of real credentials |
 | `hetzer protect` | Arms workspace with credential-safety guidance, Git pre-commit hook, and .env protection |
 | `hetzer sniffer [scan\|redact]` | Scans or redacts supported credential candidates from input text |
 | `hetzer skill [install\|status]`| Deploys Universal AI Agent Skills to Hermes, AGY, OpenCode, Cursor, Claude |
 | `hetzer hook [install\|uninstall\|check\|check-msg]` | Installs or tests Dual Git Guards (`pre-commit` staged diff & `commit-msg` text) |
-| `hetzer modules` | Displays available native extension modules [deprecated; use Jagdpanzer] |
-| `hetzer install <module>` | Enables an extension module [deprecated; use Jagdpanzer] |
-| `hetzer remove <module>` | Disables an extension module [deprecated; use Jagdpanzer] |
-| `hetzer module create <id>` | Scaffolds module recipe [deprecated; use Jagdpanzer] |
-| `hetzer validate [module]` | Validates module integrity, security, and compose recipe |
 | `hetzer mcp ping [service]` | Diagnoses JSON-RPC handshake and latency for MCP endpoints |
 | `hetzer mcp tools [service]` | Lists MCP tools and their execution classification |
 | `hetzer mcp call <srv> <tool>` | Invokes an MCP tool directly from the terminal without an AI client |
-| `hetzer version [--check]` | Displays Hetzer version (use `--check` to query latest GitHub release) |
-| `hetzer check-update` | Checks if a newer version of Hetzer is available from GitHub Releases |
-| `hetzer upgrade [--yes\|--check]` | Automatically upgrades Hetzer CLI to the latest release |
-| `hetzer publish` | Builds, verifies test suite, and publishes package to npm |
+| `hetzer version` | Displays the installed Hetzer version |
+| `hetzer check-update` | Deprecated and removed: prints the npm command that upgrades Hetzer and exits with code 1 |
+| `hetzer upgrade` | Deprecated and removed: prints the npm command that upgrades Hetzer and exits with code 1 |
+| `hetzer publish` | Deprecated and removed: prints a pointer to the release scripts and exits with code 1 |
+| `hetzer up [srv\|all] [--wait]` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
+| `hetzer down [-v]` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
+| `hetzer status` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
+| `hetzer logs [service]` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
+| `hetzer tui` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
+| `hetzer update [module]` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
+| `hetzer modules` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
+| `hetzer install <module>` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
+| `hetzer remove <module>` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
+| `hetzer module create <id>` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
+| `hetzer validate [module]` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
 
 ---
 
@@ -403,7 +409,6 @@ hetzer creds list
 
 # Decrypt and reveal the actual secret value (AES-256-GCM)
 hetzer creds reveal npm-token
-hetzer creds reveal nine-router-initial-password
 ```
 
 ### 2. Can AI Agents (Claude, Cursor, Cline, GPT) see these credentials?
@@ -442,13 +447,10 @@ Under this model, zero decryption keys exist on disk. Anyone copying the databas
 To cleanly remove Hetzer from your machine:
 
 ```bash
-# 1. Stop containers and remove persistent volumes (if using Docker services)
-hetzer down -v
-
-# 2. Uninstall global CLI binary
+# 1. Uninstall global CLI binary
 npm uninstall -g hetzer
 
-# 3. Clean up project files
+# 2. Clean up project files
 cd .. && rm -rf hetzer
 ```
 

@@ -1,24 +1,27 @@
 import { spawnSync } from "node:child_process";
 
 const AGENT_ENV_VARS = [
-  ["ANTIGRAVITY_AGENT", "Antigravity Agent"],
-  ["CURSOR_PROJECT_DIR", "Cursor IDE"],
-  ["CURSOR_TRACE_ID", "Cursor Agent"],
-  ["CLAUDE_CODE", "Claude Code"],
-  ["HERMES_AGENT", "Hermes Agent"],
-  ["OPENCODE_CLIENT", "OpenCode Agent"],
-  ["AGENT_MODE", "Generic Agent Mode"],
-  ["CI", "CI pipeline"],
-  ["GITHUB_ACTIONS", "GitHub Actions"],
+  ["ANTIGRAVITY_AGENT", "Antigravity Agent runtime detected"],
+  ["CURSOR_PROJECT_DIR", "Cursor IDE Agent runtime detected"],
+  ["CURSOR_TRACE_ID", "Cursor Agent session detected"],
+  ["CLAUDE_CODE", "Claude Code session detected"],
+  ["VSCODE_PID", "VS Code agent process runner detected"],
+  ["HERMES_AGENT", "Hermes Agent session detected"],
+  ["OPENCODE_CLIENT", "OpenCode Agent session detected"],
+  ["AGENT_MODE", "Generic Agent Mode detected"],
+  ["CI", "Continuous Integration / non-interactive pipeline detected"],
+  ["GITHUB_ACTIONS", "GitHub Actions pipeline detected"],
 ];
 
 const AGENT_PROCESS_NAMES = [
   "opencode", "opencode.exe", "cursor", "cursor.exe", "code", "code.exe",
-  "antigravity", "claude", "hermes", "agent", "copilot",
+  "antigravity", "agy", "claude", "hermes", "agent", "copilot", "electron", "ollama",
 ];
 
 function detectAgentEnv(env = process.env) {
-  for (const [k, desc] of AGENT_ENV_VARS) if (env[k]) return { isAgent: true, reason: desc + " ($" + k + ")" };
+  for (const [k, desc] of AGENT_ENV_VARS) {
+    if (env[k]) return { isAgent: true, reason: desc, envVar: k };
+  }
   return { isAgent: false };
 }
 
@@ -86,17 +89,30 @@ export function checkProcessAncestors({ platform = process.platform, pid = proce
   return result;
 }
 
-export function assertInteractiveHumanSession({ input = process.stdin, env = process.env, ancestor, operation = "'vault reveal'" } = {}) {
+export function assertInteractiveHumanSession({ input = process.stdin, env = process.env, ancestor, operation = "'hetzer creds reveal'" } = {}) {
   if (!input.isTTY) {
-    throw new Error('Access Denied: ' + operation + ' requires a direct human interactive TTY.\nAutonomous agent / non-interactive programmatic secret revelation is blocked.');
+    throw new Error(
+      `Access Denied: ${operation} requires a direct human interactive TTY terminal.\n` +
+      "Autonomous agent / non-interactive programmatic secret revelation is blocked to prevent context window leakage."
+    );
   }
   const envCheck = detectAgentEnv(env);
   if (envCheck.isAgent) {
-    throw new Error('Access Denied: ' + operation + ' blocked.\nReason: ' + envCheck.reason + ' detected.\nUse \'hetzer exec -- <command>\' for scoped injection.');
+    throw new Error(
+      `Access Denied: ${operation} blocked by the credential reveal guard.\n` +
+      `Reason: ${envCheck.reason} ($${envCheck.envVar} is set).\n` +
+      "Autonomous agents running in YOLO/unrestricted mode cannot extract raw secrets into context.\n" +
+      "To execute commands with injected secrets safely, use 'hetzer exec -- <command>'."
+    );
   }
   const ancestry = ancestor || checkProcessAncestors();
   if (ancestry.isAgent) {
-    throw new Error('Access Denied: ' + operation + ' blocked.\nReason: Agent runtime \'' + ancestry.processName + '\' in ancestry.\nUse \'hetzer exec -- <command>\'.');
+    throw new Error(
+      `Access Denied: ${operation} blocked by the credential reveal guard.\n` +
+      `Reason: Agent runtime '${ancestry.processName}' detected in process tree ancestry.\n` +
+      "Autonomous agents running in YOLO/unrestricted mode cannot extract raw secrets into context.\n" +
+      "To execute commands with injected secrets safely, use 'hetzer exec -- <command>'."
+    );
   }
 }
 

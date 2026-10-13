@@ -48,7 +48,7 @@ Execution policy manifests (`--policy`) enforce exact structured `argv` matching
 
 Common environment-reflection command strings are rejected before spawn. This is a misuse safeguard, not a sandbox: equivalent code, native binaries, debuggers, encodings, and external side effects remain possible inside an authorized child.
 
-Guarded child and Docker Compose stdout/stderr pass through independent UTF-8 rolling sanitizers. Each retains `max(128, longest injected secret × 2)` characters and scans a bounded 512-character lexical window. Before emission, a streaming filter removes terminal control/format characters and suppresses supported private-key blocks, credentialed database URLs, and provider-token candidates without waiting for a fixed 16 KiB window. Known injected values are detected even when writes split them across chunks. Deliberately transformed values, unsupported formats, non-UTF-8 output, and output written directly to a terminal device, file, or network remain outside this filter.
+Guarded child stdout/stderr passes through an independent UTF-8 rolling sanitizer. Each retains `max(128, longest injected secret × 2)` characters and scans a bounded 512-character lexical window. Before emission, a streaming filter removes terminal control/format characters and suppresses supported private-key blocks, credentialed database URLs, and provider-token candidates without waiting for a fixed 16 KiB window. Known injected values are detected even when writes split them across chunks. Deliberately transformed values, unsupported formats, non-UTF-8 output, and output written directly to a terminal device, file, or network remain outside this filter.
 
 ## HTTP credential broker
 
@@ -72,9 +72,19 @@ The pre-commit hook invokes Git to list staged files and obtain the added diff. 
 
 ## Ephemeral container sandbox vs. multi-container stack orchestration
  
-Hetzer focuses on single-command, ephemeral process containment via `hetzer exec --sandbox [image]`. Untrusted agent executions are isolated inside transient containers with `--cap-drop=ALL`, `--security-opt=no-new-privileges`, and strict process limits, while bridging the host loopback HTTP broker via `host.docker.internal`.
+Hetzer focuses on single-command, ephemeral process containment via `hetzer exec --sandbox [image]`. Agent commands run inside transient containers with `--cap-drop=ALL`, `--security-opt=no-new-privileges`, and a process limit, while the host loopback HTTP broker is bridged via `host.docker.internal`.
+
+- **Mount**: only the project directory is mounted (`--sandbox-mount <dir>`, default the current directory). The filesystem root, the home directory, the Hetzer home and their ancestors are refused. Hetzer-owned paths inside the mount (env file, vault database and journals, key file, audit and incident logs, `.hetzer/`, credential requests) are hidden with an empty read-only file or a read-only tmpfs; only paths that exist are hidden, and a path that cannot be hidden stops the run.
+- **Environment**: only variables Hetzer injected (raw bindings, broker URL and capability, canary token) and a terminal/locale allowlist are forwarded, by name. Values travel through the engine CLI's own environment, so they are not in its command line. `docker inspect` still shows a running container's environment values.
+- **Image**: the default is pinned by digest. A pin does not receive base-image updates on its own; refresh it with the commands next to `DEFAULT_SANDBOX_IMAGE` in `cli/vault/sandbox.mjs`, or set `HETZER_SANDBOX_IMAGE`.
+- **Network**: outbound access is open by default and the sandbox prints the mode before starting. `--sandbox-network none` removes it but cannot be combined with a brokered credential.
+- **Not covered**: files that appear after the container starts are not hidden; the broker still binds `0.0.0.0` in sandbox mode and accepts RFC 1918 clients (capability-gated); a sandbox does not protect a credential that was raw-injected into it.
  
 Multi-container full-stack operations (such as 9Router AI gateways, PostgreSQL/pgvector memory clusters, and cognitive extractors) are deprecated in the Hetzer core CLI and delegated to [Jagdpanzer](https://github.com/agunggnn/jagdpanzer), allowing Hetzer to maintain a clean, zero-dependency footprint strictly focused on credential safety and agent armor.
+
+## Proposed architecture decisions
+
+- [ADR-0001: Authority model first, then a local-first engine with thin adapters](adr/0001-authority-model-and-engine-boundary.md) — **Proposed.** Based on the [October 2026 architecture and security review](architecture-review-2026-10.md).
 
 ## Closed architecture proposals
 

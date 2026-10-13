@@ -11,16 +11,6 @@ import {
     main,
     suggestCommand,
 } from "./cli.mjs";
-import {
-    auditLedgerSnapshot,
-    collectStatus,
-    quickSniffSnapshot,
-    renderTui,
-    runtimeArmorSnapshot,
-    shieldSnapshot,
-    threatSnapshot,
-    vaultPostureSnapshot,
-} from "../modules/tui.mjs";
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(cliRoot, "..");
@@ -35,7 +25,7 @@ test("CONTRACT: help() commands and KNOWN_COMMANDS maintain strict bidirectional
     const helpLines = commandsSection
         .split("\n")
         .map((l) => l.trim())
-        .filter((l) => l && !l.startsWith("Run with") && !l.startsWith("=="));
+        .filter((l) => l && !l.startsWith("Run with") && !l.startsWith("==") && !l.startsWith("Deprecated"));
 
     const helpCommands = new Set();
     for (const line of helpLines) {
@@ -57,7 +47,7 @@ test("CONTRACT: help() commands and KNOWN_COMMANDS maintain strict bidirectional
     const requiredPrimaryCommands = [
         "init", "doctor", "protect", "skill", "hook", "sniffer",
         "creds", "canary", "audit", "exec", "broker", "mcp",
-        "publish", "version", "check-update", "upgrade", "tui",
+        "version",
     ];
     for (const req of requiredPrimaryCommands) {
         assert.ok(
@@ -71,8 +61,6 @@ test("CONTRACT: suggestCommand() primaryCommands strictly align with KNOWN_COMMA
     const testCases = [
         ["hepl", "help"],
         ["versoin", "version"],
-        ["updat", "update"],
-        ["upgrad", "upgrade"],
         ["audt", "audit"],
         ["canry", "canary"],
         ["sniff", "sniffer"],
@@ -111,7 +99,7 @@ test("CONTRACT: README.md CLI cheat sheet table covers all active and deprecated
     const coreCommands = [
         "doctor", "init", "protect", "skill", "hook", "sniffer",
         "creds", "canary", "audit", "exec", "broker", "mcp",
-        "publish", "version", "check-update", "upgrade", "tui",
+        "version",
     ];
 
     for (const cmd of coreCommands) {
@@ -123,7 +111,7 @@ test("CONTRACT: README.md CLI cheat sheet table covers all active and deprecated
 
     // Verify deprecated commands in README.md are clearly marked as deprecated
     const tableLines = cheatSheetSection.split("\n").filter((line) => line.startsWith("| `hetzer "));
-    const deprecatedCommands = ["up", "down", "status", "logs", "modules", "install", "remove", "module"];
+    const deprecatedCommands = ["up", "down", "status", "logs", "modules", "install", "remove", "module", "validate", "tui"];
     for (const dep of deprecatedCommands) {
         const row = tableLines.find((l) => l.startsWith(`| \`hetzer ${dep} `) || l.startsWith(`| \`hetzer ${dep}\``));
         assert.ok(row, `Deprecated command '${dep}' must be in cheat sheet table`);
@@ -190,87 +178,6 @@ test("CONTRACT: Multi-file version consistency is mathematically uniform", () =>
         agentsContent.includes(`> **Version**: v${expectedVersion}`),
         `AGENTS.md version does not match package.json '${expectedVersion}'`
     );
-});
-
-test("CONTRACT: TUI radar snapshot and views schema integrity", async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-tui-contract-"));
-    try {
-        // 1. threatSnapshot
-        const threat = threatSnapshot(tempDir);
-        assert.ok(["UNARMED", "ARMED", "TRIPPED"].includes(threat.state));
-        assert.equal(typeof threat.incidentCount, "number");
-        assert.ok(Array.isArray(threat.recentIncidents));
-        assert.equal(typeof threat.canaryCount, "number");
-
-        // 2. auditLedgerSnapshot
-        const audit = auditLedgerSnapshot(tempDir);
-        assert.ok(["CLEAN", "VERIFIED", "CORRUPTED", "ERROR"].includes(audit.state));
-        assert.equal(typeof audit.count, "number");
-        assert.equal(typeof audit.latestHash, "string");
-        assert.ok(Array.isArray(audit.recentEvents));
-
-        // 3. vaultPostureSnapshot
-        const vault = vaultPostureSnapshot(tempDir);
-        assert.ok(["ready", "locked", "degraded", "n/a"].includes(vault.state));
-        assert.ok(["ISOLATED", "EXPOSED", "MISSING"].includes(vault.keyIsolation));
-        assert.ok(Array.isArray(vault.credentials));
-        assert.equal(typeof vault.totalStored, "number");
-
-        // 4. shieldSnapshot
-        const shield = shieldSnapshot(tempDir);
-        assert.equal(typeof shield.gitDir, "boolean");
-        assert.ok(shield.preCommit && typeof shield.preCommit.state === "string");
-        assert.ok(shield.commitMsg && typeof shield.commitMsg.state === "string");
-        assert.ok(Array.isArray(shield.detectedAgents));
-
-        // 5. runtimeArmorSnapshot
-        const armor = runtimeArmorSnapshot(tempDir);
-        assert.ok(armor.container && typeof armor.container.state === "string");
-        assert.ok(armor.broker && armor.broker.state === "unknown");
-        assert.ok(armor.redactor && armor.redactor.state === "unknown");
-        assert.ok(armor.policy && armor.policy.state === "unknown");
-
-        // 6. quickSniffSnapshot
-        const sniff = quickSniffSnapshot(tempDir);
-        assert.ok(["CLEAN", "VIOLATIONS"].includes(sniff.status));
-        assert.equal(typeof sniff.count, "number");
-        assert.ok(Array.isArray(sniff.violations));
-
-        // 7. Full status collection
-        const snapshot = await collectStatus({ root: tempDir });
-        assert.equal(snapshot.root, tempDir);
-        assert.ok(snapshot.generatedAt);
-        assert.ok(snapshot.threat);
-        assert.ok(snapshot.audit);
-        assert.ok(snapshot.vault);
-        assert.ok(snapshot.shield);
-        assert.ok(snapshot.sniff);
-        assert.ok(snapshot.runtime);
-        assert.ok(snapshot.mcp);
-        assert.ok(Array.isArray(snapshot.services));
-
-        // 8. Render views contract
-        const overviewOutput = renderTui(snapshot, { root: tempDir, view: "overview", color: false });
-        assert.match(overviewOutput, /THREAT & TRIPWIRE RADAR/);
-        assert.match(overviewOutput, /Audit Ledger/);
-        assert.match(overviewOutput, /VAULT & CREDENTIAL POSTURE/);
-        assert.match(overviewOutput, /AGENT SHIELD & GIT GUARDS/);
-        assert.match(overviewOutput, /RUNTIME ARMOR & CONTAINER SANDBOX/);
-
-        const canaryOutput = renderTui(snapshot, { root: tempDir, view: "canary", color: false });
-        assert.match(canaryOutput, /CANARY HONEYTOKEN & INCIDENT LOG/);
-
-        const auditOutput = renderTui(snapshot, { root: tempDir, view: "audit", color: false });
-        assert.match(auditOutput, /CRYPTOGRAPHIC AUDIT LEDGER/);
-
-        const vaultOutput = renderTui(snapshot, { root: tempDir, view: "vault", color: false });
-        assert.match(vaultOutput, /VAULT INVENTORY/);
-
-        const sniffOutput = renderTui(snapshot, { root: tempDir, view: "sniff", color: false });
-        assert.match(sniffOutput, /STAGED DIFF SECRET SNIFFER SCAN/);
-    } finally {
-        fs.rmSync(tempDir, { recursive: true, force: true });
-    }
 });
 
 test("CONTRACT: Unknown command produces helpful suggestion and rejects cleanly", async () => {

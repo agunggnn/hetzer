@@ -349,7 +349,9 @@ export function runDoctor({ root, defaultHome, exec = spawnSync, out = process.s
 
     let composeConfigValid = null;
     let composeConfigError = "";
-    if (envExists && composeCheck.ok && daemonCheck.ok) {
+    // Hetzer no longer writes a Compose file. Validate one only when the project has its own.
+    const hasComposeFile = fs.existsSync(path.join(root, "docker-compose.yml"));
+    if (envExists && hasComposeFile && composeCheck.ok && daemonCheck.ok) {
         try {
             const result = exec(
                 "docker",

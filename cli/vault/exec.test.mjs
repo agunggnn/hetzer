@@ -7,6 +7,7 @@ import test from "node:test";
 import { createStreamSanitizer, executeProcess, isReflectionCommand, parseArguments, parseDuration, resolveCommandForSpawn, sanitizeStreamOutput, terminateProcessTree } from "./exec.mjs";
 import { Grimoire } from "./hetzer-vault.mjs";
 import { setCredential } from "./creds.mjs";
+import { loadBrokerPolicy } from "./http-broker.mjs";
 
 test("isReflectionCommand accurately detects and blocks environment reflection attempts", () => {
     assert.equal(isReflectionCommand("printenv"), true);
@@ -142,6 +143,7 @@ test("executeProcess sanitizes stdout and stderr streams", async () => {
         envFile,
         id: "npm-token",
         secret: secretValue,
+        rawInjection: "allow",
     });
 
     let capturedOutput = "";
@@ -215,6 +217,7 @@ test("executeProcess enforces strict scoping when requested", async () => {
         envFile,
         id: "npm-token",
         secret: "strict-token-value-123456",
+        rawInjection: "allow",
     });
 
     // Rejects in strict mode when allowNames is not provided
@@ -275,16 +278,41 @@ test("executeProcess denies raw credentials unless explicitly opted out", async 
     }
 });
 
+test("executeProcess rejects --allow-raw-unmediated when rawInjection grant is deny in the vault", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-exec-raw-grant-deny-"));
+    const envFile = path.join(tempDir, ".env");
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${masterKey}\n`);
+    setCredential({ root: tempDir, envFile, id: "npm-token", secret: "synthetic-fail-value", rawInjection: "deny" });
+
+    try {
+        await assert.rejects(
+            () => executeProcess({
+                root: tempDir,
+                envFile,
+                allowNames: ["npm-token"],
+                allowRawUnmediated: ["npm-token"],
+                command: process.execPath,
+                commandArgs: ["-e", "process.stdout.write('should-not-run')"],
+            }),
+            (error) => error.code === "ERR_RAW_UNMEDIATED_DENIED_BY_GRANT",
+        );
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
 test("executeProcess automatically mediates credentials with a broker policy", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-exec-mediated-"));
     const envFile = path.join(tempDir, ".env");
     const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
     const rawSecret = "synthetic-mediated-value-123456";
     fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${masterKey}\n`);
-    setCredential({ root: tempDir, envFile, id: "npm-token", secret: rawSecret });
+    setCredential({ root: tempDir, envFile, id: "npm-token", secret: rawSecret, allowedOrigins: ["https://registry.example.test"] });
     const policyDir = path.join(tempDir, ".hetzer", "brokers");
     fs.mkdirSync(policyDir, { recursive: true });
-    fs.writeFileSync(path.join(policyDir, "npm-token.json"), JSON.stringify({
+    const policyPath = path.join(policyDir, "npm-token.json");
+    fs.writeFileSync(policyPath, JSON.stringify({
         version: 1,
         target: "https://registry.example.test",
         credential: "secretRef:npm-token",
@@ -298,6 +326,16 @@ test("executeProcess automatically mediates credentials with a broker policy", a
         ttlSeconds: 30,
         maxRequests: 1,
     }));
+    const loaded = loadBrokerPolicy(policyPath);
+    const vault = new Grimoire({ root: tempDir, masterKey });
+    vault.approveBrokerPolicy({
+        credentialId: loaded.credentialId,
+        policyHash: loaded.policyHash,
+        targetOrigin: loaded.targetOrigin,
+        policyPath,
+        approvedBy: "operator",
+    });
+    vault.close();
     const scriptFile = path.join(tempDir, "client.mjs");
     fs.writeFileSync(scriptFile, [
         "const response = await fetch(`${process.env.SERVICE_BASE_URL}/items`, {",
@@ -580,7 +618,7 @@ test("executeProcess with timeout still redacts secrets before terminating", asy
     const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
     fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${masterKey}\nSECRET_VAR=secretRef:my-token\n`);
 
-    setCredential({ root: tempDir, envFile, id: "my-token", secret: testSecret });
+    setCredential({ root: tempDir, envFile, id: "my-token", secret: testSecret, rawInjection: "allow" });
 
     const script = [
         `process.stdout.write("Leaking secret: " + process.env.SECRET_VAR + "\\n");`,
@@ -775,6 +813,43 @@ test("parseArguments parses --policy-hash and executeProcess records policy.load
             readVault.close();
         }
     } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test("executeProcess under --strict refuses to start when the audit event cannot be recorded", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-exec-audit-fail-"));
+    const envFile = path.join(tempDir, ".env");
+    fs.writeFileSync(envFile, "FOO=bar\n");
+    const blocker = path.join(tempDir, "blocker");
+    fs.writeFileSync(blocker, "not a directory");
+    const marker = path.join(tempDir, "ran.txt");
+    const script = path.join(tempDir, "touch.js");
+    fs.writeFileSync(script, `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran");`);
+    const previous = process.env.HETZER_AUDIT_LOG_PATH;
+    process.env.HETZER_AUDIT_LOG_PATH = path.join(blocker, "sub", "audit.log");
+
+    try {
+        await assert.rejects(
+            () => executeProcess({ root: tempDir, envFile, strict: true, allowNames: [], command: process.execPath, commandArgs: [script] }),
+            (error) => error.code === "ERR_AUDIT_WRITE_FAILED",
+        );
+        assert.equal(fs.existsSync(marker), false);
+
+        let warning = "";
+        const originalWrite = process.stderr.write.bind(process.stderr);
+        process.stderr.write = (chunk, ...rest) => { warning += chunk; return true; };
+        try {
+            const result = await executeProcess({ root: tempDir, envFile, command: process.execPath, commandArgs: [script] });
+            assert.equal(result.status, 0);
+        } finally {
+            process.stderr.write = originalWrite;
+        }
+        assert.equal(fs.existsSync(marker), true);
+        assert.match(warning, /audit event not recorded/);
+    } finally {
+        if (previous === undefined) delete process.env.HETZER_AUDIT_LOG_PATH;
+        else process.env.HETZER_AUDIT_LOG_PATH = previous;
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });

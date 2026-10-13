@@ -27,6 +27,8 @@ npm install -g hetzer@latest
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[x] npm install failed with exit code $LASTEXITCODE" -ForegroundColor Red
+    Write-Host "    If you encounter permission or existing binary shim conflicts, retry with:" -ForegroundColor Yellow
+    Write-Host "      npm install -g --force hetzer@latest" -ForegroundColor Yellow
     exit 1
 }
 
