@@ -17,7 +17,7 @@
 4. [Testing & Calling Tools via CLI](#4-testing--calling-tools-via-cli)
 5. [Hetzer Native Defense Tools Reference](#5-hetzer-native-defense-tools-reference)
 6. [Real-Time Tool Output Sanitization & Virtual Proxy](#6-real-time-tool-output-sanitization--virtual-proxy)
-7. [Jagdpanzer Multi-Container & Cognitive Memory Integration](#7-jagdpanzer-multi-container--cognitive-memory-integration)
+7. [Using Hetzer with Other MCP Services](#7-using-hetzer-with-other-mcp-services)
 8. [Troubleshooting & Diagnostics](#8-troubleshooting--diagnostics)
 
 ---
@@ -195,13 +195,11 @@ To eliminate accidental credential exposure in agent workflows:
 
 ---
 
-## 7. Jagdpanzer Multi-Container & Cognitive Memory Integration
+## 7. Using Hetzer with Other MCP Services
 
-Multi-container stack orchestration (persistent graph and vector memory engines like Cognee, Mem0, LanceDB, and multi-service Docker Compose networks) is decoupled from Hetzer and maintained in [**Jagdpanzer**](https://github.com/agunggnn/jagdpanzer).
-
-When deploying cognitive memory stacks with Jagdpanzer:
-- Jagdpanzer exposes memory MCP endpoints (e.g. `remember`, `recall`, `improve`) via loopback or container networks.
-- Hetzer acts as the client-side armor and security proxy, mediating all credentials (`secretRef:<id>`) passed into cognitive memory endpoints and sanitizing responses.
+Hetzer does not run memory engines or multi-container stacks; that was removed in 0.6.0. It can still sit in front of an MCP service that you run yourself:
+- Hetzer acts as the client-side armor and security proxy, mediating credentials (`secretRef:<id>`) passed to the service and sanitizing responses.
+- A `secretRef:` is substituted only when the service's origin is granted to that credential in the vault (`hetzer creds grant`). Without a grant, the call fails closed.
 
 ---
 

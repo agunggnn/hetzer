@@ -88,7 +88,6 @@ For structured navigation and deep architectural insights, explore the dedicated
 | 🔄 **[HTTP Credential Broker (`docs/http-credential-broker.md`)](docs/http-credential-broker.md)** | Loopback proxy injecting upstream credentials via short-lived capabilities without exposing long-lived secrets to child environments. |
 | 🛡️ **[Security Boundary & Isolation Roadmap (`docs/hetzer-vs-strongdm-analysis.md`)](docs/hetzer-vs-strongdm-analysis.md)** | Engineering analysis of implemented controls, architectural boundaries, and isolation roadmap. |
 | ☣️ **[Agent Threat Model & Sandbox Case Study (`docs/agent-sandbox-threat-model.md`)](docs/agent-sandbox-threat-model.md)** | Incident analysis of un-sandboxed agent session hijacking (*Pass-the-Cookie*), why antivirus fails, and the Sandbox-Credential Paradox. |
-| 🛡️ **[Jagdpanzer Multi-Container Fleet Ops](https://github.com/agunggnn/jagdpanzer)** | Multi-container stack orchestration, persistent cognitive memory (Cognee), and automated agent networks. |
 
 ## 📦 Node.js SDK (apiVersion 1)
 
@@ -128,7 +127,7 @@ With Hetzer, you get:
 4. **Dual Git Guards (`pre-commit` & `commit-msg`)**: Inspects staged filenames, diff additions before commit, and validates commit messages against raw credentials.
 5. **Canary Honey-Tokens & Active Stream Tripwires**: Deploys decoy canary tokens (`HETZER_CANARY_TOKEN`, `canary-*`). Guarded resolution aborts with exit code 43. Guarded subprocesses (`hetzer exec --canary`) terminate child processes if canary tokens leak into stdout/stderr.
 6. **HTTP Credential Broker**: Loopback proxy (`127.0.0.1`) injecting upstream credentials via ephemeral capabilities without exposing raw secrets to child environments.
-7. **Ephemeral Container Sandbox (`hetzer exec --sandbox`) & Fleet Separation**: Runs agent commands in transient containers (`--cap-drop=ALL`, `--pids-limit=100`, project-only mount with Hetzer-owned paths hidden), cleanly delegating multi-container cluster ops to [Jagdpanzer](https://github.com/agunggnn/jagdpanzer).
+7. **Ephemeral Container Sandbox (`hetzer exec --sandbox`)**: Runs agent commands in transient containers (`--cap-drop=ALL`, `--pids-limit=100`, project-only mount with Hetzer-owned paths hidden).
 
 All built with **0 external npm dependencies** (100% Node.js standard library: `node:crypto`, `node:sqlite`, `node:fs`, `node:perf_hooks`).
 
@@ -173,7 +172,6 @@ flowchart TB
     subgraph ExecutionPlane["Guarded Execution Environments"]
         SubprocessHost["Guarded Host Process\n(Stream Redactor + Strict Scoping)"]
         ContainerSandbox["Ephemeral Container Sandbox\n(Docker / Podman: --cap-drop=ALL,\nno host AppData mount)"]
-        JagdpanzerFleet["Jagdpanzer Ops Fleet\n(Multi-Container Clusters & Memory)"]
     end
 
     CLI --> GrimoireVault
@@ -190,7 +188,6 @@ flowchart TB
     CLI -->|"hetzer exec --sandbox"| ContainerSandbox
     SubprocessHost -.->|"Ephemeral Tokens"| HTTPBroker
     ContainerSandbox -.->|"Loopback Bridge"| HTTPBroker
-    CLI -.->|"Fleet Ops Delegation"| JagdpanzerFleet
 ```
 
 ---
@@ -390,17 +387,17 @@ All Hetzer commands are executed via the `hetzer` CLI:
 | `hetzer check-update` | Deprecated and removed: prints the npm command that upgrades Hetzer and exits with code 1 |
 | `hetzer upgrade` | Deprecated and removed: prints the npm command that upgrades Hetzer and exits with code 1 |
 | `hetzer publish` | Deprecated and removed: prints a pointer to the release workflow and exits with code 1 |
-| `hetzer up [srv\|all] [--wait]` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
-| `hetzer down [-v]` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
-| `hetzer status` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
-| `hetzer logs [service]` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
-| `hetzer tui` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
-| `hetzer update [module]` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
-| `hetzer modules` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
-| `hetzer install <module>` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
-| `hetzer remove <module>` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
-| `hetzer module create <id>` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
-| `hetzer validate [module]` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
+| `hetzer up [srv\|all] [--wait]` | Deprecated and removed in 0.6.0: prints a removal notice and exits with code 1 |
+| `hetzer down [-v]` | Deprecated and removed in 0.6.0: prints a removal notice and exits with code 1 |
+| `hetzer status` | Deprecated and removed in 0.6.0: prints a removal notice and exits with code 1 |
+| `hetzer logs [service]` | Deprecated and removed in 0.6.0: prints a removal notice and exits with code 1 |
+| `hetzer tui` | Deprecated and removed in 0.6.0: prints a removal notice and exits with code 1 |
+| `hetzer update [module]` | Deprecated and removed in 0.6.0: prints a removal notice and exits with code 1 |
+| `hetzer modules` | Deprecated and removed in 0.6.0: prints a removal notice and exits with code 1 |
+| `hetzer install <module>` | Deprecated and removed in 0.6.0: prints a removal notice and exits with code 1 |
+| `hetzer remove <module>` | Deprecated and removed in 0.6.0: prints a removal notice and exits with code 1 |
+| `hetzer module create <id>` | Deprecated and removed in 0.6.0: prints a removal notice and exits with code 1 |
+| `hetzer validate [module]` | Deprecated and removed in 0.6.0: prints a removal notice and exits with code 1 |
 
 ---
 
@@ -468,7 +465,7 @@ Hetzer stands on the shoulders of giants. We express our deepest gratitude and r
 - 🔍 **[TruffleHog](https://github.com/trufflesecurity/trufflehog)** (*Truffle Security*) & **[Gitleaks](https://github.com/gitleaks/gitleaks)** (*Zachary Rice*): High-speed regex and Shannon entropy scanners that defined modern Git credential leakage prevention.
 - 🌐 **[Model Context Protocol (MCP)](https://github.com/modelcontextprotocol)** (*Anthropic*): The open standard that enables autonomous AI clients to seamlessly and safely consume local tools and defense boundaries.
 - 🚦 **[9Router](https://github.com/decolua/9router)** (*Decolua*): High-performance multi-provider local AI model router, fallback balancer, and reverse proxy.
-- 🧠 **[Cognee](https://github.com/topoteretes/cognee)** (*Topoteretes*): Advanced tri-layer relational, vector, and knowledge graph persistent memory engine for autonomous agents (integrated in [Jagdpanzer](https://github.com/agunggnn/jagdpanzer)).
+- 🧠 **[Cognee](https://github.com/topoteretes/cognee)** (*Topoteretes*): Advanced tri-layer relational, vector, and knowledge graph persistent memory engine for autonomous agents.
 - 🛡️ **[LLM-Guard](https://github.com/protectai/llm-guard)** (*Protect AI*): Pioneered real-time LLM input/output scanning and token redaction before context transmission.
 - 🤖 **Autonomous AI Agent Ecosystems**:
   - **[Hermes Agent](https://github.com/NousResearch/Hermes-Function-Calling)** (*NousResearch*)

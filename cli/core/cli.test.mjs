@@ -307,7 +307,7 @@ test("check-update and upgrade command direct users to npm", async () => {
     }
 });
 
-test("orchestration commands emit deprecation notice pointing to Jagdpanzer", async () => {
+test("orchestration commands print a removal notice and exit with code 1", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-depr-test-"));
     const deprCommands = ["up", "down", "status", "logs", "modules", "install", "remove", "module", "validate", "tui", "update"];
     try {
@@ -321,7 +321,9 @@ test("orchestration commands emit deprecation notice pointing to Jagdpanzer", as
             try {
                 await main([cmd], { root: tempDir });
                 assert.match(stderrOutput, /\[!\] DEPRECATED: Multi-container stack orchestration in Hetzer/);
-                assert.match(stderrOutput, /Use Jagdpanzer \(https:\/\/github\.com\/agunggnn\/jagdpanzer\) for full ops stacks/);
+                assert.match(stderrOutput, /was removed in 0\.6\.0 and has no replacement in Hetzer/);
+                assert.match(stderrOutput, /docs\/upgrade-0\.6\.md/);
+                assert.doesNotMatch(stderrOutput, /jagdpanzer/i);
                 assert.equal(process.exitCode, 1);
             } finally {
                 process.stderr.write = originalStderr;

@@ -1,6 +1,6 @@
 # Hetzer architecture
 
-Hetzer's core runtime consists of the Node CLI, Grimoire vault, secret scanner, MCP credential proxy, and ephemeral container sandbox. Multi-container operations and stack management are delegated to [Jagdpanzer](https://github.com/agunggnn/jagdpanzer).
+Hetzer's core runtime consists of the Node CLI, Grimoire vault, secret scanner, MCP credential proxy, and ephemeral container sandbox. Multi-container operations and stack management were removed in 0.6.0 and are out of scope.
 
 ## Main components
 
@@ -80,7 +80,7 @@ Hetzer focuses on single-command, ephemeral process containment via `hetzer exec
 - **Network**: outbound access is open by default and the sandbox prints the mode before starting. `--sandbox-network none` removes it but cannot be combined with a brokered credential.
 - **Not covered**: files that appear after the container starts are not hidden; the broker still binds `0.0.0.0` in sandbox mode and accepts RFC 1918 clients (capability-gated); a sandbox does not protect a credential that was raw-injected into it.
  
-Multi-container full-stack operations (such as 9Router AI gateways, PostgreSQL/pgvector memory clusters, and cognitive extractors) are deprecated in the Hetzer core CLI and delegated to [Jagdpanzer](https://github.com/agunggnn/jagdpanzer), allowing Hetzer to maintain a clean, zero-dependency footprint strictly focused on credential safety and agent armor.
+Multi-container full-stack operations (such as 9Router AI gateways, PostgreSQL/pgvector memory clusters, and cognitive extractors) were removed from the Hetzer core CLI in 0.6.0, which lets Hetzer keep a clean, zero-dependency footprint strictly focused on credential safety and agent armor.
 
 ## Proposed architecture decisions
 

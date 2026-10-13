@@ -50,7 +50,7 @@ Each of these now prints a pointer and exits with code 1.
 
 | Command | Use instead |
 |---|---|
-| `hetzer up`, `down`, `status`, `logs`, `tui`, `update`, `modules`, `install`, `remove`, `module`, `validate` | [Jagdpanzer](https://github.com/agunggnn/jagdpanzer) for multi-container stacks |
+| `hetzer up`, `down`, `status`, `logs`, `tui`, `update`, `modules`, `install`, `remove`, `module`, `validate` | Removed with no replacement in Hetzer. Run stacks with Docker Compose or your own tooling |
 | `hetzer upgrade`, `hetzer check-update` | `npm install -g hetzer@latest` |
 | `hetzer publish` | the release workflow, `.github/workflows/release-main.yml` |
 

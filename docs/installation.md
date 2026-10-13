@@ -26,7 +26,7 @@
 5. [Pre-flight Diagnostics (`hetzer doctor`)](#5-pre-flight-diagnostics-hetzer-doctor)
 6. [Project Initialization & Secret Setup](#6-project-initialization--secret-setup)
 7. [Starting Services & Active Healthchecks](#7-starting-services--active-healthchecks)
-8. [Multi-Container Fleet Ops (Jagdpanzer Delegation)](#8-multi-container-fleet-ops-jagdpanzer-delegation)
+8. [Removed: Multi-Container Stack Commands](#8-removed-multi-container-stack-commands)
 9. [Updating & Maintenance](#9-updating--maintenance)
 10. [Uninstallation & Teardown](#10-uninstallation--teardown)
 11. [Troubleshooting & FAQ](#11-troubleshooting--faq)
@@ -60,8 +60,8 @@ npx hetzer hook install
 npx hetzer creds set openai-api-key
 ```
 
-Hetzer no longer starts container stacks. `hetzer up`, `hetzer down` and `hetzer tui` were removed and print a pointer
-to [Jagdpanzer](https://github.com/agunggnn/jagdpanzer), which runs multi-container stacks.
+Hetzer no longer starts container stacks. `hetzer up`, `hetzer down` and `hetzer tui` were removed in 0.6.0 and print a
+removal notice.
 
 ---
 
@@ -266,13 +266,13 @@ cd my-hetzer-instance
 ## 7. Starting Services & Active Healthchecks
 
 This section described `hetzer up --wait` and `hetzer tui`. Both were removed together with the Compose runner; each
-now prints a pointer to [Jagdpanzer](https://github.com/agunggnn/jagdpanzer) and exits with code 1. See the next section for what Hetzer still runs.
+now prints a removal notice and exits with code 1. See the next section for what Hetzer still runs.
 
 ---
 
-## 8. Multi-Container Fleet Ops (Jagdpanzer Delegation)
+## 8. Removed: Multi-Container Stack Commands
 
-Multi-container stack orchestration (databases, persistent memory engines, and multi-service topologies) is cleanly separated from Hetzer and maintained in [**Jagdpanzer**](https://github.com/agunggnn/jagdpanzer).
+Multi-container stack orchestration (databases, persistent memory engines, and multi-service topologies) was removed from Hetzer in 0.6.0 and has no replacement in this project.
 
 Hetzer operates strictly as a lightweight single-command runtime armor, stream redactor, and container sandbox:
 ```bash
@@ -283,7 +283,7 @@ hetzer exec --sandbox alpine:latest -- python -c "print('hello')"
 hetzer exec --allow api-key -- python script.py
 ```
 
-For persistent cognitive memory pipelines, multi-service Docker Compose clusters, and automated microservice networks, please deploy via [Jagdpanzer](https://github.com/agunggnn/jagdpanzer).
+Run memory pipelines, Docker Compose clusters and similar stacks with Docker Compose or your own tooling. Hetzer can still mediate the credentials they need through `hetzer exec`.
 
 ---
 
@@ -302,8 +302,7 @@ npm install -g hetzer@latest
 ```
 
 ### Update Docker Container Digests (Removed)
-`hetzer update <module>` was removed with the module system. Container stacks and their image digests are managed in
-[Jagdpanzer](https://github.com/agunggnn/jagdpanzer).
+`hetzer update <module>` was removed with the module system. Hetzer no longer manages container stacks or their image digests.
 
 ### Backup Grimoire Vault
 ```bash
