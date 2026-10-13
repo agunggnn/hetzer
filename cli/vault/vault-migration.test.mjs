@@ -260,14 +260,14 @@ test("processes opening the same format 1 vault at once migrate it once", async 
         fs.writeFileSync(child, [
             `import { Grimoire } from ${JSON.stringify(pathToFileURL(path.join(import.meta.dirname, "hetzer-vault.mjs")).href)};`,
             "const [dbPath, masterKey, auditLogFile] = process.argv.slice(2);",
-            "const vault = new Grimoire({ dbPath, masterKey, auditLogFile });",
-            "vault.close();",
+            "try { const vault = new Grimoire({ dbPath, masterKey, auditLogFile }); vault.close(); }",
+            "catch (error) { console.error(`CHILD_ERROR ${error.code || ''} ${error.message}`); process.exit(1); }",
         ].join("\n"));
         const results = await Promise.all(Array.from({ length: 4 }, () => new Promise((resolve) => {
             const proc = spawn(process.execPath, [child, paths.dbPath, KEY, paths.logFile], { stdio: ["ignore", "ignore", "pipe"] });
             let stderr = "";
             proc.stderr.on("data", (chunk) => { stderr += chunk; });
-            proc.on("close", (code) => resolve(code === 0 ? "ok" : stderr.split(/\r?\n/).filter((line) => line && !/ExperimentalWarning|trace-warnings/.test(line)).slice(0, 2).join(" | ")));
+            proc.on("close", (code) => resolve(code === 0 ? "ok" : (stderr.split(/\r?\n/).find((line) => line.startsWith("CHILD_ERROR")) || `exit ${code}`)));
         })));
         assert.deepEqual(results, ["ok", "ok", "ok", "ok"]);
 
@@ -279,6 +279,51 @@ test("processes opening the same format 1 vault at once migrate it once", async 
         // At least once: openers that overlap the writer can each write the record.
         assert.ok(ledgerEntries(paths.logFile).length >= 1);
         assert.equal(verifyAuditLedger({ logFile: paths.logFile, macKey: KEY }).ok, true);
+    });
+});
+
+test("opening a vault waits for a connection that holds the file instead of failing at the format check", async () => {
+    await withWorkspace(async (paths) => {
+        const vault = open(paths);
+        vault.create({ id: "api-token", projectId: "svc", secret: SECRET });
+        vault.close();
+
+        // What a concurrent opener, migration or closing checkpoint does for a moment, held here on purpose.
+        const holder = new DatabaseSync(paths.dbPath);
+        holder.exec("PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE;");
+        let released = false;
+        const release = () => {
+            if (released) return;
+            released = true;
+            try { holder.exec("COMMIT"); } catch {}
+            try { holder.close(); } catch {}
+        };
+
+        const child = path.join(paths.root, "open-while-held.mjs");
+        fs.writeFileSync(child, [
+            `import { Grimoire } from ${JSON.stringify(pathToFileURL(path.join(import.meta.dirname, "hetzer-vault.mjs")).href)};`,
+            "const [dbPath, masterKey] = process.argv.slice(2);",
+            "console.log('opening');",
+            "const started = Date.now();",
+            "try { const vault = new Grimoire({ dbPath, masterKey, auditLogFile: false }); vault.close(); console.log(`opened ${Date.now() - started}`); }",
+            "catch (error) { console.log(`failed ${error.code || ''} ${error.message}`); process.exit(1); }",
+        ].join("\n"));
+        try {
+            const lines = await new Promise((resolve) => {
+                const proc = spawn(process.execPath, [child, paths.dbPath, KEY], { stdio: ["ignore", "pipe", "ignore"] });
+                let out = "";
+                proc.stdout.on("data", (chunk) => {
+                    out += chunk;
+                    if (out.includes("opening")) setTimeout(release, 250);
+                });
+                proc.on("close", () => resolve(out.trim().split(/\r?\n/)));
+            });
+            const outcome = lines[lines.length - 1];
+            assert.match(outcome, /^opened \d+$/, `the opener must wait and succeed, got: ${outcome}`);
+            assert.ok(Number(outcome.split(" ")[1]) >= 100, `the opener was really held back (${outcome})`);
+        } finally {
+            release();
+        }
     });
 });
 
