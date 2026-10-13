@@ -39,6 +39,32 @@ jobs:
         run: node scripts/release-metadata.mjs
       - run: npm run build:package
 
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Errors fail the build; existing findings are configured as warnings in eslint.config.mjs.
+      - run: npm run lint
+
+  node-minimum:
+    # The oldest Node release the engines range accepts; keep in sync with cli/core/node-version.mjs.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - run: npm ci
+      - run: node cli/bin/hetzer.js --version
+      - run: npm test
+      - run: npm run verify -- --no-write
+
   compose-contract:
     runs-on: ubuntu-latest
     steps:

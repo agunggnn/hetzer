@@ -360,6 +360,23 @@ export function grantIntegrityError(entry) {
     return error;
 }
 
+/**
+ * Returns an Error with a stable code when a credential's grant binds it to hosts that do not
+ * include this machine, or null when the credential is unbound or this host is listed. The host
+ * is always the OS hostname; callers cannot supply it, so a flag cannot widen the binding.
+ */
+export function hostBindingError(entry) {
+    const bindHosts = entry?.bindHosts || [];
+    if (bindHosts.length === 0) return null;
+    const currentHost = String(os.hostname() || "").toLowerCase();
+    if (bindHosts.some((host) => String(host).toLowerCase() === currentHost)) return null;
+    const error = new Error(
+        `Credential '${entry.id}' is bound to hosts [${bindHosts.join(", ")}], but current host '${currentHost}' is not permitted.`,
+    );
+    error.code = "ERR_HOST_BINDING_MISMATCH";
+    return error;
+}
+
 function safeJsonArray(value, validate = () => true) {
     const source = Array.isArray(value) ? value : [];
     return [...new Set(source.map((item) => String(item || "").trim()).filter((item) => item && validate(item)))];
@@ -958,6 +975,7 @@ export class Grimoire {
         // a global plaintext lookup for same-user callers.
         if (!targetId || entry.projectId !== targetId) return null;
         if (!action || !entry.allowedActions.includes(action)) return null;
+        if (hostBindingError(entry)) return null;
         if (entry.expiresAt && Date.parse(entry.expiresAt) <= Date.now()) return null;
         const value = this.#decryptRaw(id);
         if (value !== null) this.touch(id);

@@ -65,8 +65,8 @@ sequenceDiagram
 - HTTP broker path canonicalization prevents multi-layer percent-encoding, matrix parameter (`;`), and directory traversal bypasses;
 - HTTP broker capabilities authenticate scoped requests and reject unpermitted paths;
 - workspace broker policies cannot widen access without explicit vault origin and SHA-256 policy hash approval (`VERIFY-SEC-007`);
-- caller `--allow-raw-unmediated` is rejected with `ERR_RAW_UNMEDIATED_DENIED_BY_GRANT` unless vault grant explicitly permits raw injection (`VERIFY-SEC-008`);
-- in-process `Grimoire.resolve()` strictly enforces mandatory action grants, returning null for ungranted or omitted actions (`VERIFY-SEC-009`). The public SDK does not expose plaintext; R-05 remains open for in-process callers holding the master key until out-of-process engine isolation;
+- caller `--allow-raw-unmediated` is rejected with `ERR_RAW_UNMEDIATED_DENIED_BY_GRANT` unless vault grant explicitly permits raw injection, and with `ERR_HOST_BINDING_MISMATCH` when the grant lists `bindHosts` that do not include this host (`VERIFY-SEC-008`);
+- in-process `Grimoire.resolve()` strictly enforces mandatory action grants and the grant's `bindHosts`, returning null for ungranted or omitted actions and on a host the grant does not list, so the binding holds for `hetzer exec`, the HTTP broker, MCP and the SDK; `hetzer exec` and the broker report the mismatch as `ERR_HOST_BINDING_MISMATCH` before resolving (`VERIFY-SEC-009`). The public SDK does not expose plaintext; R-05 remains open for in-process callers holding the master key until out-of-process engine isolation;
 - MCP virtual credential proxy binds `secretRef:<id>` to verified tool destination origins, failing closed on ungranted endpoints (`VERIFY-SEC-010`);
 - the sandbox mounts an explicit project directory, hides Hetzer-owned paths inside it, forwards only injected variables by name (never on the engine command line), and refuses unsafe mount targets (`VERIFY-SEC-013`, builder-level; container behaviour of the masks was checked separately on Docker Desktop for Windows);
 - the SDK contract (`apiVersion` 1, `docs/sdk-contract.md`) lists its members and fails a test when they change, has no resolve/reveal/decrypt/lease member, and uses the same credential id grammar as the vault and `secretRef`; the vault carries a format version (`docs/vault-format.md`) and a newer vault is refused before any change; the format 2 migration runs in one transaction, keeps its ledger record owed until the ledger takes it, reports a legacy JSON vault it no longer imports, and key lookup refuses the retired key alias with a rename instruction (`cli/vault/vault-migration.test.mjs`; the migration is one-way and rows in the dropped tables are counted, not copied); the audit entry schema and event catalog (`docs/audit-event-schema.md`) are checked against the code (`VERIFY-SEC-015`; in-process callers can still import the vault module (R-05), older builds do not check the marker, and lease interfaces are not part of version 1);
@@ -84,6 +84,7 @@ sequenceDiagram
 - TTY, environment-marker, process-name, and UI checks do not authenticate a human and can be imitated by same-user code.
 - The isolated key file is separate from the project but remains a user-readable file.
 - Canaries observe only guarded application paths.
+- Host binding compares `bindHosts` with the OS hostname of the running process. It identifies the machine, but it is not an attestation: same-user code that controls the hostname, or a copied vault on a machine given the same name, passes the check.
 - MCP sanitation covers Hetzer MCP results, not every tool a client can invoke.
 - Local Git hooks can be skipped.
 - Performance depends on input and environment. End-to-end Git-hook time includes Git subprocesses.
@@ -93,7 +94,7 @@ sequenceDiagram
 
 Before release:
 
-1. Run `npm run check` on Windows, Linux, and macOS.
+1. Run `npm run check` on Windows, Linux, and macOS, `npm run lint` (errors fail CI), and the test suite on the oldest Node release in the `engines` range (22.13.0).
 2. Confirm no credential, `.env`, vault database, key, log, backup, or user data is tracked.
 3. Verify each container digest against its upstream source and required platforms.
 4. Review documentation for absolute security, performance, comparison, cost, and compliance claims.

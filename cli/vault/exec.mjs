@@ -676,7 +676,7 @@ export async function prepareExecutionEnvironment(effectiveOptions, {
     }
 
     if (rawBindings.length) {
-        const { Grimoire, grantIntegrityError, resolveMasterKey, resolveVaultPath } = await import("./hetzer-vault.mjs");
+        const { Grimoire, grantIntegrityError, hostBindingError, resolveMasterKey, resolveVaultPath } = await import("./hetzer-vault.mjs");
         const envValues = effectiveOptions.envFile && fs.existsSync(effectiveOptions.envFile)
             ? parseEnv(fs.readFileSync(effectiveOptions.envFile, "utf8"))
             : {};
@@ -702,17 +702,8 @@ export async function prepareExecutionEnvironment(effectiveOptions, {
                         error.code = "ERR_RAW_UNMEDIATED_DENIED_BY_GRANT";
                         throw error;
                     }
-                    if (cred && cred.bindHosts && cred.bindHosts.length > 0) {
-                        const currentHost = String(effectiveOptions.host || os.hostname() || "").toLowerCase();
-                        const allowed = cred.bindHosts.map((h) => String(h).toLowerCase());
-                        if (!allowed.includes(currentHost)) {
-                            const error = new Error(
-                                `Credential '${binding.id}' is bound to hosts [${cred.bindHosts.join(", ")}], but current host '${currentHost}' is not permitted.`
-                            );
-                            error.code = "ERR_HOST_BINDING_MISMATCH";
-                            throw error;
-                        }
-                    }
+                    const hostError = hostBindingError(cred);
+                    if (hostError) throw hostError;
                 }
             } finally {
                 vault.close();

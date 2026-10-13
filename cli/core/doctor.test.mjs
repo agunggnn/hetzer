@@ -28,8 +28,12 @@ test("getOperatingSystemInfo detects current platform and architecture", () => {
 test("checkNodeRuntime validates current Node.js runtime", () => {
     const check = checkNodeRuntime();
     assert.equal(check.ok, true);
-    assert.ok(check.major >= 20);
+    assert.ok(check.major >= 22);
     assert.match(check.version, /^v\d+/);
+
+    const tooOld = checkNodeRuntime("v22.12.0");
+    assert.equal(tooOld.ok, false);
+    assert.match(tooOld.message, /Requires Node\.js \^22\.13\.0/);
 });
 
 test("checkDockerCli handles success and missing command", () => {

@@ -36,6 +36,13 @@ does not undo. Read "Before you upgrade" first.
   `ERR_RAW_UNMEDIATED_DENIED_BY_GRANT` unless the credential's grant allows it.
 - **MCP.** `secretRef:` values are substituted only for tools whose destination origin is in the credential's grant.
   The `hetzer_sniffer_redact` tool was removed.
+- **Host binding (0.6.1).** A grant set with `--host <name>` is enforced wherever the credential is resolved:
+  `hetzer exec`, the broker, MCP and the SDK. Outside the listed hosts, use fails with `ERR_HOST_BINDING_MISMATCH`
+  (MCP reports the credential as not permitted). The name is compared, ignoring case, with the OS hostname
+  (`node -p "require('os').hostname()"`). In 0.6.0 a host-bound credential crashed `hetzer exec --allow-raw-unmediated`
+  and the broker and MCP ignored the binding, so check the names before upgrading.
+- **Node.js 22.13 or newer.** The vault's `node:sqlite` module loads without a flag from Node 22.13.0 (and 23.4.0).
+  0.6.0 accepted 22.5 to 22.12 and then failed to start; 0.6.1 states the requirement instead.
 
 ## Removed commands
 

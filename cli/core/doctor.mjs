@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { auditAgentContext } from "../skills/audit.mjs";
 import { scanText } from "../vault/sniffer.mjs";
+import { NODE_ENGINE_RANGE, supportsNodeSqlite } from "./node-version.mjs";
 
 export function getOperatingSystemInfo() {
     const platform = process.platform;
@@ -33,25 +34,16 @@ export function getOperatingSystemInfo() {
     return { platform, arch, name, isUbuntu };
 }
 
-export function checkNodeRuntime() {
-    const version = process.version;
-    const match = version.match(/^v(\d+)\.(\d+)/);
+export function checkNodeRuntime(version = process.version) {
+    const match = String(version).match(/^v?(\d+)\./);
     const major = match ? parseInt(match[1], 10) : 0;
-    const ok = major >= 20;
-    let sqliteSupported = true;
-    try {
-        if (major < 22 && !process.features?.sqlite) {
-            sqliteSupported = false;
-        }
-    } catch {
-        sqliteSupported = false;
-    }
+    const ok = supportsNodeSqlite(version);
     return {
         version,
         major,
         ok,
-        sqliteSupported,
-        message: ok ? `${version} (OK)` : `${version} (Requires Node.js v20+)`,
+        sqliteSupported: ok,
+        message: ok ? `${version} (OK)` : `${version} (Requires Node.js ${NODE_ENGINE_RANGE})`,
     };
 }
 
@@ -439,8 +431,8 @@ export function runDoctor({ root, defaultHome, exec = spawnSync, out = process.s
     if (!nodeCheck.ok) {
         issues.push({
             title: "Node.js Version Does Not Meet Requirements",
-            detail: `Current Node version (${nodeCheck.version}) is below minimum requirement of v20.x.`,
-            solution: "Update Node.js to v20 LTS or v22 LTS (https://nodejs.org).",
+            detail: `Current Node version (${nodeCheck.version}) does not load the built-in node:sqlite module without flags (requires ${NODE_ENGINE_RANGE}).`,
+            solution: "Update Node.js to the current v22 LTS or v24 LTS (https://nodejs.org).",
         });
     }
     if (!cliCheck.ok) {

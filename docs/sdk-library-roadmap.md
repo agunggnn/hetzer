@@ -27,7 +27,7 @@ Do not immediately replace every internal import or publish a second package. Fi
 
 The implementation plan must respect the current repository shape:
 
-- Runtime is Node.js `>=22.5.0`.
+- Runtime is Node.js `^22.13.0 || >=23.4.0`.
 - The package is ESM-oriented and currently uses `.mjs` modules.
 - The package has no third-party runtime npm dependencies.
 - The CLI entry point is `cli/bin/hetzer.js`.

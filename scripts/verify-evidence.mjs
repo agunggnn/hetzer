@@ -563,6 +563,8 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
 
     let rawDeniedBlocked = false;
     let rawAllowedPrepared = false;
+    let rawHostBoundHerePrepared;
+    let rawHostBoundElsewhereBlocked = false;
 
     try {
         try {
@@ -599,22 +601,50 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
         });
 
         rawAllowedPrepared = envResult?.env?.MY_TOKEN === "synthetic-secret-raw-val";
+
+        // A host binding narrows the raw grant: this host prepares, another host is refused.
+        const prepareRaw = () => prepareExecutionEnvironment({
+            root: tempDir,
+            envFile,
+            allowNames: ["denied-raw-cred"],
+            allowRawUnmediated: ["denied-raw-cred"],
+            command: "node",
+            brokerPolicyFiles: [],
+        }, {
+            baseEnv: { HETZER_GRIMOIRE_KEY: masterKey },
+        });
+        const setBindHosts = (bindHosts) => {
+            const vaultHost = new Grimoire({ dbPath: path.join(tempDir, "data", "hetzer-vault.db"), masterKey });
+            try {
+                vaultHost.update("denied-raw-cred", { bindHosts });
+            } finally {
+                vaultHost.close();
+            }
+        };
+        setBindHosts([os.hostname()]);
+        rawHostBoundHerePrepared = (await prepareRaw())?.env?.MY_TOKEN === "synthetic-secret-raw-val";
+        setBindHosts(["not-this-host.invalid"]);
+        try {
+            await prepareRaw();
+        } catch (err) {
+            rawHostBoundElsewhereBlocked = err.code === "ERR_HOST_BINDING_MISMATCH";
+        }
     } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
 
-    const pass = rawDeniedBlocked && rawAllowedPrepared;
+    const pass = rawDeniedBlocked && rawAllowedPrepared && rawHostBoundHerePrepared && rawHostBoundElsewhereBlocked;
     recordTest({
         id: "VERIFY-SEC-008",
         name: "Caller-Supplied Raw Injection Request Boundary",
         target: "cli/vault/exec.mjs -> prepareExecutionEnvironment()",
         threat: "Untrusted agent requests unmediated raw plaintext secret injection via --allow-raw-unmediated without operator vault grant",
-        input: "Execution request with --allow-raw-unmediated for credential with rawInjection: 'deny', followed by operator granting rawInjection: 'allow'",
-        method: "Attempt prepareExecutionEnvironment with raw injection on ungranted credential; assert ERR_RAW_UNMEDIATED_DENIED_BY_GRANT; update grant to allow and assert success",
-        expected: "Request rejected with ERR_RAW_UNMEDIATED_DENIED_BY_GRANT when vault grant is deny; succeeds only when vault grant has rawInjection: 'allow'",
-        observed: `rawDeniedBlocked: ${rawDeniedBlocked}. rawAllowedPrepared: ${rawAllowedPrepared}.`,
+        input: "Execution request with --allow-raw-unmediated for credential with rawInjection: 'deny', followed by operator granting rawInjection: 'allow', then binding the grant to this OS hostname and to another host",
+        method: "Attempt prepareExecutionEnvironment with raw injection on ungranted credential; assert ERR_RAW_UNMEDIATED_DENIED_BY_GRANT; update grant to allow and assert success; bind the grant to this host and assert success; bind it to another host and assert ERR_HOST_BINDING_MISMATCH",
+        expected: "Request rejected with ERR_RAW_UNMEDIATED_DENIED_BY_GRANT when vault grant is deny; succeeds only when vault grant has rawInjection: 'allow' and any bindHosts list includes this host; rejected with ERR_HOST_BINDING_MISMATCH otherwise",
+        observed: `rawDeniedBlocked: ${rawDeniedBlocked}. rawAllowedPrepared: ${rawAllowedPrepared}. rawHostBoundHerePrepared: ${rawHostBoundHerePrepared}. rawHostBoundElsewhereBlocked: ${rawHostBoundElsewhereBlocked}.`,
         pass,
-        boundary: "--allow-raw-unmediated is a caller request that is strictly gated by operator-configured vault grants.",
+        boundary: "--allow-raw-unmediated is a caller request that is strictly gated by operator-configured vault grants. The host is the OS hostname of the running process; no flag or option can supply it.",
     });
 }
 
@@ -637,6 +667,20 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
             secret: "secret-action-token-42",
             allowedActions: ["process.start"],
         });
+        vault.create({
+            id: "here-bound-key",
+            projectId: "action-target",
+            secret: "secret-here-bound-43",
+            allowedActions: ["process.start"],
+            bindHosts: [os.hostname()],
+        });
+        vault.create({
+            id: "elsewhere-bound-key",
+            projectId: "action-target",
+            secret: "secret-elsewhere-bound-44",
+            allowedActions: ["process.start"],
+            bindHosts: ["not-this-host.invalid"],
+        });
 
         const missingAction = vault.resolve("proc-only-key");
         const missingActionWithTarget = vault.resolve("proc-only-key", { targetId: "action-target" });
@@ -646,9 +690,12 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
         const checkMissing = missingAction === null && missingActionWithTarget === null;
         const checkUngranted = ungrantedAction === null;
         const checkGranted = grantedAction === "secret-action-token-42";
+        const grantedContext = { targetId: "action-target", action: "process.start" };
+        const hostBoundHereResolves = vault.resolve("here-bound-key", grantedContext) === "secret-here-bound-43";
+        const hostBoundElsewhereRefused = vault.resolve("elsewhere-bound-key", grantedContext) === null;
 
-        pass = checkMissing && checkUngranted && checkGranted;
-        observedMsg = `checkMissing: ${checkMissing}. checkUngranted: ${checkUngranted}. checkGranted: ${checkGranted}.`;
+        pass = checkMissing && checkUngranted && checkGranted && hostBoundHereResolves && hostBoundElsewhereRefused;
+        observedMsg = `checkMissing: ${checkMissing}. checkUngranted: ${checkUngranted}. checkGranted: ${checkGranted}. hostBoundHereResolves: ${hostBoundHereResolves}. hostBoundElsewhereRefused: ${hostBoundElsewhereRefused}.`;
     } finally {
         vault.close();
         fs.rmSync(tempDir, { recursive: true, force: true });
@@ -656,15 +703,15 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
 
     recordTest({
         id: "VERIFY-SEC-009",
-        name: "In-Process Grimoire resolve() Action Grant Enforcement (Partial R-05 Mitigation)",
-        target: "cli/vault/hetzer-vault.mjs -> Grimoire.resolve()",
-        threat: "Confused deputy or programmatic caller invokes resolve() without action or with un-granted action to extract plaintext secret",
-        input: "Credential granting allowedActions: ['process.start']; calls with no action, broker.proxy action, and process.start action",
-        method: "Invoke Grimoire.resolve() with missing, un-granted, and granted actions; verify mandatory action enforcement and fail-closed behavior",
-        expected: "resolve() returns null for missing or un-granted actions; returns plaintext secret only for explicit granted action. Note: R-05 remains open until Gate G2 out-of-process engine extraction.",
+        name: "In-Process Grimoire resolve() Action and Host Grant Enforcement (Partial R-05 Mitigation)",
+        target: "cli/vault/hetzer-vault.mjs -> Grimoire.resolve(), hostBindingError()",
+        threat: "Confused deputy or programmatic caller invokes resolve() without action or with un-granted action, or on a host the grant does not list, to extract plaintext secret",
+        input: "Credential granting allowedActions: ['process.start']; calls with no action, broker.proxy action, and process.start action; credentials bound to this OS hostname and to another host",
+        method: "Invoke Grimoire.resolve() with missing, un-granted, and granted actions, and with granted actions for host-bound credentials; verify mandatory action and host enforcement and fail-closed behavior",
+        expected: "resolve() returns null for missing or un-granted actions and for a credential bound to another host; returns plaintext secret only for an explicit granted action on a permitted host. Note: R-05 remains open until Gate G2 out-of-process engine extraction.",
         observed: observedMsg,
         pass,
-        boundary: "Mandatory action grant checking on in-process vault resolution fails closed when action is omitted or ungranted. (R-05 remains open until G2 out-of-process engine boundary).",
+        boundary: "Mandatory action grant checking on in-process vault resolution fails closed when action is omitted or ungranted. Host binding compares bindHosts with the OS hostname reported by the running process, which identifies the machine but is not a hardware attestation: a same-user caller that controls the hostname, or a copy of the vault on a machine given the same name, passes the check. (R-05 remains open until G2 out-of-process engine boundary).",
     });
 }
 

@@ -1,7 +1,7 @@
 # Hetzer: Complete Installation & Setup Guide
 
 > **Target OS**: Ubuntu/Debian, RHEL/CentOS, Windows (WSL2/Native), macOS (Apple Silicon & Intel)  
-> **Node.js**: >= 22.5.0  
+> **Node.js**: `^22.13.0 || >=23.4.0` (the current 22 or 24 LTS works)  
 > **Docker (Optional for Full Stack)**: Engine >= 24.0, Docker Compose >= v2.20  
 > **Headless Mode**: no Docker required; the Node CLI consumes resources only while invoked
 > **Documentation Type**: Modular Reference & Step-by-Step Tutorial
@@ -39,7 +39,7 @@ Hetzer is engineered for high density and low memory consumption. It does not re
 
 | Mode | System Profile | RAM Consumption | Docker Required? |
 |---|---|---|---|
-| **Headless Armor & Skills** | Any machine with Node.js >= 22.5 | **< 10 MiB RAM** | ❌ **No (0 Docker)** |
+| **Headless Armor & Skills** | Any machine with Node.js >= 22.13 | **< 10 MiB RAM** | ❌ **No (0 Docker)** |
 | **Full Stack (Core + 9Router)** | 1 Core CPU, 1.0 GiB RAM | ~200 MiB active | ✅ Yes (Docker Compose v2) |
 | **Ephemeral Sandbox Isolation** | Docker or Podman engine | Transient (< 50 MiB) | ✅ Optional (`hetzer exec --sandbox`) |
 
@@ -47,7 +47,7 @@ Hetzer is engineered for high density and low memory consumption. It does not re
 
 ## 2. 60-Second Quickstart
 
-If your machine has Node.js (>= 22.5), run instantly without permanent installation:
+If your machine has Node.js (>= 22.13), run instantly without permanent installation:
 
 ```bash
 # 1. Install credential-safety guidance for supported local agents
@@ -223,7 +223,7 @@ hetzer doctor --fix
 ```
 
 The doctor command checks:
-- ✅ Node.js version compatibility (`>= 22.5.0` for built-in `node:sqlite`).
+- ✅ Node.js version compatibility (`^22.13.0 || >=23.4.0`, so built-in `node:sqlite` loads without a flag).
 - ✅ Docker Engine daemon liveness.
 - ✅ Docker Compose v2 plugin availability.
 - ✅ Non-root user permissions for `/var/run/docker.sock`.
