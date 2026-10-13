@@ -66,7 +66,7 @@ npx hetzer creds set openai-api-key
 > ```bash
 > npm install -g hetzer@latest
 > ```
-> From 0.6.2, npmjs releases come from the release workflow through npm trusted publishing (no npm token is stored in this repository) and become public only after a maintainer approves them with 2FA. The unscoped `hetzer` package on npmjs went from 0.4.5 straight to 0.6.2; 0.5.x to 0.6.1 are on GitHub Releases and GitHub Packages only.
+> npmjs releases come from the release workflow through npm trusted publishing (no npm token is stored in this repository), become public only after a maintainer approves them with 2FA, and carry npm provenance that links each version to the commit and workflow run that built it. To check installed versions, run `npm audit signatures` in a project that depends on `hetzer`. Provenance shows where a package was built; it is not a review of its code.
 > Coming from 0.5.x? Read [docs/upgrade-0.6.md](docs/upgrade-0.6.md) first: 0.6.0 migrates the vault file and removes commands.
 
 ---
@@ -389,7 +389,7 @@ All Hetzer commands are executed via the `hetzer` CLI:
 | `hetzer version` | Displays the installed Hetzer version |
 | `hetzer check-update` | Deprecated and removed: prints the npm command that upgrades Hetzer and exits with code 1 |
 | `hetzer upgrade` | Deprecated and removed: prints the npm command that upgrades Hetzer and exits with code 1 |
-| `hetzer publish` | Deprecated and removed: prints a pointer to the release scripts and exits with code 1 |
+| `hetzer publish` | Deprecated and removed: prints a pointer to the release workflow and exits with code 1 |
 | `hetzer up [srv\|all] [--wait]` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
 | `hetzer down [-v]` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |
 | `hetzer status` | Deprecated and removed: prints a pointer to Jagdpanzer and exits with code 1 |

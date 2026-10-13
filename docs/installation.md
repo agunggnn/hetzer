@@ -191,10 +191,12 @@ npm install -g git+https://github.com/agunggnn/hetzer.git
 npm install -g @agunggnn/hetzer --registry=https://npm.pkg.github.com
 ```
 
-> **Release channel**: `hetzer` on npmjs is the primary package. From 0.6.2 it is staged by the release workflow
-> through npm trusted publishing (no npm token is stored in the repository) and becomes public only after a
-> maintainer approves it with 2FA. npmjs went from 0.4.5 straight to 0.6.2; 0.5.x to 0.6.1 are on GitHub Releases
-> and GitHub Packages only. Run `hetzer --version` after installing and expect 0.6.2 or later.
+> **Release channel**: `hetzer` on npmjs is the primary package. The release workflow stages each version through
+> npm trusted publishing (no npm token is stored in the repository), a maintainer approves it with 2FA, and it carries
+> npm provenance that names the commit and workflow run that built it. Check installed versions with
+> `npm audit signatures` in a project that depends on `hetzer`. Provenance shows where a package was built; it is not a
+> review of its code. Versions 0.5.0 to 0.6.1 were not published to npmjs; they are on GitHub Releases and GitHub
+> Packages.
 
 Verify the binary is available:
 ```bash
