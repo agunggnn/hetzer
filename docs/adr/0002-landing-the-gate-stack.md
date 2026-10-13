@@ -37,12 +37,12 @@ Observations that bear on the decision:
 - The vault schema v2 migration (`8bca6d0`) is the only destructive change in the stack: it drops tables in existing
   user vaults and removes the legacy JSON import and the `SHADOW_GRIMOIRE_KEY` fallback. It is a single commit with its
   own tests and doc edits, so it can be separated.
-- G3 removes user-visible commands. ADR-0001 item 14 asks for a one-release deprecation pointer; whether it is in
-  place was not checked while writing this ADR.
-- Two PRs are open on the remote (#37 skill rules, #38 dependency updates). Whether they overlap the stack's files was
-  not checked.
-- Neither the G0, G1 nor the pre-v2 G2 tip has been re-run through the full gate in this review. Earlier records exist
-  (`VERIFY-SEC-007` to `VERIFY-SEC-015`), but a tip is only known to pass when it is run.
+- G3 removes user-visible commands. ADR-0001 item 14 asks for a one-release deprecation pointer. It is in place, but
+  two shipped documents still tell users to run the removed commands (see "Findings from the action items").
+- Two PRs are open on the remote (#37 skill rules, #38 dependency updates). #38 shares no file with the stack. #37
+  conflicts with every stack tip from G0 onward and adds a remote vault sync command (see the findings).
+- Every tip was run through the full gate on 2026-10-13 and passed (see the findings). Before that only the earlier
+  records existed (`VERIFY-SEC-007` to `VERIFY-SEC-015`), and a tip is only known to pass when it is run.
 - Several agents edit one shared worktree. During G2 this swept work into the wrong commit twice and, once, switched the
   checked-out branch between two commits made from it.
 
@@ -143,15 +143,109 @@ whoever rebases.
 
 ## Action Items
 
-1. [ ] Decide whether the schema v2 migration (`8bca6d0`) is accepted as written: it uses plain `DROP TABLE` with no
-       backup and no transaction around the drops and the version stamp, and it also removes the legacy key fallback
-       and the legacy JSON import. If not, change it before G2b opens.
-2. [ ] Check #37 and #38 for overlap with the stack's files, and decide whether either lands first.
-3. [ ] Check that G3 carries the deprecation pointer from ADR-0001 item 14 and the `AGENTS.md` and `docs/architecture.md`
-       updates from item 15, or record why not.
-4. [ ] For each tip (independents, G0, G1, G2a, G2b, G3), run the gate from a clean detached worktree and record the
-       result in the PR description.
+1. [ ] Decide whether the schema v2 migration (`8bca6d0`) is accepted as written. The review is done (findings V1 to
+       V10 below); the decision and any change before G2b opens are still open.
+2. [x] Check #37 and #38 for overlap with the stack's files (findings P1 and P2). [ ] Decide what happens to #37.
+3. [x] Check that G3 carries the deprecation pointer from ADR-0001 item 14 (finding C1). [ ] Fix the stale documents
+       (finding C2). `docs/architecture.md` changed by two lines in G3 and its content was not reviewed here.
+4. [x] Run the gate at each existing tip from a clean detached worktree (table below). The G2a and G2b tips do not
+       exist yet and still need their own run.
 5. [ ] Open the five independent PRs from their existing branches.
 6. [ ] Rebuild G2a and G2b from the current G2 content, regenerating evidence at each tip in its own commit.
 7. [ ] Decide the version bump and release notes for G3's removals (outside this ADR).
 8. [ ] When the last PR merges, archive or delete the local gate branches.
+9. [ ] Find which gate step writes into `<cwd>/.hetzer/audit.log` and give it its own directory (finding T1).
+
+## Findings from the action items (2026-10-13)
+
+Items 2, 3 and 4 were carried out, and the migration in item 1 was reviewed. Nothing was changed in the code under
+review. Probes used synthetic data and the two builds extracted with `git archive`: `f7e1659` (the last commit before
+the migration) and `8bca6d0` (the migration).
+
+### Gate at each tip
+
+Run key-free (`HETZER_*` unset, temporary home) from one detached worktree, `git clean -fdx` between tips.
+
+| Tip | Commit | `check` | Tests (pass / total, skipped) | `verify --no-write` |
+|---|---|---|---|---|
+| `fix/upgrade-checksum-disambiguation` | `d587f67` | pass | 299 / 300, 1 | VERIFIED |
+| `feat/broker-audit-limit-and-ttl` | `863f48c` | pass | 299 / 300, 1 | VERIFIED |
+| `fix/git-hook-lockfile-integrity` | `dad1c3d` | pass | 300 / 301, 1 | VERIFIED |
+| `chore/eslint-flat-config` | `ff1373a` | pass | 297 / 298, 1 | VERIFIED |
+| `docs/adr-0001-and-architecture-review` | `3c612a7` | pass | 297 / 298, 1 | VERIFIED |
+| G0 | `2979410` | pass | 318 / 319, 1 | VERIFIED |
+| G1 | `aaa10cf` | pass | 335 / 336, 1 | VERIFIED |
+| G2 before the migration | `f7e1659` | pass | 379 / 380, 1 | VERIFIED |
+| G2 | `cb465ba` | pass | 379 / 380, 1 | VERIFIED |
+| G3 (with this ADR on top) | `5061843` | pass | 318 / 318, 0 | VERIFIED |
+
+- **T1.** The clean between tips could not remove `.hetzer/audit.log`, `.head` and `.state` in the worktree root (their
+  access control list refuses the delete on Windows), so later tips ran with the earlier tips' ledger present. The
+  ledger, inspected during the fourth tip, held only unkeyed `CANARY_TRIGGER` entries for `canary-token`. Some gate
+  step therefore writes its audit events into the current directory; which one was not identified. In a checkout that holds a real ledger this would
+  add test events to it or be refused by it. That was not tested with a key present.
+
+### Vault schema v2 migration (`8bca6d0`)
+
+- **V1. Credentials survive.** A version 1 vault with one credential, one target row and one finding row opened under
+  the migration build: the credential decrypts, its grant signature verifies, the three tables are gone and the marker
+  reads 2. The rows in the dropped tables are gone and no copy of the file is made first.
+- **V2. An interrupted migration completes on the next open.** With two of the tables already dropped and the marker
+  still at 1, the next open finishes and stamps 2. The missing transaction is therefore not a correctness problem;
+  the concern recorded in the first version of this ADR does not hold.
+- **V3. The migration can go unrecorded in the ledger.** Its audit event uses the fail-soft mirror. With a damaged
+  last line in the ledger, and separately with a keyed ledger and a process that has no key, the tables were dropped
+  and the marker stamped 2 while the ledger gained no `VAULT_MIGRATE_SCHEMA_V2` entry. Nothing retries it, because the
+  marker is already 2. The migration also runs when the vault is opened locked.
+- **V4. Concurrent opens are safe but noisy.** Four processes opening the same version 1 vault at once all succeeded and
+  the ledger verified, with four migration entries.
+- **V5. The format bump is what blocks going back.** The previous build refuses the migrated vault with
+  `ERR_VAULT_FORMAT_UNSUPPORTED`. With the marker set back to 1 by hand, the same previous build opened it, decrypted
+  the credential and verified its grant, because older builds re-create the missing tables. Dropping unused tables did
+  not need a new format number; raising it makes the upgrade one-way. Whether that is wanted is a maintainer decision.
+- **V6. The legacy JSON vault is ignored without a message.** A workspace with only `data/vault.json`: the previous
+  build imports the entry, the migration build opens an empty vault, and `status()` no longer reports anything pending.
+  Six call sites still pass `legacyFile`, which the constructor accepts and ignores.
+- **V7. The retired key alias leaves the vault locked without a message.** With only `SHADOW_GRIMOIRE_KEY` set, in the
+  process environment or in `.env`, the previous build resolves a key and the migration build resolves none. Nothing
+  tells the user to rename the variable; what `init` does next was not tested. `docs/audit-batch-5.md` still lists the
+  alias as a key source.
+- **V8. `realm` is no longer checked.** A value outside the fixed set used to fall back to `frontier`; now any text is
+  stored, cut at 60 characters, including a terminal escape sequence. The only reader outside the vault is the SDK
+  metadata list, and `realm` takes part in no authorization decision.
+- **V9. Two methods now accept data and keep none.** `recordAuditFinding` returns a new identifier and stores nothing
+  (no caller is left in the repository); `upsertTarget` returns the id and stores nothing (four call sites in
+  `cli/`, more in tests and the evidence script); `listTargets` is derived from credentials and no longer has host, port or source path.
+- **V10. The migration itself has no test.** No test asserts that the tables are dropped, that the event is written or
+  what happens to rows in the dropped tables; `VERIFY-SEC-015` checks the stamp only. Separately, ADR-0001 item 11
+  still lists "dropping the SQLite audit table (item 12)" as open while item 12 is ticked and keeps that table.
+
+Suggested before G2b opens, for the maintainer to accept or reject: a test for V1 and V2; a refusal or a warning for
+V6 and V7 in place of silence; a decision on V5; and a mandatory, retried audit record for V3.
+
+### Open pull requests
+
+- **P1. #38** (GitHub Actions versions, four workflow files) shares no file with the stack.
+- **P2. #37** touches `cli/core/cli.mjs`, `cli/skills/rules.mjs` and a new `cli/vault/remote-sync.mjs`. It merges cleanly
+  into `main` and conflicts in `cli/core/cli.mjs` with every stack tip from G0 onward (`git merge-tree`). The rest of
+  this item is from reading its diff, not from running it. Under a title
+  about skill rules it adds `hetzer creds push`, `sync` and `pull`: every credential is revealed, encrypted under a key
+  derived from the master key and posted to a remote endpoint that has a built-in default. That is new credential
+  surface during the ADR-0001 freeze and it is outside the grant model of G0 (no origin grant is consulted). The
+  pull path calls `vault.set(...)`, and `Grimoire` has no `set` method on `main` or at
+  the stack tip. Recommendation: do not merge #37 ahead of the stack; split the skill-rule text from the sync
+  command and decide the sync command against ADR-0001.
+
+### Gate G3
+
+- **C1. The deprecation pointer is in place.** The G3 dispatch sends `up`, `down`, `status`, `logs`, `modules`,
+  `install`, `remove`, `module`, `validate`, `tui` and `update` to one handler. Run at the G3 tip, `up`, `tui`,
+  `update` and `validate` exit 1 with a message that names Jagdpanzer, and `upgrade` and `publish` exit 1 and point
+  to npm and the release scripts; the other names were not run. The message calls `tui` and `update` multi-container
+  orchestration, which they were not.
+- **C2. Two shipped documents still give the removed commands as instructions.** `docs/installation.md` tells users
+  to run `hetzer up --wait`, `hetzer tui`, `hetzer upgrade`, `hetzer update <module>` and `hetzer down -v`, and
+  `README.md` still documents `hetzer upgrade [--yes|--check]` as an automatic upgrade and shows the TUI in its
+  diagram. A user who follows either gets the deprecation message.
+- **C3.** The test count falls from 380 to 318 with the removed code. That is expected from a deletion and was not
+  checked test by test.
