@@ -300,7 +300,7 @@ Multi-container stack orchestration (databases, persistent memory engines, and m
 
 Hetzer operates strictly as a lightweight single-command runtime armor, stream redactor, and container sandbox:
 ```bash
-# Isolate untrusted commands inside ephemeral containers:
+# Isolate untrusted commands inside ephemeral containers (mounts the current directory; add --sandbox-mount <dir> to choose another):
 hetzer exec --sandbox alpine:latest -- python -c "print('hello')"
 
 # Mediate credentials securely through the HTTP broker:

@@ -30,7 +30,7 @@ sequenceDiagram
 | Secret scanner | `cli/vault/sniffer.mjs` | Provider regexes, database URLs, bounded PEM keys, and Shannon-entropy candidates |
 | Process runner | `cli/vault/exec.mjs` | Broker-by-default selection, vault-gated raw injection opt-out, strict base environment, reflection guard, stream sanitizer, subprocess canary stream tripwire, execution timeout guard |
 | Execution policy | `cli/vault/exec-policy.mjs` | Declarative capability policies: command whitelisting, credential boundaries, raw-opt-out boundaries, strict isolation, and timeout limits |
-| Container sandbox | `cli/vault/sandbox.mjs` | Ephemeral OCI container isolation (`--cap-drop=ALL`, `--security-opt=no-new-privileges`, loopback broker translation) |
+| Container sandbox | `cli/vault/sandbox.mjs` | Ephemeral OCI container isolation (`--cap-drop=ALL`, `--security-opt=no-new-privileges`, loopback broker translation), project-only mount with Hetzer-owned paths hidden, injected-variable allowlist passed by name, digest-pinned default image, stated network mode |
 | Audit ledger | `cli/vault/audit.mjs` | Cryptographic append-only event ledger with SHA-256 hash chaining (`prevHash`) |
 | Compose runner | `cli/vault/compose-runner.mjs` | Scoped Compose environment and sanitized Docker/containers output pipes |
 | Credential CLI | `cli/vault/creds.mjs` and `cli/vault/credential-request.mjs` | Set/list/reveal plus metadata-only request/approve/status handoff; direct secret entry requires a human TTY and reveal retains native confirmation |
@@ -68,6 +68,7 @@ sequenceDiagram
 - caller `--allow-raw-unmediated` is rejected with `ERR_RAW_UNMEDIATED_DENIED_BY_GRANT` unless vault grant explicitly permits raw injection (`VERIFY-SEC-008`);
 - in-process `Grimoire.resolve()` strictly enforces mandatory action grants, returning null for ungranted or omitted actions (`VERIFY-SEC-009`, note: R-05 remains open until Gate G2 out-of-process boundary);
 - MCP virtual credential proxy binds `secretRef:<id>` to verified tool destination origins, failing closed on ungranted endpoints (`VERIFY-SEC-010`);
+- the sandbox mounts an explicit project directory, hides Hetzer-owned paths inside it, forwards only injected variables by name (never on the engine command line), and refuses unsafe mount targets (`VERIFY-SEC-013`, builder-level; container behaviour of the masks was checked separately on Docker Desktop for Windows);
 - vault grant columns are HMAC-signed with a subkey derived from the master key, failing closed upon direct SQLite database tampering (`VERIFY-SEC-011`);
 - unsigned or altered grants and broker policy approvals are never honored and never signed automatically; a legacy credential becomes usable only after an operator reviews it with `hetzer creds grant --sign-existing` (`VERIFY-SEC-012`). Signatures carry no version, so a previously valid signed grant can be replayed by a writer who kept an old copy of the database, and a writer who can read the master key can still forge grants;
 - operator `hetzer creds grant <id>` CLI command safely configures grants behind interactive human TTY confirmation;

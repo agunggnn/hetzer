@@ -187,3 +187,20 @@ test("public SDK rejects reflection commands and exposes only a sanitized execut
     client.close();
     fs.rmSync(root, { recursive: true, force: true });
 });
+
+test("public SDK requires an explicit sandboxMountDir when sandbox is enabled", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-sdk-sandbox-mount-"));
+    const client = createHetzer({ root, vaultPath: ":memory:" });
+
+    await assert.rejects(
+        () => client.execution.run({ command: "node", args: ["--version"], sandbox: true }),
+        (error) => {
+            assert.equal(error.code, SDK_ERROR_CODES.INVALID_CONFIG);
+            assert.match(error.message, /sandboxMountDir is required/);
+            return true;
+        },
+    );
+
+    client.close();
+    fs.rmSync(root, { recursive: true, force: true });
+});

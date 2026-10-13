@@ -545,7 +545,7 @@ export function resolveCommandForSpawn(command, commandArgs = []) {
 export function parseArguments(argv) {
     const marker = argv.indexOf("--");
     if (marker === -1 || !argv[marker + 1]) {
-        throw new Error("Usage: exec --root <path> --env-file <path> [--policy <path>] [--policy-hash <sha256>] [--broker-policy <path>] [--allow NAME,NAME] [--allow-raw-unmediated NAME,NAME] [--strict] [--canary] [--sandbox [image]] [--sandbox-network <net>] [--sandbox-ro] [--timeout <duration>] -- <command> [args]");
+        throw new Error("Usage: exec --root <path> --env-file <path> [--policy <path>] [--policy-hash <sha256>] [--broker-policy <path>] [--allow NAME,NAME] [--allow-raw-unmediated NAME,NAME] [--strict] [--canary] [--sandbox [image]] [--sandbox-network <net>] [--sandbox-mount <dir>] [--sandbox-ro] [--timeout <duration>] -- <command> [args]");
     }
     const options = argv.slice(0, marker);
     const value = (name) => {
@@ -561,6 +561,9 @@ export function parseArguments(argv) {
     const rawSandboxVal = value("--sandbox");
     const sandboxImage = value("--sandbox-image") || (rawSandboxVal && !rawSandboxVal.startsWith("-") ? rawSandboxVal : undefined);
     const sandboxNetwork = value("--sandbox-network") || undefined;
+    // The CLI works on the directory it is run from unless told otherwise. This is the project the sandbox
+    // mounts; it is not the Hetzer instance root.
+    const sandboxMountDir = isSandbox ? path.resolve(value("--sandbox-mount") || process.cwd()) : undefined;
     const root = path.resolve(value("--root") || process.cwd());
     const rawEnvFile = value("--env-file");
     const envFile = rawEnvFile ? path.resolve(rawEnvFile) : path.join(root, ".env");
@@ -578,6 +581,7 @@ export function parseArguments(argv) {
         sandbox: isSandbox,
         sandboxImage: sandboxImage || undefined,
         sandboxNetwork,
+        sandboxMountDir,
         sandboxRo: options.includes("--sandbox-ro"),
         strict: options.includes("--strict"),
         canary: options.includes("--canary"),
@@ -760,6 +764,11 @@ export async function prepareExecutionEnvironment(effectiveOptions, {
     }
     const brokers = [];
     const claimedBrokerEnvNames = new Set();
+    // Names Hetzer itself placed in the child environment. A sandbox forwards only these (plus a small
+    // terminal/locale allowlist), never the rest of the host environment.
+    const injectedNames = new Set(rawBindings.map(({ envName }) => envName));
+    if (Object.hasOwn(env, "HETZER_CANARY_TOKEN")) injectedNames.add("HETZER_CANARY_TOKEN");
+    const brokerUrlNames = new Set();
     try {
         for (const [credentialId, descriptor] of policyByCredential) {
             if (!requestedIds.has(credentialId)) continue;
@@ -785,6 +794,11 @@ export async function prepareExecutionEnvironment(effectiveOptions, {
             const suffix = brokerEnvSuffix(credentialId);
             env[`HETZER_BROKER_URL_${suffix}`] = brokerUrl;
             env[`HETZER_BROKER_CAPABILITY_${suffix}`] = opened.broker.capability;
+            for (const name of [opened.policy.baseUrlEnv, opened.policy.tokenEnv, `HETZER_BROKER_URL_${suffix}`, `HETZER_BROKER_CAPABILITY_${suffix}`]) {
+                injectedNames.add(name);
+            }
+            brokerUrlNames.add(opened.policy.baseUrlEnv);
+            brokerUrlNames.add(`HETZER_BROKER_URL_${suffix}`);
             secretsToRedact.push(
                 { id: credentialId, secret: opened.secret },
                 { id: `broker-capability-${credentialId}`, secret: opened.broker.capability },
@@ -795,8 +809,11 @@ export async function prepareExecutionEnvironment(effectiveOptions, {
             const opened = brokers[0];
             env.HETZER_BROKER_URL = `${opened.broker.url}${opened.policy.basePath === "/" ? "" : opened.policy.basePath}`;
             env.HETZER_BROKER_CAPABILITY = opened.broker.capability;
+            injectedNames.add("HETZER_BROKER_URL");
+            injectedNames.add("HETZER_BROKER_CAPABILITY");
+            brokerUrlNames.add("HETZER_BROKER_URL");
         }
-        return { env, secretsToRedact, brokers };
+        return { env, secretsToRedact, brokers, injectedNames: [...injectedNames], brokerUrlNames: [...brokerUrlNames] };
     } catch (error) {
         await Promise.all(brokers.map(async (opened) => {
             await opened.broker.close();

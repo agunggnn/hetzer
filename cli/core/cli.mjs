@@ -513,7 +513,7 @@ Commands:
   creds [list|request|approve|status|reveal|set] Manage encrypted secrets in Grimoire Vault (AES-256-GCM)
   canary [setup]            Deploy decoy canary honey-token tripwire to catch prompt injections
   audit [verify|tail [n]]   Verify cryptographic hash-chain or inspect tamper-evident audit ledger
-  exec [--allow <ids>] [--policy <file>] [--sandbox [image]] [--host] [--strict] [--canary] [--timeout <t>] -- <c>
+  exec [--allow <ids>] [--policy <file>] [--sandbox [image]] [--sandbox-mount <dir>] [--host] [--strict] [--canary] [--timeout <t>] -- <c>
                               Run with mediated credentials; raw injection requires an audited opt-out
   broker --policy <file> -- <command>   Run an HTTP client using a short-lived capability instead of the real credential
   sniffer [scan|redact] <t> Detect or redact credentials supported by the scanner rules
@@ -1289,7 +1289,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
     if (command === "exec") {
         const marker = args.indexOf("--");
         if (marker === -1 || !args[marker + 1]) {
-            throw new Error("Usage: hetzer exec [--policy <file>] [--broker-policy <file>] [--allow NAME,NAME] [--allow-raw-unmediated NAME,NAME] [--strict] [--canary] [--sandbox [image]] [--sandbox-network <net>] [--sandbox-ro] [--allow-sensitive-paths] [--host] [--no-sandbox] [--timeout <duration>] -- <command> [args]");
+            throw new Error("Usage: hetzer exec [--policy <file>] [--broker-policy <file>] [--allow NAME,NAME] [--allow-raw-unmediated NAME,NAME] [--strict] [--canary] [--sandbox [image]] [--sandbox-network <net>] [--sandbox-mount <dir>] [--sandbox-ro] [--allow-sensitive-paths] [--host] [--no-sandbox] [--timeout <duration>] -- <command> [args]");
         }
         const execOptions = args.slice(0, marker);
         const hasSandboxOption = execOptions.includes("--sandbox") || execOptions.some((o) => o.startsWith("--sandbox"));

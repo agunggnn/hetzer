@@ -122,7 +122,7 @@ With Hetzer, you get:
 4. **Dual Git Guards (`pre-commit` & `commit-msg`)**: Inspects staged filenames, diff additions before commit, and validates commit messages against raw credentials.
 5. **Canary Honey-Tokens & Active Stream Tripwires**: Deploys decoy canary tokens (`HETZER_CANARY_TOKEN`, `canary-*`). Guarded resolution aborts with exit code 43. Guarded subprocesses (`hetzer exec --canary`) terminate child processes if canary tokens leak into stdout/stderr.
 6. **HTTP Credential Broker**: Loopback proxy (`127.0.0.1`) injecting upstream credentials via ephemeral capabilities without exposing raw secrets to child environments.
-7. **Ephemeral Container Sandbox (`hetzer exec --sandbox`) & Fleet Separation**: Isolates untrusted agent commands in transient containers (`--cap-drop=ALL`, `--pids-limit=100`, unmounting host AppData), cleanly delegating multi-container cluster ops to [Jagdpanzer](https://github.com/agunggnn/jagdpanzer).
+7. **Ephemeral Container Sandbox (`hetzer exec --sandbox`) & Fleet Separation**: Runs agent commands in transient containers (`--cap-drop=ALL`, `--pids-limit=100`, project-only mount with Hetzer-owned paths hidden), cleanly delegating multi-container cluster ops to [Jagdpanzer](https://github.com/agunggnn/jagdpanzer).
 
 All built with **0 external npm dependencies** (100% Node.js standard library: `node:crypto`, `node:sqlite`, `node:fs`, `node:perf_hooks`).
 
@@ -378,7 +378,7 @@ All Hetzer commands are executed via the `hetzer` CLI:
 | `hetzer creds isolate-key` | Moves master key outside workspace to `~/.hetzer/grimoire.key` (mode 0600) |
 | `hetzer canary [setup]` | Deploys decoy canary honey-tokens to catch prompt injection & scraping |
 | `hetzer audit [verify\|tail [n]]` | Verifies cryptographic SHA-256 hash-chain or inspects tamper-evident audit ledger |
-| `hetzer exec [--allow <ids>] [--policy <file>] [--sandbox [image]] [--host] [--strict] [--canary] [--timeout <t>] -- <c>` | Runs with broker-mediated credentials, transient container sandbox, stream redaction, and canary tripwire |
+| `hetzer exec [--allow <ids>] [--policy <file>] [--sandbox [image]] [--sandbox-mount <dir>] [--host] [--strict] [--canary] [--timeout <t>] -- <c>` | Runs with broker-mediated credentials, transient container sandbox, stream redaction, and canary tripwire |
 | `hetzer broker --policy <file> -- <c>` | Runs an HTTP client using short-lived capability instead of real credentials |
 | `hetzer protect` | Arms workspace with credential-safety guidance, Git pre-commit hook, and .env protection |
 | `hetzer sniffer [scan\|redact]` | Scans or redacts supported credential candidates from input text |
