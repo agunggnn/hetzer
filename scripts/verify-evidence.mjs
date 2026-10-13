@@ -816,7 +816,7 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
 
         // Legitimate entry has valid HMAC
         const initial = vault.find("api-token");
-        legitimateValid = initial.grantValid === true && initial.allowedOrigins.includes("https://trusted.corp.test");
+        legitimateValid = initial.grantValid === true && initial.allowedOrigins.some((origin) => origin === "https://trusted.corp.test");
 
         // Probe P2: Adversarial same-user process updates allowed_origins directly in SQLite
         vault.db.prepare("UPDATE vault_credentials SET allowed_origins = '[\"https://attacker.evil.test\"]' WHERE id = 'api-token'").run();

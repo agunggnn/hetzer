@@ -188,8 +188,8 @@ test("Grimoire approveBrokerPolicy records approval and grants origin and broker
 
         // Credential entry has updated grants
         const updatedEntry = vault.find("api-cred");
-        assert.ok(updatedEntry.allowedOrigins.includes("https://api.trusted.com"));
-        assert.ok(updatedEntry.allowedOrigins.includes("https://api.partner.com"));
+        assert.ok(updatedEntry.allowedOrigins.some((origin) => origin === "https://api.trusted.com"));
+        assert.ok(updatedEntry.allowedOrigins.some((origin) => origin === "https://api.partner.com"));
         assert.ok(updatedEntry.allowedActions.includes("broker.proxy"));
         assert.ok(updatedEntry.allowedActions.includes("mcp.tools/call"));
     } finally {
@@ -329,7 +329,7 @@ test("grantCredentialCommand enforces human TTY session and updates grants with 
     });
 
     assert.equal(updated.id, "my-key");
-    assert.ok(updated.allowedOrigins.includes("https://api.granted.test"));
+    assert.ok(updated.allowedOrigins.some((origin) => origin === "https://api.granted.test"));
     assert.equal(updated.rawInjection, "allow");
     assert.ok(updated.allowedActions.includes("process.start"));
 
@@ -338,7 +338,7 @@ test("grantCredentialCommand enforces human TTY session and updates grants with 
     try {
         const stored = vault2.find("my-key");
         assert.equal(stored.grantValid, true);
-        assert.ok(stored.allowedOrigins.includes("https://api.granted.test"));
+        assert.ok(stored.allowedOrigins.some((origin) => origin === "https://api.granted.test"));
         assert.equal(stored.rawInjection, "allow");
         assert.ok(stored.allowedActions.includes("process.start"));
         assert.equal(vault2.resolve("my-key", { targetId: "service", action: "process.start" }), "s3cr3t-v4lu3");
