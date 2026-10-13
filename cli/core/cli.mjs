@@ -356,7 +356,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         return;
     }
     if (command === "publish") {
-        process.stderr.write("Package publishing is managed via release scripts: run 'node scripts/publish.mjs' or 'npm run publish:npm'.\n");
+        process.stderr.write("Hetzer releases are published by .github/workflows/release-main.yml when a change merges to main; npmjs versions are staged there and approved by a maintainer with 2FA.\n");
         process.exitCode = 1;
         return;
     }
