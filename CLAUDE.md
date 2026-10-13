@@ -12,7 +12,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Package is `@agunggnn/hetzer` (the `shadow-core` directory name is legacy). Pure native-ESM JavaScript (`.mjs`), no build step, **zero runtime deps** (Node stdlib only, `node:sqlite` needs Node >=22.5). Architecture and security invariants live in @AGENTS.md; read it before touching `cli/vault/`.
+Package is `@agunggnn/hetzer` (the `shadow-core` directory name is legacy). Pure native-ESM JavaScript (`.mjs`), no build step, **zero runtime deps** (Node stdlib only, `node:sqlite` needs Node `^22.13.0 || >=23.4.0`, the first releases that load it without a flag). Architecture and security invariants live in @AGENTS.md; read it before touching `cli/vault/`.
 
 ## Commands
 - Pre-PR gate: `npm run check && npm test && npm run verify -- --no-write`

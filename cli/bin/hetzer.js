@@ -17,6 +17,14 @@ async function start() {
     process.exitCode = 1;
     return;
   }
+  // A supported version can still be a build without node:sqlite; probe before loading the vault.
+  try {
+    await import('node:sqlite');
+  } catch (error) {
+    process.stderr.write(`${unsupportedNodeMessage(process.version)} (${error.message})\n`);
+    process.exitCode = 1;
+    return;
+  }
 
   const { main } = await import('../core/cli.mjs');
   await main();

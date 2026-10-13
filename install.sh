@@ -21,7 +21,7 @@ echo -e "${NC}"
 # 1. Check for Node.js
 if ! command -v node >/dev/null 2>&1; then
     echo -e "${RED}[x] Node.js is not installed.${NC}"
-    echo -e "    Hetzer requires Node.js >= 22.5.0."
+    echo -e "    Hetzer requires Node.js >= 22.13.0."
     echo -e "    Install it via NodeSource or NVM:"
     echo -e "      curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -"
     echo -e "      sudo apt-get install -y nodejs"
@@ -32,10 +32,12 @@ NODE_VERSION=$(node -v | sed 's/v//')
 MAJOR=$(echo "$NODE_VERSION" | cut -d. -f1)
 MINOR=$(echo "$NODE_VERSION" | cut -d. -f2)
 
-if [ "$MAJOR" -lt 22 ] || { [ "$MAJOR" -eq 22 ] && [ "$MINOR" -lt 5 ]; }; then
-    echo -e "${YELLOW}[!] Warning: Node.js version is v${NODE_VERSION}.${NC}"
-    echo -e "    Hetzer recommends Node.js >= 22.5.0 (for native node:sqlite and Web Crypto)."
-    echo -e "    Please consider upgrading Node.js for optimal performance."
+# node:sqlite loads without a flag from 22.13.0 (22.x) and 23.4.0 (23.x).
+if [ "$MAJOR" -lt 22 ] || { [ "$MAJOR" -eq 22 ] && [ "$MINOR" -lt 13 ]; } || { [ "$MAJOR" -eq 23 ] && [ "$MINOR" -lt 4 ]; }; then
+    echo -e "${RED}[x] Node.js v${NODE_VERSION} is too old.${NC}"
+    echo -e "    Hetzer requires Node.js ^22.13.0 or >= 23.4.0, the first releases that load the"
+    echo -e "    built-in node:sqlite module without a flag. Install the current 22 or 24 LTS."
+    exit 1
 fi
 
 # 2. Check for npm

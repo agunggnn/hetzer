@@ -78,7 +78,7 @@
     "url": "https://github.com/agunggnn/hetzer/issues"
   },
   "engines": {
-    "node": ">=22.5.0"
+    "node": "^22.13.0 || >=23.4.0"
   },
   "scripts": {
     "check": "node scripts/check.mjs",

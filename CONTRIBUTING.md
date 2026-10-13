@@ -65,7 +65,7 @@ benchmarks/      # Performance benchmarks
 
 ## Code Conventions
 
-- Node >=22.5.0 ESM; the vault requires the built-in `node:sqlite` module
+- Node `^22.13.0 || >=23.4.0` ESM; the vault requires the built-in `node:sqlite` module, which earlier releases only load behind a flag
 - `node:test` for unit tests (`*.test.mjs`)
 - `node --test "**/*.test.mjs"` runs all tests
 - Zero external dependencies in runtime `cli/` — Node standard library only
