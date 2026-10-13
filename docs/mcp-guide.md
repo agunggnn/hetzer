@@ -26,7 +26,7 @@
 
 The **Model Context Protocol (MCP)** standardizes how AI applications connect to external tools, databases, and context servers. Hetzer acts as an **autonomous MCP orchestrator and security bridge**, providing:
 - **Embedded Stdio FastMCP Server** (`hetzer mcp serve`): Direct high-speed JSON-RPC bridge for Claude Desktop, Cursor, and Cline.
-- **Native Defense Tools**: Explicit text scanning (`hetzer_sniffer_scan`), redaction with per-item vault status (`hetzer_sniffer_redact`), and credential existence checks (`hetzer_vault_has`, `hetzer_vault_list`).
+- **Native Defense Tools**: Explicit text scanning (`hetzer_sniffer_scan`), and credential existence checks (`hetzer_vault_has`, `hetzer_vault_list`).
 - **Virtual Credential Proxy & Just-In-Time Secret Resolution**: Transparently resolves `secretRef:<id>` parameters just-in-time while enforcing capability bindings.
 - **MCP Output Sanitization**: Scans serialized tool return values and error messages via `sanitizeStreamOutput` before return, preventing credential reflection.
 - **Operational Tool Classification**: Automated labeling as `[OFFLINE]`, `[HYBRID]`, and `[LLM REASONING]`.
@@ -172,11 +172,6 @@ When connected to Hetzer's stdio FastMCP server (`hetzer mcp serve`), AI agents 
 - **Description**: Scans provided text or code snippets for supported API-key patterns, private-key blocks up to 16 KiB, credentialed database URLs, and bounded high-entropy candidates.
 - **Parameters**:
   - `text` *(string, required)*: The text payload to scan.
-
-### `hetzer_sniffer_redact` `[OFFLINE]`
-- **Description**: Automatically vaults detected credentials into Grimoire Vault and returns sanitized text replacing raw keys with `secretRef:<id>`.
-- **Parameters**:
-  - `text` *(string, required)*: The text payload to sanitize.
 
 ### `hetzer_vault_has` `[OFFLINE]`
 - **Description**: Safely probes whether a specific credential reference exists in Grimoire Vault without decrypting or exposing the underlying secret.

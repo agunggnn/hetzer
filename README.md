@@ -62,6 +62,7 @@ npx hetzer creds set openai-api-key
 > ```bash
 > npm install -g @agunggnn/hetzer
 > ```
+> Coming from 0.5.x? Read [docs/upgrade-0.6.md](docs/upgrade-0.6.md) first: 0.6.0 migrates the vault file and removes commands.
 
 ---
 
