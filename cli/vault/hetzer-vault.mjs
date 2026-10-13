@@ -133,6 +133,25 @@ export function getIsolatedKeyPath(homeDir) {
     }
 }
 
+/** The master key variable name read before vault format 2. It is no longer read; see `resolveMasterKey`. */
+export const RETIRED_MASTER_KEY_ALIAS = "SHADOW_GRIMOIRE_KEY";
+
+function retiredKeyAliasError(where) {
+    const error = new Error(
+        `${RETIRED_MASTER_KEY_ALIAS} is set in ${where} but is no longer read (retired with vault format 2). `
+        + `Rename it to HETZER_GRIMOIRE_KEY and keep its value. Do not run 'hetzer init' instead: `
+        + "it would generate a different key, and the credentials already in the vault could not be decrypted with it.",
+    );
+    error.code = "ERR_MASTER_KEY_ALIAS_RETIRED";
+    return error;
+}
+
+/**
+ * Lookup order: runtime environment, workspace `.env`, isolated key file. Throws
+ * `ERR_MASTER_KEY_ALIAS_RETIRED` when the retired alias is the key the previous build would have used
+ * and the current name is not set in either place, so an upgrade never continues with no key or with
+ * another key in silence.
+ */
 export function resolveMasterKey({ root = process.cwd(), envValues = {}, baseEnv = process.env, homeDir } = {}) {
     // 1. Explicit runtime environment variable (highest priority)
     const envKey = baseEnv.HETZER_GRIMOIRE_KEY;
@@ -146,6 +165,12 @@ export function resolveMasterKey({ root = process.cwd(), envValues = {}, baseEnv
         return String(fileKey).trim();
     }
 
+    const usable = (value) => Boolean(value) && !String(value).startsWith("secretRef:");
+    const aliasWhere = usable(baseEnv[RETIRED_MASTER_KEY_ALIAS])
+        ? "the environment"
+        : (usable(envValues[RETIRED_MASTER_KEY_ALIAS]) ? "the workspace .env" : "");
+    const alias = aliasWhere === "the environment" ? baseEnv[RETIRED_MASTER_KEY_ALIAS] : envValues[RETIRED_MASTER_KEY_ALIAS];
+
     // 3. User-level Home Isolated Store (~/.hetzer/grimoire.key) fallback.
     // Isolated outside project workspace so workspace agents cannot read it!
     const effectiveHome = homeDir || baseEnv.HETZER_INSTALL_HOME || (baseEnv === process.env ? os.homedir() : "");
@@ -154,13 +179,17 @@ export function resolveMasterKey({ root = process.cwd(), envValues = {}, baseEnv
         try {
             const val = fs.readFileSync(isolatedFile, "utf8").trim();
             if (val && !val.startsWith("secretRef:")) {
+                // The alias used to take precedence over the isolated file. Same key: nothing changes.
+                if (aliasWhere && normalizeMasterKey(alias) !== normalizeMasterKey(val)) throw retiredKeyAliasError(aliasWhere);
                 return val;
             }
-        } catch {
+        } catch (error) {
+            if (error?.code === "ERR_MASTER_KEY_ALIAS_RETIRED") throw error;
             // Continue to fallback
         }
     }
 
+    if (aliasWhere) throw retiredKeyAliasError(aliasWhere);
     return "";
 }
 
@@ -365,6 +394,25 @@ function ensureParent(file) {
  */
 export const VAULT_FORMAT_VERSION = 2;
 
+/** Tables that format 2 removes, and the marker that keeps the migration's ledger record owed until it is written. */
+const FORMAT_2_DROPPED_TABLES = ["vault_targets", "vault_audit_findings", "vault_metadata"];
+const MIGRATION_V2_PENDING_AUDIT = "pending-audit:migrate-schema-v2";
+
+const warnedLegacyFiles = new Set();
+
+/** Once per file and process. A warning, not an error: the vault itself is intact and still usable. */
+function warnLegacyJsonNotImported({ file, ids }) {
+    if (warnedLegacyFiles.has(file)) return;
+    warnedLegacyFiles.add(file);
+    const shown = ids.slice(0, 10).join(", ") + (ids.length > 10 ? ` and ${ids.length - 10} more` : "");
+    process.emitWarning(
+        `${file} holds ${ids.length} credential(s) that were never imported into this vault (${shown}). `
+        + "This Hetzer no longer imports the legacy JSON vault. Add those credentials again with 'hetzer creds set <id>', "
+        + "or import the file with the Hetzer version that created it before upgrading. Rename or remove the file to stop this warning.",
+        { type: "HetzerVaultWarning", code: "HETZER_LEGACY_VAULT_NOT_IMPORTED" },
+    );
+}
+
 export class Grimoire {
     constructor({ dbPath, file, legacyFile, masterKey, root, auditLogFile }) {
         const rootDir = root || process.cwd();
@@ -386,6 +434,8 @@ export class Grimoire {
         if (this.dbPath !== ":memory:") {
             secureFilePermissions(this.dbPath);
         }
+        this.legacyImport = this._legacyJsonState(legacyFile);
+        if (this.legacyImport.pending) warnLegacyJsonNotImported(this.legacyImport);
     }
 
     get file() {
@@ -517,20 +567,8 @@ export class Grimoire {
         `);
 
         // Migration to format version 2: drop legacy pentest tables on older existing vaults
-        if (hasExisting && currentVersion < 2) {
-            this.db.exec(`
-                DROP TABLE IF EXISTS vault_targets;
-                DROP TABLE IF EXISTS vault_audit_findings;
-                DROP TABLE IF EXISTS vault_metadata;
-            `);
-            this._setMeta("format_version", "2");
-            this.recordAudit({
-                actor: "hetzer-migration",
-                action: "vault.migrate-schema-v2",
-                reason: "One-time migration to format version 2 (dropped legacy pentest tables).",
-                outcome: "allowed",
-            });
-        }
+        if (hasExisting && currentVersion < 2) this._migrateToFormat2();
+        this._flushMigrationAudit();
 
         // Migration check for existing tables lacking new Gate G0 grant columns
         try {
@@ -558,6 +596,83 @@ export class Grimoire {
                 this.db.exec("ALTER TABLE vault_approved_policies ADD COLUMN sig TEXT;");
             }
         } catch { /* best effort migration */ }
+    }
+
+    /**
+     * Drops the tables format 2 removes and stamps the vault, in one transaction, so concurrent openers run it
+     * once and an interruption leaves either the old vault or the migrated one. The SQLite audit row is written
+     * in the same transaction. The ledger record is owed through a marker and written by `_flushMigrationAudit`.
+     */
+    _migrateToFormat2() {
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+            const stored = this.db.prepare("SELECT value FROM vault_meta WHERE key = 'format_version'").get()?.value;
+            if ((Number(stored) || 1) >= 2) {
+                this.db.exec("COMMIT");
+                return;
+            }
+            const droppedTables = {};
+            for (const table of FORMAT_2_DROPPED_TABLES) {
+                if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) continue;
+                droppedTables[table] = Number(this.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count);
+                this.db.exec(`DROP TABLE ${table}`);
+            }
+            const event = {
+                actor: "hetzer-migration",
+                action: "vault.migrate-schema-v2",
+                reason: "One-time migration to format version 2 (dropped legacy pentest tables).",
+                outcome: "allowed",
+                metadata: { fromFormat: Number(stored) || 1, toFormat: 2, droppedTables, migratedAt: new Date().toISOString() },
+            };
+            this._setMeta("format_version", "2");
+            this._setMeta(MIGRATION_V2_PENDING_AUDIT, JSON.stringify(event));
+            this._insertAuditRow(event);
+            this.db.exec("COMMIT");
+        } catch (error) {
+            try { this.db.exec("ROLLBACK"); } catch {}
+            throw error;
+        }
+    }
+
+    /**
+     * Writes the migration's ledger record if it is still owed, and clears the marker only once the ledger took
+     * it. A ledger that refuses now (for example a damaged one) is tried again on every later open, and a process
+     * that opened the vault locked leaves the record to one that has the key, so it is written with a MAC. Two
+     * processes opening at the same moment can both write it: at least once, not exactly once.
+     */
+    _flushMigrationAudit() {
+        const owed = this._meta(MIGRATION_V2_PENDING_AUDIT);
+        if (!owed) return;
+        if (this.auditLogFile) {
+            if (!this.unlocked) return;
+            let event;
+            try { event = JSON.parse(owed); } catch { event = null; }
+            if (event) {
+                this._mirrorAuditToLedger(event);
+                if (this.auditLedgerError) return;
+            }
+        }
+        this.db.prepare("DELETE FROM vault_meta WHERE key = ?").run(MIGRATION_V2_PENDING_AUDIT);
+    }
+
+    /**
+     * Format 2 no longer imports the legacy JSON vault. This only reports it: the ids in an existing legacy
+     * file that are not in this vault, unless an earlier build recorded that it imported that file.
+     */
+    _legacyJsonState(legacyFile) {
+        const none = { pending: false, file: "", ids: [] };
+        try {
+            if (!legacyFile || !fs.existsSync(legacyFile)) return none;
+            const resolved = path.resolve(legacyFile);
+            if (this._meta(`legacy-json:${sha256(resolved)}`)) return none;
+            const parsed = JSON.parse(fs.readFileSync(resolved, "utf8"));
+            if (!Array.isArray(parsed?.entries)) return none;
+            const ids = [...new Set(parsed.entries.map((entry) => String(entry?.id || "")))]
+                .filter((id) => isCredentialId(id) && !this.find(id));
+            return ids.length ? { pending: true, file: resolved, ids } : none;
+        } catch {
+            return none;
+        }
     }
 
     /**
@@ -954,6 +1069,10 @@ export class Grimoire {
 
     recordAudit(event) {
         this._mirrorAuditToLedger(event);
+        this._insertAuditRow(event);
+    }
+
+    _insertAuditRow(event) {
         const metadata = event.metadata && typeof event.metadata === "object" ? event.metadata : {};
         this.db.prepare(`
             INSERT INTO vault_audit_events (
@@ -1082,6 +1201,8 @@ export class Grimoire {
             file: path.basename(this.dbPath),
             storage: "sqlite",
             formatVersion: this.formatVersion,
+            legacyImportPending: this.legacyImport.pending,
+            migrationAuditPending: Boolean(this._meta(MIGRATION_V2_PENDING_AUDIT)),
         };
     }
 

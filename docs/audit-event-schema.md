@@ -140,6 +140,12 @@ a leading `vault.` removed, non-alphanumerics turned into `_`, and upper-cased (
 the credential id, else the target id; `result` is the outcome upper-cased; the actor is `{ user: <actor> }`;
 `details` is `{ reason, metadata }`.
 
+`VAULT_MIGRATE_SCHEMA_V2` is the one vault event that is not written where it happens. The migration stores it in
+the vault and writes it to the ledger once the ledger accepts it and the process has the key, which can be a later
+open. Its `timestamp` is therefore when it was written; `details.metadata` carries `migratedAt`, `fromFormat`,
+`toFormat` and `droppedTables` (row count per dropped table). It is written at least once: processes that open the
+vault at the same moment can each write it.
+
 | Event type | Action |
 |---|---|
 | `VAULT_SET_CREDENTIAL` | `vault.set-credential` |

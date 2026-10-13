@@ -13,7 +13,12 @@ open. Hetzer restricts the file's permissions to the current user each time it o
 The master key is not in the database. Lookup order: `HETZER_GRIMOIRE_KEY` in the process environment,
 then the same name in the workspace `.env`, then `~/.hetzer/grimoire.key` (under `HETZER_INSTALL_HOME` when set).
 A 64-character hex key is used as given; any other key of at least 32 characters is replaced by its SHA-256 hex digest;
-anything shorter leaves the vault locked. The legacy alias `SHADOW_GRIMOIRE_KEY` was retired in format 2.
+anything shorter leaves the vault locked.
+
+The earlier variable name `SHADOW_GRIMOIRE_KEY` is no longer read. When it is the key the previous build would have
+used (it is set in the environment or in `.env`, the current name is set in neither, and the isolated key file is
+absent or holds another key), key lookup stops with `ERR_MASTER_KEY_ALIAS_RETIRED` and tells the user to rename the
+variable. `hetzer init` refuses the same way instead of generating a new key over the existing vault.
 
 ## Format version
 
@@ -22,7 +27,13 @@ anything shorter leaves the vault locked. The legacy alias `SHADOW_GRIMOIRE_KEY`
 
 - A vault with no marker (created before format markers existed) or format 1 is migrated to format 2 on first open,
   dropping legacy pentest tables (`vault_targets`, `vault_audit_findings`, `vault_metadata`) while preserving all
-  credentials, grants, and approved policies.
+  credentials, grants, and approved policies. The drops, the new marker and the SQLite audit row are one
+  transaction, so processes opening at once migrate once and an interruption leaves either the old vault or the
+  migrated one. Rows in the dropped tables are not copied anywhere; the audit record carries how many each table held.
+- The migration's ledger record (`VAULT_MIGRATE_SCHEMA_V2`) is owed until the ledger takes it: `vault_meta` keeps
+  `pending-audit:migrate-schema-v2` while the ledger refuses (for example a damaged one) or while the vault was only
+  opened locked, and every later open tries again. It is written at least once, by a process that has the key.
+  `status().migrationAuditPending` reports it.
 - A vault stamped higher than this build understands is refused with `ERR_VAULT_FORMAT_UNSUPPORTED` **before**
   any table is created, column added or row written, and the file is left as it was.
 - A marker that is not a positive integer is refused the same way.
@@ -30,18 +41,23 @@ anything shorter leaves the vault locked. The legacy alias `SHADOW_GRIMOIRE_KEY`
   so an older build can still open and alter a newer vault.
 - A format change raises the number and ships a migration. Going back to an older build is not supported once a
   vault has been migrated.
+- The legacy JSON vault (`data/vault.json`) is no longer imported. When that file holds ids this vault lacks and no
+  earlier build recorded importing it, opening the vault emits one `HetzerVaultWarning`
+  (`HETZER_LEGACY_VAULT_NOT_IMPORTED`) per file and process that names the ids, and `status().legacyImportPending`
+  is true. The vault itself opens normally.
 
 ## Tables
 
 | Table | Holds |
 |---|---|
-| `vault_meta` | `key`, `value`, `updated_at`: the format marker (`format_version`) and one-off state markers. |
+| `vault_meta` | `key`, `value`, `updated_at`: the format marker (`format_version`), the owed migration record (`pending-audit:migrate-schema-v2`) and one-off state markers. |
 | `vault_credentials` | One row per credential; see below. |
 | `vault_approved_policies` | Operator-approved broker policies: `credential_id`, `policy_hash`, `target_origin`, `policy_path`, `approved_at`, `approved_by`, `sig`. Unique on `(credential_id, policy_hash)`. |
 | `vault_audit_events` | A frozen mirror of vault audit events. The tamper-evident record is the file ledger, see [audit-event-schema.md](audit-event-schema.md). |
 
 Legacy pentest tables (`vault_targets`, `vault_audit_findings`, `vault_metadata`) are dropped in format 2.
-`Grimoire.upsertTarget` and `Grimoire.recordAuditFinding` remain as harmless compatibility methods for existing callers.
+`Grimoire.upsertTarget` and `Grimoire.recordAuditFinding` remain for existing callers; they accept their arguments and
+store nothing.
 
 ### `vault_credentials`
 

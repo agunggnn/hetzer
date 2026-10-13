@@ -25,7 +25,7 @@ import { detectAgentAncestor, setCredential } from "../cli/vault/creds.mjs";
 import { scanText, redactAndVault } from "../cli/vault/sniffer.mjs";
 import { scanAddedLines } from "../cli/core/git-hook.mjs";
 import { isCanaryCredential, triggerCanaryAlert } from "../cli/vault/canary.mjs";
-import { computeAuditMac, Grimoire, VAULT_FORMAT_VERSION } from "../cli/vault/hetzer-vault.mjs";
+import { computeAuditMac, Grimoire, RETIRED_MASTER_KEY_ALIAS, resolveMasterKey, VAULT_FORMAT_VERSION } from "../cli/vault/hetzer-vault.mjs";
 import * as sdk from "../sdk/index.mjs";
 import { createHetzer, SDK_ERROR_CODES } from "../sdk/index.mjs";
 import { createToolCatalog } from "../cli/mcp/catalog.mjs";
@@ -1355,6 +1355,49 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
         checks.unstampedVaultRestamped = formatVault._meta("format_version") === String(VAULT_FORMAT_VERSION) && formatVault.matchesSecret("format-key", secretValue) === true;
         formatVault.close();
 
+        // Format 1 to 2: legacy tables dropped once, credential intact, the ledger record owed until the ledger takes it.
+        const migrateRoot = path.join(dir, "migrate");
+        const migrateDb = path.join(migrateRoot, "data", "hetzer-vault.db");
+        const migrateLog = path.join(migrateRoot, ".hetzer", "audit.log");
+        const openMigrate = () => new Grimoire({ dbPath: migrateDb, masterKey, auditLogFile: migrateLog });
+        let migrateVault = openMigrate();
+        migrateVault.create({ id: "migrate-key", projectId: "sample-app", keyName: "migrate-key", secret: secretValue });
+        migrateVault.recordAudit({ actor: "evidence", action: "vault.set-credential", credentialId: "migrate-key", outcome: "allowed" });
+        migrateVault.db.exec(`
+            CREATE TABLE vault_targets (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+            INSERT INTO vault_targets VALUES ('a', 'a'), ('b', 'b');
+            CREATE TABLE vault_audit_findings (id TEXT PRIMARY KEY);
+            UPDATE vault_meta SET value = '1' WHERE key = 'format_version';
+        `);
+        migrateVault.close();
+        fs.appendFileSync(migrateLog, "{partial-garbage\n");
+        const migrationRecords = () => fs.readFileSync(migrateLog, "utf8").split(/\r?\n/).filter(Boolean)
+            .map((line) => { try { return JSON.parse(line); } catch { return null; } })
+            .filter((entry) => entry?.eventType === "VAULT_MIGRATE_SCHEMA_V2");
+        migrateVault = openMigrate();
+        const legacyLeft = migrateVault.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('vault_targets', 'vault_audit_findings')").all();
+        checks.format1VaultMigrated = migrateVault.formatVersion === 2 && legacyLeft.length === 0 && migrateVault.matchesSecret("migrate-key", secretValue) === true;
+        const owedWhileRefused = migrateVault.status().migrationAuditPending === true && migrationRecords().length === 0;
+        migrateVault.close();
+        rotateAuditLedger({ logFile: migrateLog, macKey: masterKey, reason: "evidence: damaged tail" });
+        migrateVault = openMigrate();
+        const written = migrationRecords();
+        checks.migrationRecordOwedUntilWritten = owedWhileRefused
+            && migrateVault.status().migrationAuditPending === false
+            && written.length === 1
+            && typeof written[0].mac === "string"
+            && written[0].details?.metadata?.droppedTables?.vault_targets === 2;
+        migrateVault.close();
+
+        // The retired key alias is refused with an instruction instead of resolving to no key.
+        const aliasHome = path.join(dir, "alias-home");
+        fs.mkdirSync(aliasHome, { recursive: true });
+        const aliasCall = (baseEnv, envValues) => resolveMasterKey({ root: dir, envValues, baseEnv, homeDir: aliasHome });
+        checks.retiredKeyAliasRefused = codeOf(() => aliasCall({ [RETIRED_MASTER_KEY_ALIAS]: masterKey }, {})) === "ERR_MASTER_KEY_ALIAS_RETIRED"
+            && codeOf(() => aliasCall({}, { [RETIRED_MASTER_KEY_ALIAS]: masterKey })) === "ERR_MASTER_KEY_ALIAS_RETIRED"
+            && aliasCall({ [RETIRED_MASTER_KEY_ALIAS]: "another-key-0123456789abcdef0123456789abcd", HETZER_GRIMOIRE_KEY: masterKey }, {}) === masterKey
+            && aliasCall({}, {}) === "";
+
         const newerDb = path.join(dir, "newer.db");
         const raw = new DatabaseSync(newerDb);
         raw.exec(`
@@ -1385,6 +1428,7 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
     const required = [
         "sdkHasNoRevealMember", "packageExportsOnlySdk", "sdkResultsHaveNoValue", "idGrammarIsOne", "sdkExecutionChecksGrant",
         "freshVaultStamped", "unstampedVaultRestamped", "newerVaultRefusedUntouched",
+        "format1VaultMigrated", "migrationRecordOwedUntilWritten", "retiredKeyAliasRefused",
     ];
     // inProcessCallerCanStillResolve documents the R-05 limit; it is reported but does not gate the verdict.
     const pass = required.every((name) => checks[name] === true);
@@ -1392,14 +1436,14 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
     recordTest({
         id: "VERIFY-SEC-015",
         name: "SDK Contract and Vault Format Version (Gate G2)",
-        target: "sdk/index.mjs -> createHetzer(); cli/vault/hetzer-vault.mjs -> Grimoire format version check",
-        threat: "The public SDK hands a credential value to its caller, accepts ids the vault and secretRef grammar do not, or runs a raw injection the vault did not grant; an older build changes a vault written by a newer format",
-        input: "A synthetic vault with a credential whose value is also in its notes; credential ids with '.' and '_'; a raw-injection request against a credential whose grant denies it; vaults without a marker and with a newer marker, the latter with an old table layout",
-        method: "Walk the client and module member names; collect every SDK result and error for the value; run client.execution.run against the denied grant and check the child marker; open vaults and compare bytes, tables and columns before and after a refused open",
-        expected: `No resolve, reveal, decrypt or lease member; only the SDK entry in the package exports; no value in any result or error; one id grammar; the denied child never starts and the error carries no value; new and unstamped vaults end at format ${VAULT_FORMAT_VERSION} with credentials intact; a newer vault is refused with its bytes, tables and columns unchanged`,
+        target: "sdk/index.mjs -> createHetzer(); cli/vault/hetzer-vault.mjs -> Grimoire format version check and format 2 migration, resolveMasterKey()",
+        threat: "The public SDK hands a credential value to its caller, accepts ids the vault and secretRef grammar do not, or runs a raw injection the vault did not grant; an older build changes a vault written by a newer format; the format 2 migration loses credentials, runs unrecorded, or leaves an upgraded installation with no key in silence",
+        input: "A synthetic vault with a credential whose value is also in its notes; credential ids with '.' and '_'; a raw-injection request against a credential whose grant denies it; vaults without a marker and with a newer marker, the latter with an old table layout; a format 1 vault with rows in the legacy tables and a damaged ledger; an environment that only sets the retired key alias",
+        method: "Walk the client and module member names; collect every SDK result and error for the value; run client.execution.run against the denied grant and check the child marker; open vaults and compare bytes, tables and columns before and after a refused open; open the format 1 vault while the ledger refuses, rotate the ledger and open again; resolve the master key with only the alias set",
+        expected: `No resolve, reveal, decrypt or lease member; only the SDK entry in the package exports; no value in any result or error; one id grammar; the denied child never starts and the error carries no value; new and unstamped vaults end at format ${VAULT_FORMAT_VERSION} with credentials intact; a newer vault is refused with its bytes, tables and columns unchanged; a format 1 vault ends at format 2 with its credential intact, and its ledger record stays owed until the ledger takes it, then carries the dropped row counts and a MAC; the alias alone is refused with ERR_MASTER_KEY_ALIAS_RETIRED`,
         observed: Object.entries(checks).map(([name, value]) => `${name}: ${value}`).join(". ") + ".",
         pass,
-        boundary: "The SDK narrows what a well-behaved caller can ask for. Code in the same process or under the same user can still import the vault module, call resolve() or read the database and key store (R-05 stays open for in-process callers; untrusted agents belong out of process in the sandbox). The package exports map limits specifiers, not file access. Lease interfaces are not part of apiVersion 1. Builds from before the format marker do not check it, so an older build can still open and alter a newer vault.",
+        boundary: "The SDK narrows what a well-behaved caller can ask for. Code in the same process or under the same user can still import the vault module, call resolve() or read the database and key store (R-05 stays open for in-process callers; untrusted agents belong out of process in the sandbox). The package exports map limits specifiers, not file access. Lease interfaces are not part of apiVersion 1. Builds from before the format marker do not check it, so an older build can still open and alter a newer vault. The migration is one-way: rows in the dropped tables are counted in the audit record but not copied, and a build that checks the marker at format 1 refuses the migrated vault. The ledger record is written at least once (processes opening at the same moment can each write it) and only by a process that has the key. A legacy JSON vault is reported, not imported.",
     });
 }
 

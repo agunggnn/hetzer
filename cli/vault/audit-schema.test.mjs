@@ -131,7 +131,12 @@ test("every event type in the code is in the catalog and every catalog entry is 
         for (const match of text.matchAll(/eventType:\s*"([A-Z][A-Z0-9_]+)"/g)) emitted.add(match[1]);
         for (const match of text.matchAll(/\.recordAudit\(\{[^}]*?action:\s*"([^"]+)"/gs)) viaVault.set(vaultAuditEventType(match[1]), match[1]);
     }
-    for (const match of fs.readFileSync(path.join(repoRoot, "cli", "vault", "hetzer-vault.mjs"), "utf8").matchAll(/this\.recordAudit\(\{[^}]*?action:\s*"([^"]+)"/gs)) {
+    const vaultSource = fs.readFileSync(path.join(repoRoot, "cli", "vault", "hetzer-vault.mjs"), "utf8");
+    for (const match of vaultSource.matchAll(/this\.recordAudit\(\{[^}]*?action:\s*"([^"]+)"/gs)) {
+        viaVault.set(vaultAuditEventType(match[1]), match[1]);
+    }
+    // An event built first and recorded later (the migration record, which is owed until the ledger takes it).
+    for (const match of vaultSource.matchAll(/const event = \{[^}]*?action:\s*"([^"]+)"/gs)) {
         viaVault.set(vaultAuditEventType(match[1]), match[1]);
     }
     assert.ok(emitted.size >= 15, "the scan must find the literal event types");

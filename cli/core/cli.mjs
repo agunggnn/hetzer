@@ -225,6 +225,9 @@ function handleDeprecatedCommand(command) {
 
 export function initializeProject(root) {
     const resolvedRoot = path.resolve(root);
+    // Refuses when only the retired key alias is configured: generating a key below would leave the existing vault undecryptable.
+    const priorEnvFile = path.join(resolvedRoot, ".env");
+    resolveMasterKey({ root: resolvedRoot, envValues: fs.existsSync(priorEnvFile) ? parseEnv(fs.readFileSync(priorEnvFile, "utf8")) : {} });
     fs.mkdirSync(resolvedRoot, { recursive: true, mode: 0o700 });
     try { fs.chmodSync(resolvedRoot, 0o700); } catch { /* Windows */ }
     copyIfMissing(path.join(templatesDir, ".env.example"), path.join(resolvedRoot, ".env.example"));
