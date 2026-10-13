@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { promptSecret, setCredential } from "../cli/vault/creds.mjs";
 import { parseEnv } from "../cli/core/env.mjs";
-import { redactExactValues, runNpmWithAuth } from "../cli/core/npm-auth.mjs";
+import { redactExactValues, runNpmWithAuth } from "./npm-auth.mjs";
 import { resolveSecretEnvironment, strictBaseEnvironment } from "../cli/vault/secret-env.mjs";
 import { assertTrackedTreeClean } from "./package-stage.mjs";
 

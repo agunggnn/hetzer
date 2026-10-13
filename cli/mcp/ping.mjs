@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parseEnv } from "../core/env.mjs";
-import { loadModuleRegistry } from "../modules/registry.mjs";
+import { loadModuleRegistry } from "./service-loader.mjs";
 
 function environmentValue(fileEnv, name, fallback = "") {
     return process.env[name] || fileEnv[name] || fallback;
@@ -26,7 +26,7 @@ export async function pingMcpServer({ url, timeoutMs = 5000, fetchFn = globalThi
         params: {
             protocolVersion: "2025-11-25",
             capabilities: {},
-            clientInfo: { name: "hetzer-cli", version: "0.5.12" },
+            clientInfo: { name: "hetzer-cli", version: "0.6.0" },
         },
     };
 

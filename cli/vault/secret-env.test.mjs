@@ -12,8 +12,8 @@ test("secret environment resolves explicit references without exposing unrelated
     fs.mkdirSync(path.join(root, "data"));
     const masterKey = "test-secret-environment-master-key-long-enough";
     const vault = new Grimoire({ dbPath: path.join(root, "data", "hetzer-vault.db"), masterKey });
-    vault.create({ id: "worker-token", projectId: "worker", keyName: "token", secret: "resolved-value" });
-    vault.create({ id: "unrelated-token", projectId: "other", keyName: "token", secret: "must-not-leak" });
+    vault.create({ id: "worker-token", projectId: "worker", keyName: "token", secret: "resolved-value", allowedActions: ["process.start"] });
+    vault.create({ id: "unrelated-token", projectId: "other", keyName: "token", secret: "must-not-leak", allowedActions: ["process.start"] });
     vault.close();
     const envFile = path.join(root, ".env");
     fs.writeFileSync(envFile, "WORKER_TOKEN=secretRef:worker-token\nPLAIN_SETTING=visible\n");

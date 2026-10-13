@@ -184,7 +184,7 @@ test("executeProcess with policy enforces declarative boundaries end-to-end", as
     const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
     fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${masterKey}\nNPM_TOKEN=secretRef:npm-token\n`);
 
-    setCredential({ root: tempDir, envFile, id: "npm-token", secret: "super-secret-npm-token" });
+    setCredential({ root: tempDir, envFile, id: "npm-token", secret: "super-secret-npm-token", rawInjection: "allow" });
 
     const safeScript = path.join(tempDir, "safe-work.js");
     fs.writeFileSync(safeScript, `process.stdout.write("Safe task completed successfully\\n");`);

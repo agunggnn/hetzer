@@ -4,10 +4,11 @@ import path from "node:path";
 
 import { assertInteractiveHumanSession, promptSecret, setCredential } from "./creds.mjs";
 import { recordAuditEvent } from "./audit.mjs";
+import { isCredentialId } from "./hetzer-vault.mjs";
 
 const REQUEST_TTL_MS = 15 * 60 * 1000;
 const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const CREDENTIAL_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
+const MAX_CREDENTIAL_ID_LENGTH = 128;
 
 function requestDirectory(root) {
     return path.join(root, "data", "credential-requests");
@@ -21,8 +22,8 @@ function requestFile(root, requestId) {
 }
 
 function validateCredentialId(id) {
-    if (!CREDENTIAL_ID_PATTERN.test(String(id || ""))) {
-        throw new Error("Credential ID must contain only letters, numbers, '.', '_' or '-'.");
+    if (!isCredentialId(id) || id.length > MAX_CREDENTIAL_ID_LENGTH) {
+        throw new Error("Credential ID must be lowercase kebab-case (letters, numbers, hyphens).");
     }
     return id;
 }
@@ -48,7 +49,7 @@ function readRequest({ root, requestId }) {
     } catch {
         throw new Error(`Credential request '${requestId}' is unreadable.`);
     }
-    if (request?.version !== 1 || request.requestId !== requestId || !CREDENTIAL_ID_PATTERN.test(request.credentialId)) {
+    if (request?.version !== 1 || request.requestId !== requestId || !isCredentialId(request.credentialId) || request.credentialId.length > MAX_CREDENTIAL_ID_LENGTH) {
         throw new Error(`Credential request '${requestId}' is invalid.`);
     }
     return { file, request };
@@ -59,7 +60,17 @@ function effectiveStatus(request, now) {
     return request.status;
 }
 
-export function createCredentialRequest({ root, id, ttlMs = REQUEST_TTL_MS, now = Date.now(), randomUUID = crypto.randomUUID } = {}) {
+export function createCredentialRequest({
+    root,
+    id,
+    ttlMs = REQUEST_TTL_MS,
+    now = Date.now(),
+    randomUUID = crypto.randomUUID,
+    allowedOrigins,
+    rawInjection,
+    bindHosts,
+    allowedActions,
+} = {}) {
     const credentialId = validateCredentialId(id);
     if (!Number.isInteger(ttlMs) || ttlMs < 1000 || ttlMs > 24 * 60 * 60 * 1000) {
         throw new Error("Credential request TTL must be between 1 second and 24 hours.");
@@ -73,6 +84,10 @@ export function createCredentialRequest({ root, id, ttlMs = REQUEST_TTL_MS, now 
         requestId,
         credentialId,
         status: "pending",
+        ...(allowedOrigins !== undefined ? { allowedOrigins } : {}),
+        ...(rawInjection !== undefined ? { rawInjection } : {}),
+        ...(bindHosts !== undefined ? { bindHosts } : {}),
+        ...(allowedActions !== undefined ? { allowedActions } : {}),
         createdAt: now,
         expiresAt: now + ttlMs,
     };
@@ -82,7 +97,7 @@ export function createCredentialRequest({ root, id, ttlMs = REQUEST_TTL_MS, now 
             eventType: "CRED_REQUEST",
             target: credentialId,
             result: "ALLOW",
-            details: { requestId, ttlMs },
+            details: { requestId, ttlMs, allowedOrigins, rawInjection },
             root,
         });
     } catch {
@@ -106,6 +121,10 @@ export async function approveCredentialRequest({
     ancestor,
     readSecret = promptSecret,
     now = Date.now(),
+    allowedOrigins,
+    rawInjection,
+    bindHosts,
+    allowedActions,
 } = {}) {
     assertInteractiveHumanSession({
         input,
@@ -119,7 +138,16 @@ export async function approveCredentialRequest({
     }
     const secret = await readSecret(`Enter secret value for '${request.credentialId}': `, { input, output });
     if (!secret) throw new Error("Secret value is required.");
-    const result = setCredential({ root, envFile, id: request.credentialId, secret });
+    const result = setCredential({
+        root,
+        envFile,
+        id: request.credentialId,
+        secret,
+        allowedOrigins: allowedOrigins !== undefined ? allowedOrigins : request.allowedOrigins,
+        rawInjection: rawInjection !== undefined ? rawInjection : request.rawInjection,
+        bindHosts: bindHosts !== undefined ? bindHosts : request.bindHosts,
+        allowedActions: allowedActions !== undefined ? allowedActions : request.allowedActions,
+    });
     const approved = {
         ...request,
         status: "approved",

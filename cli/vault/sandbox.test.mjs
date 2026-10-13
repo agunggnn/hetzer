@@ -1,27 +1,31 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
+import { Grimoire } from "./hetzer-vault.mjs";
+import { loadBrokerPolicy } from "./http-broker.mjs";
 import {
+    buildContainerCliEnv,
     buildSandboxDockerArgs,
     checkDockerAvailable,
+    DEFAULT_SANDBOX_IMAGE,
     detectContainerEngine,
     executeSandboxedProcess,
+    resolveSandboxImage,
+    resolveSandboxMount,
+    selectContainerEnv,
 } from "./sandbox.mjs";
 
 test("buildSandboxDockerArgs constructs isolated docker execution parameters", () => {
     const root = path.resolve("/tmp/test-project");
-    const env = {
-        OPENAI_BASE_URL: "http://127.0.0.1:54321/v1",
-        LOCAL_SERVICE: "http://localhost:8080",
-        PROJECT_NAME: "demo",
-    };
 
     const args = buildSandboxDockerArgs({
-        root,
-        env,
+        mountDir: root,
+        envNames: ["OPENAI_BASE_URL", "PROJECT_NAME"],
         image: "node:22-alpine",
         network: "bridge",
         readOnly: false,
@@ -48,12 +52,10 @@ test("buildSandboxDockerArgs constructs isolated docker execution parameters", (
     assert.ok(mountIndex >= 0);
     assert.equal(args[mountIndex + 1], `${root}:/workspace:rw`);
 
-    // 4. Broker loopback address translation to host.docker.internal
-    assert.ok(args.includes("-e"));
+    // 4. Environment variables are forwarded by name only; values never appear in argv
     const envEntries = args.filter((_, i) => args[i - 1] === "-e");
-    assert.ok(envEntries.includes("OPENAI_BASE_URL=http://host.docker.internal:54321/v1"));
-    assert.ok(envEntries.includes("LOCAL_SERVICE=http://host.docker.internal:8080"));
-    assert.ok(envEntries.includes("PROJECT_NAME=demo"));
+    assert.deepEqual(envEntries, ["OPENAI_BASE_URL", "PROJECT_NAME"]);
+    assert.equal(args.some((arg) => arg.includes("=") && envEntries.includes(arg.split("=")[0])), false);
 
     // 5. Normalization of Windows node.exe to node
     const imageIndex = args.indexOf("node:22-alpine");
@@ -61,6 +63,155 @@ test("buildSandboxDockerArgs constructs isolated docker execution parameters", (
     assert.equal(args[imageIndex + 1], "node");
     assert.equal(args[imageIndex + 2], "index.js");
 });
+
+test("buildSandboxDockerArgs refuses environment values and invalid variable names", () => {
+    assert.throws(
+        () => buildSandboxDockerArgs({ mountDir: "/tmp/p", env: { API_KEY: "synthetic-value" }, command: "node" }),
+        /no longer accepts environment values/i,
+    );
+    assert.throws(
+        () => buildSandboxDockerArgs({ mountDir: "/tmp/p", envNames: ["BAD NAME"], command: "node" }),
+        /Invalid sandbox environment variable name/i,
+    );
+    assert.throws(
+        () => buildSandboxDockerArgs({ mountDir: "/tmp/p", envNames: ["A=B"], command: "node" }),
+        /Invalid sandbox environment variable name/i,
+    );
+});
+
+test("selectContainerEnv forwards only injected variables and a terminal allowlist", () => {
+    const hostEnv = {
+        PATH: "C:/Windows/System32",
+        USERPROFILE: "C:/Users/someone",
+        HETZER_GRIMOIRE_KEY: "synthetic-master-key",
+        HETZER_ROOT: "C:/instance",
+        SOME_OTHER_HOST_TOKEN: "host-only-value",
+        TERM: "xterm",
+        LANG: "en_US.UTF-8",
+        LC_TIME: "C",
+        // Injected by Hetzer:
+        API_KEY: "synthetic-secret-with-localhost-in-value",
+        UP_URL: "http://127.0.0.1:41234/v1",
+        HETZER_BROKER_URL: "http://localhost:41234/v1",
+    };
+    const { values, names } = selectContainerEnv({
+        env: hostEnv,
+        injectedNames: ["API_KEY", "UP_URL", "HETZER_BROKER_URL", "HETZER_GRIMOIRE_KEY"],
+        brokerUrlNames: ["UP_URL", "HETZER_BROKER_URL"],
+    });
+
+    assert.deepEqual(new Set(names), new Set(["API_KEY", "UP_URL", "HETZER_BROKER_URL", "TERM", "LANG", "LC_TIME"]));
+    for (const forbidden of ["PATH", "USERPROFILE", "HETZER_GRIMOIRE_KEY", "HETZER_ROOT", "SOME_OTHER_HOST_TOKEN"]) {
+        assert.equal(Object.hasOwn(values, forbidden), false, `${forbidden} must not reach the container`);
+    }
+    // Loopback is rewritten for broker URL variables only; a credential value is never altered.
+    assert.equal(values.UP_URL, "http://host.docker.internal:41234/v1");
+    assert.equal(values.HETZER_BROKER_URL, "http://host.docker.internal:41234/v1");
+    assert.equal(values.API_KEY, "synthetic-secret-with-localhost-in-value");
+});
+
+test("selectContainerEnv rejects invalid names and NUL bytes", () => {
+    assert.throws(() => selectContainerEnv({ env: { "BAD NAME": "x" }, injectedNames: ["BAD NAME"] }), /invalid environment variable name/i);
+    assert.throws(() => selectContainerEnv({ env: { API_KEY: "a\0b" }, injectedNames: ["API_KEY"] }), /NUL byte/i);
+});
+
+test("buildContainerCliEnv keeps the engine CLI working without the master key or unrelated host variables", () => {
+    const baseEnv = {
+        PATH: "/usr/bin",
+        HOME: "/home/someone",
+        DOCKER_HOST: "unix:///var/run/docker.sock",
+        HETZER_GRIMOIRE_KEY: "synthetic-master-key",
+        SOME_OTHER_HOST_TOKEN: "host-only-value",
+        TERM: "xterm",
+    };
+    const cliEnv = buildContainerCliEnv({ baseEnv, containerValues: { API_KEY: "synthetic-secret", TERM: "xterm" } });
+    assert.equal(cliEnv.PATH, "/usr/bin");
+    assert.equal(cliEnv.DOCKER_HOST, "unix:///var/run/docker.sock");
+    assert.equal(cliEnv.API_KEY, "synthetic-secret");
+    assert.equal(Object.hasOwn(cliEnv, "HETZER_GRIMOIRE_KEY"), false);
+    assert.equal(Object.hasOwn(cliEnv, "SOME_OTHER_HOST_TOKEN"), false);
+
+    assert.throws(
+        () => buildContainerCliEnv({ baseEnv, containerValues: { path: "/malicious" } }),
+        (error) => error.code === "ERR_SANDBOX_ENV_COLLISION",
+    );
+});
+
+function fakeEngineChild() {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.pid = 0;
+    setImmediate(() => {
+        child.stdout.end();
+        child.stderr.end();
+        child.emit("close", 0, null);
+    });
+    return child;
+}
+
+for (const strict of [true, false]) {
+    test(`executeSandboxedProcess keeps secrets and the master key off the engine command line (strict=${strict})`, async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-sandbox-env-"));
+        const project = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-sandbox-env-project-"));
+        const masterKey = "synthetic-master-key-0123456789abcdef0123456789";
+        const secret = "SYNTH-sandbox-secret-value-0123456789";
+        const hostToken = "host-only-token-value-0123456789";
+        try {
+            fs.mkdirSync(path.join(root, "data"), { recursive: true });
+            const dbPath = path.join(root, "data", "hetzer-vault.db");
+            const vault = new Grimoire({ dbPath, masterKey });
+            vault.create({ id: "raw-cred", projectId: "proj", secret, allowedActions: ["process.start"], rawInjection: "allow" });
+            vault.close();
+            fs.writeFileSync(path.join(root, ".env"), "API_KEY=secretRef:raw-cred\n");
+
+            let captured;
+            const result = await executeSandboxedProcess({
+                root,
+                envFile: path.join(root, ".env"),
+                vaultPath: dbPath,
+                allowNames: ["raw-cred"],
+                allowRawUnmediated: ["raw-cred"],
+                strict,
+                sandbox: true,
+                sandboxMountDir: project,
+                sandboxImage: "alpine:3.20",
+                command: "/bin/true",
+                commandArgs: [],
+            }, {
+                baseEnv: { PATH: "/usr/bin", USERPROFILE: "/home/x", HETZER_GRIMOIRE_KEY: masterKey, SOME_OTHER_HOST_TOKEN: hostToken, TERM: "xterm" },
+                execSyncFn: () => ({ status: 0, stdout: "ok" }),
+                spawnFn: (engine, args, options) => {
+                    captured = { engine, args, options };
+                    return fakeEngineChild();
+                },
+                outStream: new PassThrough(),
+                errStream: new PassThrough(),
+            });
+
+            assert.equal(result.status, 0);
+            const argvText = captured.args.join("\n");
+            for (const needle of [secret, masterKey, hostToken]) {
+                assert.equal(argvText.includes(needle), false, "engine argv must not contain secret material");
+            }
+            assert.ok(captured.args.includes("API_KEY"), "the credential variable is forwarded by name");
+            const forwarded = captured.args.filter((_, i) => captured.args[i - 1] === "-e");
+            assert.equal(forwarded.includes("PATH"), false);
+            assert.equal(forwarded.includes("USERPROFILE"), false);
+            assert.equal(forwarded.includes("HETZER_GRIMOIRE_KEY"), false);
+            assert.equal(forwarded.includes("SOME_OTHER_HOST_TOKEN"), false);
+            assert.equal(forwarded.includes("HETZER_ROOT"), false);
+
+            // The value reaches the engine through its own environment, which does not hold the master key.
+            assert.equal(captured.options.env.API_KEY, secret);
+            assert.equal(Object.hasOwn(captured.options.env, "HETZER_GRIMOIRE_KEY"), false);
+            assert.equal(Object.hasOwn(captured.options.env, "SOME_OTHER_HOST_TOKEN"), false);
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+            fs.rmSync(project, { recursive: true, force: true });
+        }
+    });
+}
 
 test("checkDockerAvailable inspects Docker CLI and daemon connectivity", () => {
     // 1. Successful check
@@ -115,7 +266,7 @@ test("detectContainerEngine respects HETZER_CONTAINER_ENGINE override", () => {
 test("buildSandboxDockerArgs adds :Z mount and host.containers.internal for Podman on Linux", () => {
     const root = path.resolve("/tmp/test-project");
     const args = buildSandboxDockerArgs({
-        root,
+        mountDir: root,
         engine: "podman",
         platform: "linux",
         command: "node",
@@ -163,7 +314,7 @@ test("buildSandboxDockerArgs rejects CLI option injection and malformed image na
 
     for (const badImage of dangerousImages) {
         assert.throws(
-            () => buildSandboxDockerArgs({ image: badImage, command: "node" }),
+            () => buildSandboxDockerArgs({ mountDir: "/tmp/p", image: badImage, command: "node" }),
             /Invalid sandbox image/i,
             `Expected '${badImage}' to be rejected`
         );
@@ -180,7 +331,322 @@ test("buildSandboxDockerArgs rejects CLI option injection and malformed image na
     ];
 
     for (const validImage of validImages) {
-        const args = buildSandboxDockerArgs({ image: validImage, command: "node" });
+        const args = buildSandboxDockerArgs({ mountDir: "/tmp/p", image: validImage, command: "node" });
         assert.ok(args.includes(validImage));
+    }
+});
+
+function makeTree(prefix, spec) {
+    const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+    for (const [relative, kind] of Object.entries(spec)) {
+        const target = path.join(base, ...relative.split("/"));
+        if (kind === "dir") {
+            fs.mkdirSync(target, { recursive: true });
+        } else {
+            fs.mkdirSync(path.dirname(target), { recursive: true });
+            fs.writeFileSync(target, "synthetic fixture\n");
+        }
+    }
+    return base;
+}
+
+test("resolveSandboxMount requires an existing directory", () => {
+    assert.throws(() => resolveSandboxMount({}), (e) => e.code === "ERR_SANDBOX_MOUNT_REQUIRED");
+    assert.throws(
+        () => resolveSandboxMount({ mountDir: path.join(os.tmpdir(), "hetzer-does-not-exist-xyz") }),
+        (e) => e.code === "ERR_SANDBOX_MOUNT_INVALID",
+    );
+    const file = makeTree("hetzer-mount-file-", { "a.txt": "file" });
+    try {
+        assert.throws(
+            () => resolveSandboxMount({ mountDir: path.join(file, "a.txt") }),
+            (e) => e.code === "ERR_SANDBOX_MOUNT_INVALID",
+        );
+    } finally {
+        fs.rmSync(file, { recursive: true, force: true });
+    }
+});
+
+test("resolveSandboxMount refuses the filesystem root, the home directory, the Hetzer home and their ancestors", () => {
+    const home = makeTree("hetzer-mount-home-", { ".hetzer/grimoire.key": "file", "code/project/readme.md": "file" });
+    try {
+        const unsafe = [
+            path.parse(home).root,
+            path.dirname(home), // an ancestor of the home directory
+            home,
+            path.join(home, ".hetzer"),
+            path.join(home, ".hetzer", "nested-inside-hetzer-home"),
+        ];
+        fs.mkdirSync(path.join(home, ".hetzer", "nested-inside-hetzer-home"), { recursive: true });
+        for (const mountDir of unsafe) {
+            assert.throws(
+                () => resolveSandboxMount({ mountDir, root: mountDir, homeDir: home, hetzerHome: path.join(home, ".hetzer") }),
+                (e) => e.code === "ERR_SANDBOX_MOUNT_UNSAFE",
+                `expected ${mountDir} to be refused`,
+            );
+        }
+        // A project below the home directory is fine.
+        const plan = resolveSandboxMount({ mountDir: path.join(home, "code", "project"), root: path.join(home, ".hetzer"), homeDir: home, hetzerHome: path.join(home, ".hetzer") });
+        assert.equal(plan.mountDir, path.join(home, "code", "project"));
+        assert.deepEqual(plan.masks, { files: [], dirs: [] });
+    } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("resolveSandboxMount hides Hetzer-owned paths that sit inside the mount, and only those that exist", () => {
+    const home = makeTree("hetzer-mount-mask-home-", {});
+    const project = makeTree("hetzer-mount-mask-project-", {
+        "src/index.js": "file",
+        "README.md": "file",
+        ".env": "file",
+        "data/hetzer-vault.db": "file",
+        "data/hetzer-vault.db-wal": "file",
+        "data/hetzer-incidents.log": "file",
+        "data/credential-requests/req.json": "file",
+        ".hetzer/audit.log": "file",
+        ".hetzer/audit.log.head": "file",
+    });
+    try {
+        const plan = resolveSandboxMount({ mountDir: project, root: project, envFile: path.join(project, ".env"), homeDir: home, hetzerHome: path.join(home, ".hetzer") });
+        const files = plan.masks.files.map((item) => item.containerPath).sort();
+        const dirs = plan.masks.dirs.map((item) => item.containerPath).sort();
+        assert.deepEqual(files, [
+            "/workspace/.env",
+            "/workspace/.hetzer/audit.log",
+            "/workspace/.hetzer/audit.log.head",
+            "/workspace/data/hetzer-incidents.log",
+            "/workspace/data/hetzer-vault.db",
+            "/workspace/data/hetzer-vault.db-wal",
+        ]);
+        assert.deepEqual(dirs, ["/workspace/.hetzer", "/workspace/data/credential-requests"]);
+        // Files that are not there are not masked (a bind target would otherwise be created in the project).
+        assert.equal(files.some((item) => item.endsWith("-shm") || item.endsWith("vault.json")), false);
+        // Project files are not masked.
+        assert.equal(files.some((item) => item.includes("src/") || item.endsWith("README.md")), false);
+    } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+        fs.rmSync(project, { recursive: true, force: true });
+    }
+});
+
+test("resolveSandboxMount masks a vault path override and an env file kept inside the project", () => {
+    const home = makeTree("hetzer-mount-override-home-", {});
+    const project = makeTree("hetzer-mount-override-project-", { "secrets/my.db": "file", "config/instance.env": "file", "app.js": "file" });
+    const instance = makeTree("hetzer-mount-override-instance-", { "data/hetzer-vault.db": "file", ".env": "file" });
+    try {
+        const plan = resolveSandboxMount({
+            mountDir: project,
+            root: instance,
+            envFile: path.join(project, "config", "instance.env"),
+            vaultPath: path.join(project, "secrets", "my.db"),
+            homeDir: home,
+        });
+        assert.deepEqual(plan.masks.files.map((item) => item.containerPath).sort(), ["/workspace/config/instance.env", "/workspace/secrets/my.db"]);
+        assert.deepEqual(plan.masks.dirs, []);
+    } finally {
+        for (const dir of [home, project, instance]) fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test("resolveSandboxMount fails closed when a sensitive path cannot be hidden", () => {
+    const home = makeTree("hetzer-mount-wrongtype-home-", {});
+    // A directory where the vault database should be a file.
+    const project = makeTree("hetzer-mount-wrongtype-project-", { "data/hetzer-vault.db/inner.txt": "file" });
+    try {
+        assert.throws(
+            () => resolveSandboxMount({ mountDir: project, root: project, homeDir: home }),
+            (e) => e.code === "ERR_SANDBOX_SENSITIVE_PATH_IN_MOUNT",
+        );
+    } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+        fs.rmSync(project, { recursive: true, force: true });
+    }
+});
+
+test("buildSandboxDockerArgs applies masks after the main mount and needs an explicit mount directory", () => {
+    const mountDir = path.resolve("/tmp/test-project");
+    const args = buildSandboxDockerArgs({
+        mountDir,
+        maskFile: "/tmp/mask/empty",
+        masks: {
+            files: [{ hostPath: "/tmp/test-project/.env", containerPath: "/workspace/.env" }],
+            dirs: [{ hostPath: "/tmp/test-project/.hetzer", containerPath: "/workspace/.hetzer" }],
+        },
+        command: "node",
+    });
+    const mounts = args.filter((_, i) => args[i - 1] === "-v");
+    assert.equal(mounts[0], `${mountDir}:/workspace:rw`);
+    assert.ok(mounts.includes("/tmp/mask/empty:/workspace/.env:ro"));
+    assert.equal(mounts.length, 2);
+    const tmpfsIndex = args.indexOf("--tmpfs");
+    assert.ok(tmpfsIndex > args.indexOf("-v"));
+    assert.equal(args[tmpfsIndex + 1], "/workspace/.hetzer:ro,noexec,nosuid,size=4k");
+
+    assert.throws(() => buildSandboxDockerArgs({ command: "node" }), (e) => e.code === "ERR_SANDBOX_MOUNT_REQUIRED");
+    assert.throws(
+        () => buildSandboxDockerArgs({ mountDir, masks: { files: [{ hostPath: "a", containerPath: "/workspace/a" }], dirs: [] }, command: "node" }),
+        (e) => e.code === "ERR_SANDBOX_MASK_INVALID",
+    );
+});
+
+test("executeSandboxedProcess validates the mount before resolving credentials or starting the engine", async () => {
+    let spawned = false;
+    await assert.rejects(
+        () => executeSandboxedProcess({ root: process.cwd(), command: "node", commandArgs: [] }, {
+            execSyncFn: () => ({ status: 0, stdout: "ok" }),
+            spawnFn: () => { spawned = true; return fakeEngineChild(); },
+        }),
+        (e) => e.code === "ERR_SANDBOX_MOUNT_REQUIRED",
+    );
+    assert.equal(spawned, false);
+});
+
+test("resolveSandboxImage defaults to a digest-pinned image and honors option and environment overrides", () => {
+    assert.match(DEFAULT_SANDBOX_IMAGE, /^node:22-alpine@sha256:[0-9a-f]{64}$/);
+    assert.equal(resolveSandboxImage({}, {}), DEFAULT_SANDBOX_IMAGE);
+    assert.equal(resolveSandboxImage({}, { HETZER_SANDBOX_IMAGE: "alpine:3.20" }), "alpine:3.20");
+    assert.equal(resolveSandboxImage({ sandbox: "ubuntu:24.04" }, { HETZER_SANDBOX_IMAGE: "alpine:3.20" }), "ubuntu:24.04");
+    assert.equal(resolveSandboxImage({ sandboxImage: "debian:12", sandbox: true }, {}), "debian:12");
+    // The pinned default must remain a valid image reference for the argument builder.
+    const args = buildSandboxDockerArgs({ mountDir: "/tmp/p", command: "node" });
+    assert.ok(args.includes(DEFAULT_SANDBOX_IMAGE));
+});
+
+test("executeSandboxedProcess states mount, hidden paths and network before starting", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-sandbox-notice-"));
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-sandbox-notice-project-"));
+    try {
+        fs.mkdirSync(path.join(root, "data"), { recursive: true });
+        fs.writeFileSync(path.join(root, ".env"), "PLAIN=value\n");
+        let captured = "";
+        const errStream = new PassThrough();
+        errStream.on("data", (chunk) => { captured += chunk; });
+        await executeSandboxedProcess({
+            root,
+            envFile: path.join(root, ".env"),
+            allowNames: [],
+            strict: true,
+            sandbox: true,
+            sandboxMountDir: project,
+            command: "/bin/true",
+            commandArgs: [],
+        }, {
+            baseEnv: { PATH: "/usr/bin", HETZER_SANDBOX_IMAGE: "alpine:3.20" },
+            execSyncFn: () => ({ status: 0, stdout: "ok" }),
+            spawnFn: () => fakeEngineChild(),
+            outStream: new PassThrough(),
+            errStream,
+        });
+        assert.match(captured, /\[hetzer\] sandbox: mount .* -> \/workspace \(read-write\)/);
+        assert.match(captured, /hidden Hetzer paths: 0/);
+        assert.match(captured, /network: engine default \(outbound access is allowed\)/);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(project, { recursive: true, force: true });
+    }
+});
+
+test("executeSandboxedProcess refuses --sandbox-network none together with a brokered credential", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-sandbox-nonet-"));
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-sandbox-nonet-project-"));
+    const masterKey = "synthetic-master-key-0123456789abcdef0123456789";
+    try {
+        fs.mkdirSync(path.join(root, "data"), { recursive: true });
+        fs.mkdirSync(path.join(root, ".hetzer", "brokers"), { recursive: true });
+        const dbPath = path.join(root, "data", "hetzer-vault.db");
+        fs.writeFileSync(path.join(root, ".env"), "API_KEY=secretRef:brokered-cred\n");
+        const policyFile = path.join(root, ".hetzer", "brokers", "brokered-cred.json");
+        fs.writeFileSync(policyFile, JSON.stringify({
+            version: 1,
+            target: "https://api.corp.test",
+            credential: "secretRef:brokered-cred",
+            allowedPathPrefixes: ["/v1"],
+            basePath: "/v1",
+            baseUrlEnv: "UP_URL",
+            tokenEnv: "UP_TOKEN",
+        }));
+        const vault = new Grimoire({ dbPath, masterKey });
+        vault.create({
+            id: "brokered-cred",
+            projectId: "proj",
+            secret: "synthetic-brokered-secret",
+            allowedActions: ["broker.proxy"],
+            allowedOrigins: ["https://api.corp.test"],
+        });
+        const policy = loadBrokerPolicy(policyFile);
+        vault.approveBrokerPolicy({ credentialId: "brokered-cred", policyHash: policy.policyHash, targetOrigin: policy.targetOrigin });
+        vault.close();
+
+        let spawned = false;
+        await assert.rejects(
+            () => executeSandboxedProcess({
+                root,
+                envFile: path.join(root, ".env"),
+                vaultPath: dbPath,
+                allowNames: ["brokered-cred"],
+                strict: true,
+                sandbox: true,
+                sandboxMountDir: project,
+                sandboxNetwork: "none",
+                command: "/bin/true",
+                commandArgs: [],
+            }, {
+                baseEnv: { PATH: "/usr/bin", HETZER_GRIMOIRE_KEY: masterKey },
+                execSyncFn: () => ({ status: 0, stdout: "ok" }),
+                spawnFn: () => { spawned = true; return fakeEngineChild(); },
+                outStream: new PassThrough(),
+                errStream: new PassThrough(),
+            }),
+            (error) => error.code === "ERR_SANDBOX_NETWORK_BROKER_UNREACHABLE",
+        );
+        assert.equal(spawned, false);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(project, { recursive: true, force: true });
+    }
+});
+
+test("executeSandboxedProcess under --strict does not start when the audit event cannot be recorded", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-sandbox-audit-"));
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-sandbox-audit-project-"));
+    const blocker = path.join(root, "blocker");
+    fs.writeFileSync(blocker, "file");
+    fs.writeFileSync(path.join(root, ".env"), "PLAIN=value\n");
+    const previous = process.env.HETZER_AUDIT_LOG_PATH;
+    process.env.HETZER_AUDIT_LOG_PATH = path.join(blocker, "sub", "audit.log");
+    const run = (strict) => {
+        let spawned = false;
+        const promise = executeSandboxedProcess({
+            root,
+            envFile: path.join(root, ".env"),
+            allowNames: [],
+            strict,
+            sandbox: true,
+            sandboxMountDir: project,
+            command: "/bin/true",
+            commandArgs: [],
+        }, {
+            baseEnv: { PATH: "/usr/bin" },
+            execSyncFn: () => ({ status: 0, stdout: "ok" }),
+            spawnFn: () => { spawned = true; return fakeEngineChild(); },
+            outStream: new PassThrough(),
+            errStream: new PassThrough(),
+        });
+        return { promise, spawned: () => spawned };
+    };
+    try {
+        const strictRun = run(true);
+        await assert.rejects(strictRun.promise, (error) => error.code === "ERR_AUDIT_WRITE_FAILED");
+        assert.equal(strictRun.spawned(), false);
+
+        const softRun = run(false);
+        await softRun.promise;
+        assert.equal(softRun.spawned(), true);
+    } finally {
+        if (previous === undefined) delete process.env.HETZER_AUDIT_LOG_PATH;
+        else process.env.HETZER_AUDIT_LOG_PATH = previous;
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(project, { recursive: true, force: true });
     }
 });

@@ -1,4 +1,0 @@
-services:
-  sample:
-    image: alpine:latest
-    profiles: [sample-mod]

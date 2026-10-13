@@ -35,6 +35,22 @@ export function findGitDir(startDir = process.cwd()) {
     return null;
 }
 
+const LOCKFILE_NAMES = new Set(["package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml"]);
+// Subresource-integrity digests (for example sha512-<base64>) that package managers write after an
+// "integrity" key. They are public content hashes, not credentials, but the entropy heuristic flags them.
+const LOCKFILE_INTEGRITY_VALUE = /((?:"integrity"|integrity)\s*[:=]?\s*["']?)sha(?:1|256|384|512)-[A-Za-z0-9+/]+={0,2}/gi;
+
+/**
+ * Remove integrity digests from a line of a known lockfile before it is scanned.
+ * Only the digest value is removed, so the rest of the line (such as a `resolved` URL) is still
+ * scanned. Files that are not lockfiles are returned unchanged.
+ */
+export function stripLockfileIntegrity(file, text) {
+    const name = String(file || "").replace(/\\/g, "/").split("/").pop();
+    if (!LOCKFILE_NAMES.has(name)) return text;
+    return String(text).replace(LOCKFILE_INTEGRITY_VALUE, "$1");
+}
+
 export function scanAddedLines(addedLines) {
     const violations = [];
     const byFile = new Map();
@@ -48,7 +64,7 @@ export function scanAddedLines(addedLines) {
         const offsets = [];
         for (const line of lines) {
             offsets.push({ offset: text.length, line: line.line });
-            text += `${line.text}\n`;
+            text += `${stripLockfileIntegrity(file, line.text)}\n`;
         }
         const scan = scanText(text);
         for (const match of scan.matches) {

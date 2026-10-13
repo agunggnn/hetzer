@@ -10,7 +10,6 @@ import {
     isGlobalCliInstalled,
     isHetzerWorkspace,
     main,
-    printModuleHelp,
     resolveProjectRoot,
     suggestCommand,
 } from "./cli.mjs";
@@ -20,59 +19,16 @@ import { Grimoire } from "../vault/hetzer-vault.mjs";
 test("initializeProject creates a secured, repeatable project contract", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-core-init-"));
     const initResult = initializeProject(root);
-    assert.equal(initResult.initialPassword, undefined);
-    assert.equal(initResult.initialPasswordRef, "secretRef:nine-router-initial-password");
+    assert.equal(initResult.root, path.resolve(root));
     const first = fs.readFileSync(path.join(root, ".env"), "utf8");
     const values = parseEnv(first);
-    assert.match(values.NINE_ROUTER_JWT_SECRET, /^secretRef:/);
     assert.ok(values.HETZER_GRIMOIRE_KEY.length >= 32);
     assert.equal(fs.existsSync(path.join(root, "data", "hetzer-vault.db")), true);
-    assert.equal(fs.existsSync(path.join(root, "modules", "sample-mod", "module.json")), true);
+    assert.equal(fs.existsSync(path.join(root, ".mcp.json")), true);
 
     initializeProject(root);
     assert.equal(fs.readFileSync(path.join(root, ".env"), "utf8"), first);
     fs.rmSync(root, { recursive: true, force: true });
-});
-
-test("init output never includes the stored initial password", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-core-init-output-"));
-    let output = "";
-    const originalWrite = process.stdout.write;
-    process.stdout.write = (chunk) => {
-        output += String(chunk);
-        return true;
-    };
-    try {
-        await main(["init", root], { root });
-        const values = parseEnv(fs.readFileSync(path.join(root, ".env"), "utf8"));
-        const vault = new Grimoire({
-            dbPath: path.join(root, "data", "hetzer-vault.db"),
-            masterKey: values.HETZER_GRIMOIRE_KEY,
-        });
-        let initialPassword = null;
-        try {
-            const entry = vault.find("nine-router-initial-password");
-            initialPassword = vault.resolve("nine-router-initial-password", {
-                targetId: entry.projectId,
-                action: entry.allowedActions[0],
-            });
-        } finally {
-            vault.close();
-        }
-        assert.ok(initialPassword);
-        assert.equal(output.includes(initialPassword), false);
-        assert.match(output, /secretRef:nine-router-initial-password/);
-    } finally {
-        process.stdout.write = originalWrite;
-        fs.rmSync(root, { recursive: true, force: true });
-    }
-});
-
-test("Compose startup encodes dynamic route chunks before 9Router starts", () => {
-    const template = fs.readFileSync(path.resolve(import.meta.dirname, "..", "templates", "docker-compose.yml"), "utf8");
-    assert.match(template, /replaceAll\("%5B","%255B"\)/);
-    assert.match(template, /replaceAll\("%5D","%255D"\)/);
-    assert.ok(template.indexOf("Encoded dynamic route paths") < template.indexOf("exec node custom-server.js"));
 });
 
 test("defaultHetzerHome resolves ~/.hetzer or HETZER_HOME", () => {
@@ -98,87 +54,9 @@ test("isHetzerWorkspace and resolveProjectRoot identify local workspace vs globa
         assert.equal(customRoot, tempDir);
 
         // Fake hetzer workspace
-        fs.writeFileSync(path.join(tempDir, "docker-compose.yml"), "services:\n  nine-router:\n    image: test\n");
         fs.writeFileSync(path.join(tempDir, ".env"), "HETZER_PROJECT_NAME=test\n");
         assert.equal(isHetzerWorkspace(tempDir), true);
     } finally {
-        fs.rmSync(tempDir, { recursive: true, force: true });
-    }
-});
-
-test("printModuleHelp renders native module guide for 9router", () => {
-    let output = "";
-    const originalWrite = process.stdout.write;
-    process.stdout.write = (chunk) => {
-        output += chunk;
-        return true;
-    };
-    try {
-        printModuleHelp("9router", ".", { NINE_ROUTER_PORT: "20140" });
-        assert.match(output, /NATIVE MODULE GUIDE: 9Router/);
-        assert.match(output, /hetzer up 9router/);
-        assert.match(output, /nine-router-initial-password/);
-    } finally {
-        process.stdout.write = originalWrite;
-    }
-});
-
-test("install auto-scaffolds module directory from templates if missing in workspace", async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-install-test-"));
-    const originalStdout = process.stdout.write;
-    process.stdout.write = () => true;
-    try {
-        fs.writeFileSync(path.join(tempDir, "docker-compose.yml"), "services:\n");
-        fs.writeFileSync(path.join(tempDir, ".env"), "HETZER_ENABLED_MODULES=\nHETZER_DISABLED_MODULES=\n");
-        assert.equal(fs.existsSync(path.join(tempDir, "modules", "sample-mod", "module.json")), false);
-
-        await main(["install", "sample-mod"], { root: tempDir });
-
-        assert.equal(fs.existsSync(path.join(tempDir, "modules", "sample-mod", "module.json")), true);
-        const envContent = fs.readFileSync(path.join(tempDir, ".env"), "utf8");
-        assert.match(envContent, /HETZER_ENABLED_MODULES=.*sample-mod/);
-    } finally {
-        process.stdout.write = originalStdout;
-        fs.rmSync(tempDir, { recursive: true, force: true });
-    }
-});
-
-test("validate CLI command validates modules successfully", async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-val-cli-"));
-    let output = "";
-    const originalStdout = process.stdout.write;
-    process.stdout.write = (chunk) => {
-        output += chunk;
-        return true;
-    };
-    try {
-        const modDir = path.join(tempDir, "modules", "sample-mod");
-        fs.mkdirSync(modDir, { recursive: true });
-        fs.writeFileSync(path.join(modDir, "module.json"), JSON.stringify({
-            schemaVersion: 1,
-            id: "sample-mod",
-            label: "Sample Module",
-            version: "1",
-            profile: "sample-mod",
-            lifecycle: "compose",
-            surface: "headless",
-            requires: ["core"],
-            composeFiles: ["docker-compose.sample-mod.yml"],
-            services: [{ id: "sample", composeService: "sample", profile: "sample-mod" }],
-        }, null, 2));
-        fs.writeFileSync(path.join(modDir, "docker-compose.sample-mod.yml"), `services:
-  sample:
-    image: alpine:latest
-    profiles: [sample-mod]
-    ports:
-      - "127.0.0.1:8080:8080"
-`);
-        fs.writeFileSync(path.join(tempDir, ".env"), "HETZER_ENABLED_MODULES=\n");
-        await main(["validate", "sample-mod"], { root: tempDir });
-        assert.match(output, /MODULE VALIDATION: sample-mod/);
-        assert.match(output, /Status: Module 'sample-mod' VALID/);
-    } finally {
-        process.stdout.write = originalStdout;
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });
@@ -319,8 +197,8 @@ test("init wizard adapts prefix and hints when CLI is not in PATH", async () => 
         process.env.HETZER_TEST_GLOBAL_CLI = "false";
         await main(["init", tempDir], { root: tempDir });
         assert.match(output, /HETZER - INITIALIZATION SUCCESSFUL/);
-        assert.match(output, /npx hetzer up/);
-        assert.match(output, /npx hetzer creds reveal/);
+        assert.match(output, /npx hetzer exec/);
+        assert.match(output, /npx hetzer creds/);
     } finally {
         if (originalTestGlobal === undefined) delete process.env.HETZER_TEST_GLOBAL_CLI;
         else process.env.HETZER_TEST_GLOBAL_CLI = originalTestGlobal;
@@ -344,7 +222,7 @@ test("protect command includes CLI PATH notice when running via npx", async () =
         process.env.HETZER_INSTALL_HOME = path.join(tempDir, "home");
         await main(["protect"], { root: tempDir });
         assert.match(output, /CLI PATH NOTICE/);
-        assert.match(output, /npm install -g hetzer/);
+        assert.match(output, /npm install -g @agunggnn\/hetzer/);
     } finally {
         if (originalTestGlobal === undefined) delete process.env.HETZER_TEST_GLOBAL_CLI;
         else process.env.HETZER_TEST_GLOBAL_CLI = originalTestGlobal;
@@ -411,38 +289,47 @@ test("exec command runs through the in-process execution path", async () => {
     }
 });
 
-test("check-update command executes and reports update status", async () => {
-    let output = "";
-    const originalStdout = process.stdout.write;
-    process.stdout.write = (chunk) => {
-        output += chunk;
+test("check-update and upgrade command direct users to npm", async () => {
+    let stderr = "";
+    const originalStderr = process.stderr.write;
+    process.stderr.write = (chunk) => {
+        stderr += chunk;
         return true;
     };
+    const exitBefore = process.exitCode;
     try {
         await main(["check-update"]);
-        assert.match(output, /Checking for updates/);
+        assert.match(stderr, /Hetzer CLI upgrades are managed via npm/);
+        assert.equal(process.exitCode, 1);
     } finally {
-        process.stdout.write = originalStdout;
+        process.stderr.write = originalStderr;
+        process.exitCode = 0;
     }
 });
 
 test("orchestration commands emit deprecation notice pointing to Jagdpanzer", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-depr-test-"));
-    let stderrOutput = "";
-    const originalStderr = process.stderr.write;
-    const originalStdout = process.stdout.write;
-    process.stderr.write = (chunk) => {
-        stderrOutput += chunk;
-        return true;
-    };
-    process.stdout.write = () => true;
+    const deprCommands = ["up", "down", "status", "logs", "modules", "install", "remove", "module", "validate", "tui", "update"];
     try {
-        fs.writeFileSync(path.join(tempDir, ".env"), "HETZER_ENABLED_MODULES=\n");
-        await main(["modules"], { root: tempDir });
-        assert.match(stderrOutput, /\[!\] DEPRECATED: Multi-container stack orchestration in Hetzer \('hetzer modules'\) is deprecated\. Use Jagdpanzer/);
+        for (const cmd of deprCommands) {
+            let stderrOutput = "";
+            const originalStderr = process.stderr.write;
+            process.stderr.write = (chunk) => {
+                stderrOutput += chunk;
+                return true;
+            };
+            try {
+                await main([cmd], { root: tempDir });
+                assert.match(stderrOutput, /\[!\] DEPRECATED: Multi-container stack orchestration in Hetzer/);
+                assert.match(stderrOutput, /Use Jagdpanzer \(https:\/\/github\.com\/agunggnn\/jagdpanzer\) for full ops stacks/);
+                assert.equal(process.exitCode, 1);
+            } finally {
+                process.stderr.write = originalStderr;
+                process.exitCode = 0;
+            }
+        }
     } finally {
-        process.stderr.write = originalStderr;
-        process.stdout.write = originalStdout;
+        process.exitCode = 0;
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });
@@ -473,8 +360,40 @@ test("audit verify and tail commands inspect workspace audit ledger", async () =
         await main(["audit", "tail", "5"], { root: tempDir });
         assert.match(stdoutOutput, /TEST_CLI_EVENT/);
         assert.match(stdoutOutput, /unit-test/);
+
+        // Rotation is a preview without --yes, and archives the ledger with it.
+        const logFile = path.join(tempDir, ".hetzer", "audit.log");
+        const before = fs.readFileSync(logFile);
+        stdoutOutput = "";
+        const exitBefore = process.exitCode;
+        await main(["audit", "rotate"], { root: tempDir });
+        assert.match(stdoutOutput, /PREVIEW, NOTHING CHANGED/);
+        assert.ok(fs.readFileSync(logFile).equals(before));
+        process.exitCode = exitBefore;
+
+        // --yes needs a human session: not a pipe, not an agent environment, not an agent ancestor.
+        const person = { input: { isTTY: true }, env: {}, ancestor: { isAgent: false } };
+        for (const humanSession of [
+            { ...person, input: { isTTY: false } },
+            { ...person, env: { CURSOR_PROJECT_DIR: "fixture" } },
+            { ...person, ancestor: { isAgent: true, processName: "agent" } },
+        ]) {
+            await assert.rejects(main(["audit", "rotate", "--yes"], { root: tempDir, humanSession }), /Access Denied/);
+            assert.ok(fs.readFileSync(logFile).equals(before), "a refused rotation moves nothing");
+        }
+
+        stdoutOutput = "";
+        await main(["audit", "rotate", "--yes", "--reason", "cli test"], { root: tempDir, humanSession: person });
+        assert.match(stdoutOutput, /Archive\s+:/);
+        const archives = fs.readdirSync(path.join(tempDir, ".hetzer")).filter((name) => /^audit\.log\.\d{8}T\d{6}Z$/.test(name));
+        assert.equal(archives.length, 1);
+        assert.ok(fs.readFileSync(path.join(tempDir, ".hetzer", archives[0])).equals(before));
+        stdoutOutput = "";
+        await main(["audit", "verify"], { root: tempDir });
+        assert.match(stdoutOutput, /Total Events\s+:\s+1/);
     } finally {
         process.stdout.write = originalStdout;
+        process.exitCode = 0;
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });

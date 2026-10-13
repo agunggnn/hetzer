@@ -10,16 +10,20 @@ import { fileURLToPath } from "node:url";
 import {
     assertSafeUpstreamHost,
     canonicalizePath,
+    computeBrokerPolicyHash,
     decodePathToFixedPoint,
     executeBrokeredProcess,
     isContainerBridgeOrLoopback,
     isPrivateOrReservedIp,
+    loadBrokerPolicy,
+    openHttpCredentialBroker,
     parseBrokerArguments,
     safePinnedFetch,
     startHttpCredentialBroker,
     validateBrokerPolicy,
 } from "./http-broker.mjs";
 import { Grimoire } from "./hetzer-vault.mjs";
+import { readAuditEvents } from "./audit.mjs";
 
 function policy(overrides = {}) {
     return {
@@ -226,8 +230,17 @@ test("brokered child receives only the capability while upstream receives the va
             projectId: "service",
             keyName: "api-key",
             authType: "api-key",
-            allowedActions: ["process.start"],
+            allowedActions: ["process.start", "broker.proxy"],
+            allowedOrigins: ["https://api.example.test"],
             secret,
+        });
+        const loaded = loadBrokerPolicy(policyFile);
+        vault.approveBrokerPolicy({
+            credentialId: loaded.credentialId,
+            policyHash: loaded.policyHash,
+            targetOrigin: loaded.targetOrigin,
+            policyPath: policyFile,
+            approvedBy: "operator",
         });
     } finally {
         vault.close();
@@ -888,8 +901,17 @@ test("executeBrokeredProcess enforces timeout and terminates runaway child proce
             projectId: "default",
             keyName: "key",
             authType: "api-key",
-            allowedActions: ["process.start"],
+            allowedActions: ["process.start", "broker.proxy"],
+            allowedOrigins: ["https://api.example.test"],
             secret: "synthetic-secret-value",
+        });
+        const loaded = loadBrokerPolicy(policyFile);
+        vault.approveBrokerPolicy({
+            credentialId: loaded.credentialId,
+            policyHash: loaded.policyHash,
+            targetOrigin: loaded.targetOrigin,
+            policyPath: policyFile,
+            approvedBy: "operator",
         });
     } finally {
         vault.close();
@@ -913,6 +935,185 @@ test("executeBrokeredProcess enforces timeout and terminates runaway child proce
             }),
             (err) => err.code === "ERR_SUBPROCESS_TIMEOUT" && err.exitCode === 124
         );
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test("validateBrokerPolicy sets default ttlSeconds to 60 (RFC B2 short-lived lease)", () => {
+    const p = validateBrokerPolicy(policy({ ttlSeconds: undefined }));
+    assert.equal(p.ttlSeconds, 60);
+});
+
+test("broker records BROKER_LEASE_ISSUED, BROKER_CAPABILITY_INVALID, BROKER_LIMIT_REACHED, and BROKER_LEASE_EXPIRED in audit ledger", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-broker-audit-"));
+    try {
+        const broker = await startHttpCredentialBroker({
+            policy: policy({ ttlSeconds: 5 }),
+            secret: "synthetic-secret-value",
+            root: tempDir,
+            fetchFn: async () => new Response(JSON.stringify({ ok: true })),
+        });
+
+        // 1. Verify BROKER_LEASE_ISSUED
+        const events1 = readAuditEvents({ root: tempDir });
+        const leaseIssued = events1.find((e) => e.eventType === "BROKER_LEASE_ISSUED");
+        assert.ok(leaseIssued, "Expected BROKER_LEASE_ISSUED event");
+        assert.equal(leaseIssued.result, "ALLOW");
+        assert.equal(leaseIssued.target, "service-api-key");
+        assert.equal(leaseIssued.details.ttlSeconds, 5);
+
+        // 2. Test invalid capability -> BROKER_CAPABILITY_INVALID
+        const invalidRes = await fetch(`${broker.url}/v1/resource`, {
+            headers: { authorization: "Bearer invalid-token" },
+        });
+        assert.equal(invalidRes.status, 401);
+
+        const events2 = readAuditEvents({ root: tempDir });
+        const capInvalid = events2.find((e) => e.eventType === "BROKER_CAPABILITY_INVALID");
+        assert.ok(capInvalid, "Expected BROKER_CAPABILITY_INVALID event");
+        assert.equal(capInvalid.result, "DENY");
+
+        await broker.close();
+
+        // 3. Test expired capability -> BROKER_LEASE_EXPIRED
+        // Use a mock Date.now to test expiry deterministically without waiting
+        const originalNow = Date.now;
+        let mockTime = originalNow();
+        Date.now = () => mockTime;
+        try {
+            const shortBroker = await startHttpCredentialBroker({
+                policy: policy({ ttlSeconds: 5 }),
+                secret: "synthetic-secret-value",
+                root: tempDir,
+                fetchFn: async () => new Response(JSON.stringify({ ok: true })),
+            });
+
+            // Advance clock by 10 seconds past deadline
+            mockTime += 10000;
+
+            const expiredRes = await fetch(`${shortBroker.url}/v1/resource`, {
+                headers: { authorization: `Bearer ${shortBroker.token}` },
+            });
+            assert.equal(expiredRes.status, 410);
+
+            const events3 = readAuditEvents({ root: tempDir });
+            const leaseExpired = events3.find((e) => e.eventType === "BROKER_LEASE_EXPIRED");
+            assert.ok(leaseExpired, "Expected BROKER_LEASE_EXPIRED event");
+            assert.equal(leaseExpired.result, "DENY");
+
+            await shortBroker.close();
+        } finally {
+            Date.now = originalNow;
+        }
+
+        // 4. Test maxRequests limit reached -> BROKER_LIMIT_REACHED
+        const limitedBroker = await startHttpCredentialBroker({
+            policy: policy({ maxRequests: 1 }),
+            secret: "synthetic-secret-value",
+            root: tempDir,
+            fetchFn: async () => new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } }),
+        });
+        const firstRes = await fetch(`${limitedBroker.url}/v1/resource`, {
+            headers: { authorization: `Bearer ${limitedBroker.capability}` },
+        });
+        assert.equal(firstRes.status, 200);
+
+        const limitRes = await fetch(`${limitedBroker.url}/v1/resource`, {
+            headers: { authorization: `Bearer ${limitedBroker.capability}` },
+        });
+        assert.equal(limitRes.status, 429);
+
+        const events4 = readAuditEvents({ root: tempDir });
+        const limitReached = events4.find((e) => e.eventType === "BROKER_LIMIT_REACHED");
+        assert.ok(limitReached, "Expected BROKER_LIMIT_REACHED event");
+        assert.equal(limitReached.result, "DENY");
+        assert.equal(limitReached.target, "service-api-key");
+        assert.equal(limitReached.details.maxRequests, 1);
+
+        const reqAllowed = events4.find((e) => e.eventType === "BROKER_REQUEST_ALLOWED");
+        assert.ok(reqAllowed, "Expected BROKER_REQUEST_ALLOWED event");
+        assert.equal(reqAllowed.result, "ALLOW");
+        assert.equal(reqAllowed.details.status, 200);
+
+        await limitedBroker.close();
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test("openHttpCredentialBroker enforces vault authority model and origin grants (Gate G0)", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-broker-g0-"));
+    const envFile = path.join(tempDir, ".env");
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${masterKey}\n`);
+    const policyObj = policy({ target: "https://unapproved.api.test", credential: "secretRef:g0-cred" });
+    const policyFile = path.join(tempDir, "policy.json");
+    fs.writeFileSync(policyFile, JSON.stringify(policyObj));
+
+    const vault = new Grimoire({ dbPath: path.join(tempDir, "data", "hetzer-vault.db"), masterKey });
+    try {
+        vault.upsertTarget({ id: "g0", name: "g0" });
+        vault.create({
+            id: "g0-cred",
+            projectId: "g0",
+            keyName: "key",
+            authType: "api-key",
+            allowedActions: ["broker.proxy"],
+            allowedOrigins: ["https://approved.api.test"],
+            secret: "synthetic-secret-value",
+        });
+    } finally {
+        vault.close();
+    }
+
+    try {
+        // 1. Unapproved origin is rejected
+        await assert.rejects(
+            () => openHttpCredentialBroker({
+                root: tempDir,
+                envFile,
+                policyFile,
+            }),
+            (error) => error.code === "ERR_BROKER_ORIGIN_NOT_GRANTED",
+        );
+
+        // 2. Operator approves policy with exact hash
+        const loadedPolicy = loadBrokerPolicy(policyFile);
+        const vault2 = new Grimoire({ dbPath: path.join(tempDir, "data", "hetzer-vault.db"), masterKey });
+        try {
+            vault2.approveBrokerPolicy({
+                credentialId: "g0-cred",
+                policyHash: loadedPolicy.policyHash,
+                targetOrigin: "https://unapproved.api.test",
+            });
+        } finally {
+            vault2.close();
+        }
+
+        // 2b. Probe P6: A modified policy (e.g. adding DELETE method) for the SAME origin must fail closed
+        const modifiedPolicyObj = { ...policyObj, allowedMethods: ["GET", "POST", "DELETE"] };
+        const modifiedPolicyFile = path.join(tempDir, "policy-modified.json");
+        fs.writeFileSync(modifiedPolicyFile, JSON.stringify(modifiedPolicyObj));
+
+        await assert.rejects(
+            () => openHttpCredentialBroker({
+                root: tempDir,
+                envFile,
+                policyFile: modifiedPolicyFile,
+            }),
+            (error) => error.code === "ERR_BROKER_POLICY_NOT_APPROVED",
+        );
+
+        // 3. Now exact approved policy opens successfully
+        const { broker } = await openHttpCredentialBroker({
+            root: tempDir,
+            envFile,
+            policyFile,
+            fetchFn: async () => new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } }),
+        });
+        assert.ok(broker.url);
+        await broker.close();
     } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
