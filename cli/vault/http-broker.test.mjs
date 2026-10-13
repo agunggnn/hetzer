@@ -20,6 +20,7 @@ import {
     validateBrokerPolicy,
 } from "./http-broker.mjs";
 import { Grimoire } from "./hetzer-vault.mjs";
+import { readAuditEvents } from "./audit.mjs";
 
 function policy(overrides = {}) {
     return {
@@ -913,6 +914,103 @@ test("executeBrokeredProcess enforces timeout and terminates runaway child proce
             }),
             (err) => err.code === "ERR_SUBPROCESS_TIMEOUT" && err.exitCode === 124
         );
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test("validateBrokerPolicy sets default ttlSeconds to 60 (RFC B2 short-lived lease)", () => {
+    const p = validateBrokerPolicy(policy({ ttlSeconds: undefined }));
+    assert.equal(p.ttlSeconds, 60);
+});
+
+test("broker records BROKER_LEASE_ISSUED, BROKER_CAPABILITY_INVALID, BROKER_LIMIT_REACHED, and BROKER_LEASE_EXPIRED in audit ledger", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-broker-audit-"));
+    try {
+        const broker = await startHttpCredentialBroker({
+            policy: policy({ ttlSeconds: 5 }),
+            secret: "synthetic-secret-value",
+            root: tempDir,
+            fetchFn: async () => new Response(JSON.stringify({ ok: true })),
+        });
+
+        // 1. Verify BROKER_LEASE_ISSUED
+        const events1 = readAuditEvents({ root: tempDir });
+        const leaseIssued = events1.find((e) => e.eventType === "BROKER_LEASE_ISSUED");
+        assert.ok(leaseIssued, "Expected BROKER_LEASE_ISSUED event");
+        assert.equal(leaseIssued.result, "ALLOW");
+        assert.equal(leaseIssued.target, "service-api-key");
+        assert.equal(leaseIssued.details.ttlSeconds, 5);
+
+        // 2. Test invalid capability -> BROKER_CAPABILITY_INVALID
+        const invalidRes = await fetch(`${broker.url}/v1/resource`, {
+            headers: { authorization: "Bearer invalid-token" },
+        });
+        assert.equal(invalidRes.status, 401);
+
+        const events2 = readAuditEvents({ root: tempDir });
+        const capInvalid = events2.find((e) => e.eventType === "BROKER_CAPABILITY_INVALID");
+        assert.ok(capInvalid, "Expected BROKER_CAPABILITY_INVALID event");
+        assert.equal(capInvalid.result, "DENY");
+
+        await broker.close();
+
+        // 3. Test expired capability -> BROKER_LEASE_EXPIRED
+        // Use a mock Date.now to test expiry deterministically without waiting
+        const originalNow = Date.now;
+        let mockTime = originalNow();
+        Date.now = () => mockTime;
+        try {
+            const shortBroker = await startHttpCredentialBroker({
+                policy: policy({ ttlSeconds: 5 }),
+                secret: "synthetic-secret-value",
+                root: tempDir,
+                fetchFn: async () => new Response(JSON.stringify({ ok: true })),
+            });
+
+            // Advance clock by 10 seconds past deadline
+            mockTime += 10000;
+
+            const expiredRes = await fetch(`${shortBroker.url}/v1/resource`, {
+                headers: { authorization: `Bearer ${shortBroker.token}` },
+            });
+            assert.equal(expiredRes.status, 410);
+
+            const events3 = readAuditEvents({ root: tempDir });
+            const leaseExpired = events3.find((e) => e.eventType === "BROKER_LEASE_EXPIRED");
+            assert.ok(leaseExpired, "Expected BROKER_LEASE_EXPIRED event");
+            assert.equal(leaseExpired.result, "DENY");
+
+            await shortBroker.close();
+        } finally {
+            Date.now = originalNow;
+        }
+
+        // 4. Test maxRequests limit reached -> BROKER_LIMIT_REACHED
+        const limitedBroker = await startHttpCredentialBroker({
+            policy: policy({ maxRequests: 1 }),
+            secret: "synthetic-secret-value",
+            root: tempDir,
+            fetchFn: async () => new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } }),
+        });
+        const firstRes = await fetch(`${limitedBroker.url}/v1/resource`, {
+            headers: { authorization: `Bearer ${limitedBroker.capability}` },
+        });
+        assert.equal(firstRes.status, 200);
+
+        const limitRes = await fetch(`${limitedBroker.url}/v1/resource`, {
+            headers: { authorization: `Bearer ${limitedBroker.capability}` },
+        });
+        assert.equal(limitRes.status, 429);
+
+        const events4 = readAuditEvents({ root: tempDir });
+        const limitReached = events4.find((e) => e.eventType === "BROKER_LIMIT_REACHED");
+        assert.ok(limitReached, "Expected BROKER_LIMIT_REACHED event");
+        assert.equal(limitReached.result, "DENY");
+        assert.equal(limitReached.target, "service-api-key");
+        assert.equal(limitReached.details.maxRequests, 1);
+
+        await limitedBroker.close();
     } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });
     }

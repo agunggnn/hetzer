@@ -27,7 +27,7 @@ Create a policy containing references and routing metadata, never plaintext cred
   "allowedMethods": ["GET", "POST"],
   "allowedPathPrefixes": ["/v1"],
   "forwardHeaders": ["accept", "content-type", "user-agent"],
-  "ttlSeconds": 300,
+  "ttlSeconds": 60,
   "maxRequests": 100,
   "maxRequestBytes": 1048576,
   "maxResponseBytes": 8388608,
