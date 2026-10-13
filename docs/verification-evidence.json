@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-10-13T00:00:33.369Z",
+  "timestamp": "2026-10-13T02:00:31.397Z",
   "nodeVersion": "v22.22.2",
   "platform": "win32",
   "results": [
@@ -59,7 +59,7 @@
       "input": "Small 30-byte build log line",
       "method": "Measure the median of 25 write-and-flush samples using dynamic retention and the bounded lexical scanner",
       "expected": "Median processing latency stays below 5ms and the complete line is emitted",
-      "observed": "Median processing latency: 0.027 ms. Output delivered: \"Compiling module auth.mjs...\".",
+      "observed": "Median processing latency: 0.024 ms. Output delivered: \"Compiling module auth.mjs...\".",
       "verdict": "PASS",
       "boundary": "Streams with secrets exceeding 128 chars scale buffer to 2x secret length to ensure boundary integrity."
     },
@@ -186,14 +186,14 @@
     {
       "id": "VERIFY-SEC-015",
       "name": "SDK Contract and Vault Format Version (Gate G2)",
-      "target": "sdk/index.mjs -> createHetzer(); cli/vault/hetzer-vault.mjs -> Grimoire format version check",
-      "threat": "The public SDK hands a credential value to its caller, accepts ids the vault and secretRef grammar do not, or runs a raw injection the vault did not grant; an older build changes a vault written by a newer format",
-      "input": "A synthetic vault with a credential whose value is also in its notes; credential ids with '.' and '_'; a raw-injection request against a credential whose grant denies it; vaults without a marker and with a newer marker, the latter with an old table layout",
-      "method": "Walk the client and module member names; collect every SDK result and error for the value; run client.execution.run against the denied grant and check the child marker; open vaults and compare bytes, tables and columns before and after a refused open",
-      "expected": "No resolve, reveal, decrypt or lease member; only the SDK entry in the package exports; no value in any result or error; one id grammar; the denied child never starts and the error carries no value; new and unstamped vaults end at format 2 with credentials intact; a newer vault is refused with its bytes, tables and columns unchanged",
-      "observed": "sdkHasNoRevealMember: true. packageExportsOnlySdk: true. sdkResultsHaveNoValue: true. idGrammarIsOne: true. sdkExecutionChecksGrant: true. freshVaultStamped: true. unstampedVaultRestamped: true. newerVaultRefusedUntouched: true. inProcessCallerCanStillResolve: true.",
+      "target": "sdk/index.mjs -> createHetzer(); cli/vault/hetzer-vault.mjs -> Grimoire format version check and format 2 migration, resolveMasterKey()",
+      "threat": "The public SDK hands a credential value to its caller, accepts ids the vault and secretRef grammar do not, or runs a raw injection the vault did not grant; an older build changes a vault written by a newer format; the format 2 migration loses credentials, runs unrecorded, or leaves an upgraded installation with no key in silence",
+      "input": "A synthetic vault with a credential whose value is also in its notes; credential ids with '.' and '_'; a raw-injection request against a credential whose grant denies it; vaults without a marker and with a newer marker, the latter with an old table layout; a format 1 vault with rows in the legacy tables and a damaged ledger; an environment that only sets the retired key alias",
+      "method": "Walk the client and module member names; collect every SDK result and error for the value; run client.execution.run against the denied grant and check the child marker; open vaults and compare bytes, tables and columns before and after a refused open; open the format 1 vault while the ledger refuses, rotate the ledger and open again; resolve the master key with only the alias set",
+      "expected": "No resolve, reveal, decrypt or lease member; only the SDK entry in the package exports; no value in any result or error; one id grammar; the denied child never starts and the error carries no value; new and unstamped vaults end at format 2 with credentials intact; a newer vault is refused with its bytes, tables and columns unchanged; a format 1 vault ends at format 2 with its credential intact, and its ledger record stays owed until the ledger takes it, then carries the dropped row counts and a MAC; the alias alone is refused with ERR_MASTER_KEY_ALIAS_RETIRED",
+      "observed": "sdkHasNoRevealMember: true. packageExportsOnlySdk: true. sdkResultsHaveNoValue: true. idGrammarIsOne: true. sdkExecutionChecksGrant: true. freshVaultStamped: true. unstampedVaultRestamped: true. format1VaultMigrated: true. migrationRecordOwedUntilWritten: true. retiredKeyAliasRefused: true. newerVaultRefusedUntouched: true. inProcessCallerCanStillResolve: true.",
       "verdict": "PASS",
-      "boundary": "The SDK narrows what a well-behaved caller can ask for. Code in the same process or under the same user can still import the vault module, call resolve() or read the database and key store (R-05 stays open for in-process callers; untrusted agents belong out of process in the sandbox). The package exports map limits specifiers, not file access. Lease interfaces are not part of apiVersion 1. Builds from before the format marker do not check it, so an older build can still open and alter a newer vault."
+      "boundary": "The SDK narrows what a well-behaved caller can ask for. Code in the same process or under the same user can still import the vault module, call resolve() or read the database and key store (R-05 stays open for in-process callers; untrusted agents belong out of process in the sandbox). The package exports map limits specifiers, not file access. Lease interfaces are not part of apiVersion 1. Builds from before the format marker do not check it, so an older build can still open and alter a newer vault. The migration is one-way: rows in the dropped tables are counted in the audit record but not copied, and a build that checks the marker at format 1 refuses the migrated vault. The ledger record is written at least once (processes opening at the same moment can each write it) and only by a process that has the key. A legacy JSON vault is reported, not imported."
     }
   ]
 }
