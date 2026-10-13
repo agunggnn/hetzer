@@ -6,7 +6,7 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
 import { readAuditEvents, verifyAuditLedger } from "./audit.mjs";
-import { Grimoire, VAULT_FORMAT_VERSION } from "./hetzer-vault.mjs";
+import { Grimoire, hostBindingError, VAULT_FORMAT_VERSION } from "./hetzer-vault.mjs";
 import { grantCredentialCommand, setCredential, signExistingGrantsCommand } from "./creds.mjs";
 
 test("Grimoire initializes schema with Gate G0 columns and approved policies table", () => {
@@ -222,6 +222,33 @@ test("setCredential supports allowedOrigins, rawInjection, and bindHosts operato
         assert.equal(entry.rawInjection, "allow");
         assert.deepEqual(entry.bindHosts, ["deploy.internal"]);
         assert.deepEqual(entry.allowedActions, ["process.start"]);
+    } finally {
+        vault.close();
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("resolve() honors bindHosts against the OS hostname, case-insensitively", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-vault-bind-hosts-"));
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    const vault = new Grimoire({ dbPath: path.join(root, "data", "hetzer-vault.db"), masterKey });
+    try {
+        vault.upsertTarget({ id: "bound-app", name: "bound-app" });
+        const common = { projectId: "bound-app", allowedActions: ["process.start"] };
+        vault.create({ ...common, id: "this-host-key", secret: "this-host-secret-value", bindHosts: [os.hostname().toUpperCase()] });
+        vault.create({ ...common, id: "other-host-key", secret: "other-host-secret-value", bindHosts: ["not-this-host.invalid"] });
+        vault.create({ ...common, id: "unbound-key", secret: "unbound-secret-value" });
+
+        const context = { targetId: "bound-app", action: "process.start" };
+        assert.equal(vault.resolve("this-host-key", context), "this-host-secret-value");
+        assert.equal(vault.resolve("unbound-key", context), "unbound-secret-value");
+        assert.equal(vault.resolve("other-host-key", context), null);
+
+        assert.equal(hostBindingError(vault.find("this-host-key")), null);
+        assert.equal(hostBindingError(vault.find("unbound-key")), null);
+        const error = hostBindingError(vault.find("other-host-key"));
+        assert.equal(error.code, "ERR_HOST_BINDING_MISMATCH");
+        assert.doesNotMatch(error.message, /other-host-secret-value/);
     } finally {
         vault.close();
         fs.rmSync(root, { recursive: true, force: true });

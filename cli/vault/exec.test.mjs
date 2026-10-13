@@ -302,6 +302,36 @@ test("executeProcess rejects --allow-raw-unmediated when rawInjection grant is d
     }
 });
 
+test("executeProcess runs a raw credential bound to this host and refuses one bound to another host", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-exec-bind-hosts-"));
+    const envFile = path.join(tempDir, ".env");
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    const marker = path.join(tempDir, "child-ran.txt");
+    fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${masterKey}\n`);
+    const run = () => executeProcess({
+        root: tempDir,
+        envFile,
+        allowNames: ["npm-token"],
+        allowRawUnmediated: ["npm-token"],
+        command: process.execPath,
+        commandArgs: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran")`],
+    }, { outStream: { write: () => true }, errStream: { write: () => true } });
+
+    try {
+        setCredential({ root: tempDir, envFile, id: "npm-token", secret: "synthetic-bound-value", rawInjection: "allow", bindHosts: [os.hostname()] });
+        const result = await run();
+        assert.equal(result.status, 0);
+        assert.equal(fs.existsSync(marker), true);
+
+        fs.rmSync(marker);
+        setCredential({ root: tempDir, envFile, id: "npm-token", secret: "synthetic-bound-value", bindHosts: ["not-this-host.invalid"] });
+        await assert.rejects(run, (error) => error.code === "ERR_HOST_BINDING_MISMATCH");
+        assert.equal(fs.existsSync(marker), false);
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
 test("executeProcess automatically mediates credentials with a broker policy", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-exec-mediated-"));
     const envFile = path.join(tempDir, ".env");

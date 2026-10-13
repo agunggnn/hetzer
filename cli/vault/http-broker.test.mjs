@@ -1118,3 +1118,55 @@ test("openHttpCredentialBroker enforces vault authority model and origin grants 
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
 });
+
+test("openHttpCredentialBroker refuses an approved credential bound to another host", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-broker-bind-hosts-"));
+    const envFile = path.join(tempDir, ".env");
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${masterKey}\n`);
+    const policyFile = path.join(tempDir, "policy.json");
+    fs.writeFileSync(policyFile, JSON.stringify(policy({ target: "https://approved.api.test", credential: "secretRef:bound-cred" })));
+    const fetchFn = async () => new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } });
+    const dbPath = path.join(tempDir, "data", "hetzer-vault.db");
+
+    const vault = new Grimoire({ dbPath, masterKey });
+    try {
+        vault.upsertTarget({ id: "bound", name: "bound" });
+        vault.create({
+            id: "bound-cred",
+            projectId: "bound",
+            keyName: "key",
+            authType: "api-key",
+            allowedActions: ["broker.proxy"],
+            allowedOrigins: ["https://approved.api.test"],
+            bindHosts: ["not-this-host.invalid"],
+            secret: "synthetic-secret-value",
+        });
+        vault.approveBrokerPolicy({
+            credentialId: "bound-cred",
+            policyHash: loadBrokerPolicy(policyFile).policyHash,
+            targetOrigin: "https://approved.api.test",
+        });
+    } finally {
+        vault.close();
+    }
+
+    try {
+        await assert.rejects(
+            () => openHttpCredentialBroker({ root: tempDir, envFile, policyFile, fetchFn }),
+            (error) => error.code === "ERR_HOST_BINDING_MISMATCH",
+        );
+
+        const vault2 = new Grimoire({ dbPath, masterKey });
+        try {
+            vault2.update("bound-cred", { bindHosts: [os.hostname()] });
+        } finally {
+            vault2.close();
+        }
+        const { broker } = await openHttpCredentialBroker({ root: tempDir, envFile, policyFile, fetchFn });
+        assert.ok(broker.url);
+        await broker.close();
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
