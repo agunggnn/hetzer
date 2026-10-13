@@ -10,10 +10,13 @@ import { fileURLToPath } from "node:url";
 import {
     assertSafeUpstreamHost,
     canonicalizePath,
+    computeBrokerPolicyHash,
     decodePathToFixedPoint,
     executeBrokeredProcess,
     isContainerBridgeOrLoopback,
     isPrivateOrReservedIp,
+    loadBrokerPolicy,
+    openHttpCredentialBroker,
     parseBrokerArguments,
     safePinnedFetch,
     startHttpCredentialBroker,
@@ -227,8 +230,17 @@ test("brokered child receives only the capability while upstream receives the va
             projectId: "service",
             keyName: "api-key",
             authType: "api-key",
-            allowedActions: ["process.start"],
+            allowedActions: ["process.start", "broker.proxy"],
+            allowedOrigins: ["https://api.example.test"],
             secret,
+        });
+        const loaded = loadBrokerPolicy(policyFile);
+        vault.approveBrokerPolicy({
+            credentialId: loaded.credentialId,
+            policyHash: loaded.policyHash,
+            targetOrigin: loaded.targetOrigin,
+            policyPath: policyFile,
+            approvedBy: "operator",
         });
     } finally {
         vault.close();
@@ -889,8 +901,17 @@ test("executeBrokeredProcess enforces timeout and terminates runaway child proce
             projectId: "default",
             keyName: "key",
             authType: "api-key",
-            allowedActions: ["process.start"],
+            allowedActions: ["process.start", "broker.proxy"],
+            allowedOrigins: ["https://api.example.test"],
             secret: "synthetic-secret-value",
+        });
+        const loaded = loadBrokerPolicy(policyFile);
+        vault.approveBrokerPolicy({
+            credentialId: loaded.credentialId,
+            policyHash: loaded.policyHash,
+            targetOrigin: loaded.targetOrigin,
+            policyPath: policyFile,
+            approvedBy: "operator",
         });
     } finally {
         vault.close();
@@ -1010,7 +1031,89 @@ test("broker records BROKER_LEASE_ISSUED, BROKER_CAPABILITY_INVALID, BROKER_LIMI
         assert.equal(limitReached.target, "service-api-key");
         assert.equal(limitReached.details.maxRequests, 1);
 
+        const reqAllowed = events4.find((e) => e.eventType === "BROKER_REQUEST_ALLOWED");
+        assert.ok(reqAllowed, "Expected BROKER_REQUEST_ALLOWED event");
+        assert.equal(reqAllowed.result, "ALLOW");
+        assert.equal(reqAllowed.details.status, 200);
+
         await limitedBroker.close();
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test("openHttpCredentialBroker enforces vault authority model and origin grants (Gate G0)", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-broker-g0-"));
+    const envFile = path.join(tempDir, ".env");
+    const masterKey = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+    fs.writeFileSync(envFile, `HETZER_GRIMOIRE_KEY=${masterKey}\n`);
+    const policyObj = policy({ target: "https://unapproved.api.test", credential: "secretRef:g0-cred" });
+    const policyFile = path.join(tempDir, "policy.json");
+    fs.writeFileSync(policyFile, JSON.stringify(policyObj));
+
+    const vault = new Grimoire({ dbPath: path.join(tempDir, "data", "hetzer-vault.db"), masterKey });
+    try {
+        vault.upsertTarget({ id: "g0", name: "g0" });
+        vault.create({
+            id: "g0-cred",
+            projectId: "g0",
+            keyName: "key",
+            authType: "api-key",
+            allowedActions: ["broker.proxy"],
+            allowedOrigins: ["https://approved.api.test"],
+            secret: "synthetic-secret-value",
+        });
+    } finally {
+        vault.close();
+    }
+
+    try {
+        // 1. Unapproved origin is rejected
+        await assert.rejects(
+            () => openHttpCredentialBroker({
+                root: tempDir,
+                envFile,
+                policyFile,
+            }),
+            (error) => error.code === "ERR_BROKER_ORIGIN_NOT_GRANTED",
+        );
+
+        // 2. Operator approves policy with exact hash
+        const loadedPolicy = loadBrokerPolicy(policyFile);
+        const vault2 = new Grimoire({ dbPath: path.join(tempDir, "data", "hetzer-vault.db"), masterKey });
+        try {
+            vault2.approveBrokerPolicy({
+                credentialId: "g0-cred",
+                policyHash: loadedPolicy.policyHash,
+                targetOrigin: "https://unapproved.api.test",
+            });
+        } finally {
+            vault2.close();
+        }
+
+        // 2b. Probe P6: A modified policy (e.g. adding DELETE method) for the SAME origin must fail closed
+        const modifiedPolicyObj = { ...policyObj, allowedMethods: ["GET", "POST", "DELETE"] };
+        const modifiedPolicyFile = path.join(tempDir, "policy-modified.json");
+        fs.writeFileSync(modifiedPolicyFile, JSON.stringify(modifiedPolicyObj));
+
+        await assert.rejects(
+            () => openHttpCredentialBroker({
+                root: tempDir,
+                envFile,
+                policyFile: modifiedPolicyFile,
+            }),
+            (error) => error.code === "ERR_BROKER_POLICY_NOT_APPROVED",
+        );
+
+        // 3. Now exact approved policy opens successfully
+        const { broker } = await openHttpCredentialBroker({
+            root: tempDir,
+            envFile,
+            policyFile,
+            fetchFn: async () => new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } }),
+        });
+        assert.ok(broker.url);
+        await broker.close();
     } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });
     }

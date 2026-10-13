@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-09-20T18:26:21.060Z",
+  "timestamp": "2026-10-10T04:10:25.424Z",
   "nodeVersion": "v22.22.2",
   "platform": "win32",
   "results": [
@@ -59,7 +59,7 @@
       "input": "Small 30-byte build log line",
       "method": "Measure the median of 25 write-and-flush samples using dynamic retention and the bounded lexical scanner",
       "expected": "Median processing latency stays below 5ms and the complete line is emitted",
-      "observed": "Median processing latency: 0.031 ms. Output delivered: \"Compiling module auth.mjs...\".",
+      "observed": "Median processing latency: 0.026 ms. Output delivered: \"Compiling module auth.mjs...\".",
       "verdict": "PASS",
       "boundary": "Streams with secrets exceeding 128 chars scale buffer to 2x secret length to ensure boundary integrity."
     },
@@ -86,6 +86,78 @@
       "observed": "cookieBlocked: true. awsBlocked: true. walletBlocked: true. certutilBlocked: true. irmIexBlocked: true. cleanAllowed: true.",
       "verdict": "PASS",
       "boundary": "Enforced by 'hetzer exec' structured command arguments. Bare commands launched directly in host terminals outside Hetzer remain bounded by OS user privileges."
+    },
+    {
+      "id": "VERIFY-SEC-007",
+      "name": "Workspace-Authored Broker Policy Authority & Hash Pinning Boundary",
+      "target": "cli/vault/http-broker.mjs -> openHttpCredentialBroker()",
+      "threat": "Adversarial agent points broker to unapproved upstream origin or widens policy rules (methods/paths) via workspace file edits to exfiltrate secrets",
+      "input": "Unapproved origin policy, modified policy for approved origin, and exact operator-approved policy hash",
+      "method": "Attempt broker with unapproved origin (expect ERR_BROKER_ORIGIN_NOT_GRANTED); approve origin/hash; attempt modified policy (expect ERR_BROKER_POLICY_NOT_APPROVED); attempt approved policy (expect success)",
+      "expected": "Unapproved origin and tampered policy hashes are blocked; only exact operator-approved policy hash opens broker",
+      "observed": "unapprovedOriginBlocked: true. modifiedPolicyBlocked: true. approvedOpened: true.",
+      "verdict": "PASS",
+      "boundary": "Broker origins and SHA-256 policy hashes are pinned in the vault. Workspace policy tampering fails closed."
+    },
+    {
+      "id": "VERIFY-SEC-008",
+      "name": "Caller-Supplied Raw Injection Request Boundary",
+      "target": "cli/vault/exec.mjs -> prepareExecutionEnvironment()",
+      "threat": "Untrusted agent requests unmediated raw plaintext secret injection via --allow-raw-unmediated without operator vault grant",
+      "input": "Execution request with --allow-raw-unmediated for credential with rawInjection: 'deny', followed by operator granting rawInjection: 'allow'",
+      "method": "Attempt prepareExecutionEnvironment with raw injection on ungranted credential; assert ERR_RAW_UNMEDIATED_DENIED_BY_GRANT; update grant to allow and assert success",
+      "expected": "Request rejected with ERR_RAW_UNMEDIATED_DENIED_BY_GRANT when vault grant is deny; succeeds only when vault grant has rawInjection: 'allow'",
+      "observed": "rawDeniedBlocked: true. rawAllowedPrepared: true.",
+      "verdict": "PASS",
+      "boundary": "--allow-raw-unmediated is a caller request that is strictly gated by operator-configured vault grants."
+    },
+    {
+      "id": "VERIFY-SEC-009",
+      "name": "In-Process Grimoire resolve() Action Grant Enforcement (Partial R-05 Mitigation)",
+      "target": "cli/vault/hetzer-vault.mjs -> Grimoire.resolve()",
+      "threat": "Confused deputy or programmatic caller invokes resolve() without action or with un-granted action to extract plaintext secret",
+      "input": "Credential granting allowedActions: ['process.start']; calls with no action, broker.proxy action, and process.start action",
+      "method": "Invoke Grimoire.resolve() with missing, un-granted, and granted actions; verify mandatory action enforcement and fail-closed behavior",
+      "expected": "resolve() returns null for missing or un-granted actions; returns plaintext secret only for explicit granted action. Note: R-05 remains open until Gate G2 out-of-process engine extraction.",
+      "observed": "checkMissing: true. checkUngranted: true. checkGranted: true.",
+      "verdict": "PASS",
+      "boundary": "Mandatory action grant checking on in-process vault resolution fails closed when action is omitted or ungranted. (R-05 remains open until G2 out-of-process engine boundary)."
+    },
+    {
+      "id": "VERIFY-SEC-010",
+      "name": "MCP SecretRef Destination Origin Binding",
+      "target": "cli/mcp/catalog.mjs -> call()",
+      "threat": "Adversarial agent passes secretRef into MCP service tool to exfiltrate secret to unapproved network endpoint",
+      "input": "Service tool targeting http://127.0.0.1:9099; vault credential granting only http://127.0.0.1:8080, followed by operator grant update",
+      "method": "Attempt MCP tool call passing secretRef to service tool with unapproved origin; assert origin denial; grant origin in vault and verify tool execution succeeds",
+      "expected": "secretRef substitution into unapproved destination origin is rejected; substitution succeeds once destination origin is granted in vault",
+      "observed": "unapprovedOriginBlocked: true. approvedOriginSucceeded: true.",
+      "verdict": "PASS",
+      "boundary": "Enforces destination origin binding for MCP service tools. Tool calls without declared origin fail closed."
+    },
+    {
+      "id": "VERIFY-SEC-011",
+      "name": "Vault Grant Column HMAC Integrity & Anti-Tampering",
+      "target": "cli/vault/hetzer-vault.mjs -> verifyGrantSignature()",
+      "threat": "Adversarial same-user process with SQLite write access mutates allowed_origins or raw_injection directly in DB without master key",
+      "input": "Direct SQLite UPDATE to allowed_origins (Probe P2) and raw_injection (Probe P3b)",
+      "method": "Directly mutate grant columns in SQLite; query via Grimoire.find() and resolve(); verify fail-closed behavior (grantValid: false, empty origins/actions, null secret)",
+      "expected": "Direct SQLite tampering invalidates HMAC signature derived from master key; entry fails closed to empty origins, deny raw injection, and null resolution",
+      "observed": "legitimateValid: true. p2OriginsTamperBlocked: true. p3bRawTamperBlocked: true.",
+      "verdict": "PASS",
+      "boundary": "Grant columns are HMAC signed with a subkey derived from the master key. Arbitrary database edits without the master key fail closed."
+    },
+    {
+      "id": "VERIFY-SEC-012",
+      "name": "Grant Signatures Cannot Be Cleared, Forged or Laundered (Gate G0.1)",
+      "target": "cli/vault/hetzer-vault.mjs -> Grimoire grant and approval signatures",
+      "threat": "A writer with database access but without the master key clears the grant signature, inserts approval rows, or relies on an unrelated rewrite to obtain trusted grants",
+      "input": "Forged origin with grant_sig cleared, reopen, unrelated update, altered and inserted approval rows, then an operator signing a legacy unsigned grant",
+      "method": "Mutate SQLite directly; reopen the vault; assert unsigned grants are not honored and never auto-signed, update() does not carry tampered grants, approval rows without a valid signature are ignored, and signLegacyGrants restores an unsigned legacy grant",
+      "expected": "Unsigned or altered grants and approvals are not honored; only the explicit operator signing step makes a legacy grant usable",
+      "observed": "nullSigNotHonored: true. reopenDidNotSign: true. updateDidNotLaunder: true. alteredApprovalIgnored: true. forgedApprovalIgnored: true. operatorSignRestoresLegacy: true.",
+      "verdict": "PASS",
+      "boundary": "Signatures are keyed by the master key. A writer who can also read the master key can still forge grants, and a previously valid signed grant can be replayed because signatures carry no version."
     }
   ]
 }

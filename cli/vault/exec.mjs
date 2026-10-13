@@ -671,6 +671,51 @@ export async function prepareExecutionEnvironment(effectiveOptions, {
         throw error;
     }
 
+    if (rawBindings.length) {
+        const { Grimoire, grantIntegrityError, resolveMasterKey, resolveVaultPath } = await import("./hetzer-vault.mjs");
+        const envValues = effectiveOptions.envFile && fs.existsSync(effectiveOptions.envFile)
+            ? parseEnv(fs.readFileSync(effectiveOptions.envFile, "utf8"))
+            : {};
+        const masterKey = resolveMasterKey({ root: effectiveOptions.root, envValues, baseEnv });
+        if (masterKey && !String(masterKey).startsWith("secretRef:")) {
+            const vault = new Grimoire({
+                dbPath: resolveVaultPath(effectiveOptions.root, effectiveOptions.vaultPath)
+                    || path.join(effectiveOptions.root, "data", "hetzer-vault.db"),
+                legacyFile: path.join(effectiveOptions.root, "data", "vault.json"),
+                masterKey,
+            });
+            try {
+                for (const binding of rawBindings) {
+                    const cred = vault.find(binding.id);
+                    const integrityError = grantIntegrityError(cred);
+                    if (integrityError) throw integrityError;
+                    if (cred && cred.rawInjection !== "allow") {
+                        const error = new Error(
+                            `Credential '${binding.id}' does not have a rawInjection grant in Grimoire Vault (grant status: '${cred.rawInjection || "deny"}').\n`
+                            + `--allow-raw-unmediated is a request that is only honored when the vault grant permits raw injection.\n`
+                            + `An operator must set rawInjection to 'allow' in the vault first.`
+                        );
+                        error.code = "ERR_RAW_UNMEDIATED_DENIED_BY_GRANT";
+                        throw error;
+                    }
+                    if (cred && cred.bindHosts && cred.bindHosts.length > 0) {
+                        const currentHost = String(effectiveOptions.host || os.hostname() || "").toLowerCase();
+                        const allowed = cred.bindHosts.map((h) => String(h).toLowerCase());
+                        if (!allowed.includes(currentHost)) {
+                            const error = new Error(
+                                `Credential '${binding.id}' is bound to hosts [${cred.bindHosts.join(", ")}], but current host '${currentHost}' is not permitted.`
+                            );
+                            error.code = "ERR_HOST_BINDING_MISMATCH";
+                            throw error;
+                        }
+                    }
+                }
+            } finally {
+                vault.close();
+            }
+        }
+    }
+
     const env = resolveSecretEnvironment({
         ...effectiveOptions,
         baseEnv,
@@ -706,7 +751,7 @@ export async function prepareExecutionEnvironment(effectiveOptions, {
                     credentialId: id,
                     reason: "User explicitly allowed raw unmediated credential injection",
                     outcome: "allowed",
-                    metadata: { envName, command: path.basename(effectiveOptions.command) },
+                    metadata: { envName, command: effectiveOptions.command ? path.basename(effectiveOptions.command) : "" },
                 });
             }
         } finally {

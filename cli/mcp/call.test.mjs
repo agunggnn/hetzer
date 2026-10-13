@@ -173,7 +173,7 @@ test("callMcpTool resolves secretRef in arguments and sanitizes sensitive respon
         dbPath: path.join(dataDir, "hetzer-vault.db"),
         masterKey,
     });
-    vault.create({ id: "my-service-key", secret: rawSecret, projectId: "sample-mod" });
+    vault.create({ id: "my-service-key", secret: rawSecret, projectId: "sample-mod", allowedActions: ["mcp.tools/call"] });
     vault.close();
 
     try {
@@ -221,7 +221,7 @@ test("callMcpTool redacts custom non-pattern credentials and multi-representatio
         dbPath: path.join(dataDir, "hetzer-vault.db"),
         masterKey,
     });
-    vault.create({ id: "database-secret", secret: customSecret, projectId: "sample-mod" });
+    vault.create({ id: "database-secret", secret: customSecret, projectId: "sample-mod", allowedActions: ["mcp.tools/call"] });
     vault.close();
 
     try {
@@ -330,7 +330,7 @@ test("callMcpTool safely catches transport failures and redacts exception messag
         dbPath: path.join(dataDir, "hetzer-vault.db"),
         masterKey,
     });
-    vault.create({ id: "transport-key", secret: secretValue, projectId: "sample-mod" });
+    vault.create({ id: "transport-key", secret: secretValue, projectId: "sample-mod", allowedActions: ["mcp.tools/call"] });
     vault.close();
 
     try {

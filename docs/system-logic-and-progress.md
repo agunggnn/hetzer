@@ -25,10 +25,10 @@ sequenceDiagram
 
 | Component | Source | Current behavior |
 |---|---|---|
-| Grimoire vault | `cli/vault/hetzer-vault.mjs` | AES-256-GCM credential values in SQLite with target/action/expiry checks, private `#decryptRaw` isolation, and `matchesSecret()` |
+| Grimoire vault | `cli/vault/hetzer-vault.mjs` | AES-256-GCM credential values in SQLite with origin grants (`allowedOrigins`), mandatory action grants (`allowedActions`), raw injection policy (`rawInjection`), policy approvals (`vault_approved_policies`), private `#decryptRaw` isolation, and `matchesSecret()` |
 | Human guard | `cli/vault/human-guard.mjs` | Same-user agentic reveal block enforcing interactive TTY, agent env denial, and process ancestry inspection with sub-ms caching |
 | Secret scanner | `cli/vault/sniffer.mjs` | Provider regexes, database URLs, bounded PEM keys, and Shannon-entropy candidates |
-| Process runner | `cli/vault/exec.mjs` | Broker-by-default selection, audited raw opt-out, strict base environment, reflection guard, stream sanitizer, subprocess canary stream tripwire, execution timeout guard |
+| Process runner | `cli/vault/exec.mjs` | Broker-by-default selection, vault-gated raw injection opt-out, strict base environment, reflection guard, stream sanitizer, subprocess canary stream tripwire, execution timeout guard |
 | Execution policy | `cli/vault/exec-policy.mjs` | Declarative capability policies: command whitelisting, credential boundaries, raw-opt-out boundaries, strict isolation, and timeout limits |
 | Container sandbox | `cli/vault/sandbox.mjs` | Ephemeral OCI container isolation (`--cap-drop=ALL`, `--security-opt=no-new-privileges`, loopback broker translation) |
 | Audit ledger | `cli/vault/audit.mjs` | Cryptographic append-only event ledger with SHA-256 hash chaining (`prevHash`) |
@@ -36,8 +36,8 @@ sequenceDiagram
 | Credential CLI | `cli/vault/creds.mjs` and `cli/vault/credential-request.mjs` | Set/list/reveal plus metadata-only request/approve/status handoff; direct secret entry requires a human TTY and reveal retains native confirmation |
 | Canary | `cli/vault/canary.mjs` | Decoy token injection, aborts guarded reveal/resolution/stream leak with exit code 43, terminates child process tree |
 | Git hooks | `cli/core/git-hook.mjs` | Dual Git hooks (`pre-commit` & `commit-msg`), scans staged `.env` names, diff additions, and commit message text |
-| HTTP broker | `cli/vault/http-broker.mjs` | Loopback proxy injecting upstream credentials via ephemeral capabilities without exposing secrets to child environments |
-| MCP | `cli/mcp/` | FastMCP server, metadata-only tools, virtual credential proxy (`secretRef:<id>` payload resolution), canary guard, response sanitation |
+| HTTP broker | `cli/vault/http-broker.mjs` | Loopback proxy injecting upstream credentials via ephemeral capabilities; enforces vault-approved target origins, mandatory `broker.proxy` action grants, and short-lived TTLs |
+| MCP | `cli/mcp/` | FastMCP server, metadata-only tools, virtual credential proxy (`secretRef:<id>` payload resolution bound to verified tool destination origins), canary guard, response sanitation |
 | Agent installer | `cli/skills/` | Workspace guidance and selected user-level client configuration |
 | Module system | `cli/modules/` | Disabled-by-default optional module recipes and Compose profile resolution |
 
@@ -64,6 +64,13 @@ sequenceDiagram
 - policy trust roots enforce regular file checks, POSIX permissions, and SHA-256 integrity auditing;
 - HTTP broker path canonicalization prevents multi-layer percent-encoding, matrix parameter (`;`), and directory traversal bypasses;
 - HTTP broker capabilities authenticate scoped requests and reject unpermitted paths;
+- workspace broker policies cannot widen access without explicit vault origin and SHA-256 policy hash approval (`VERIFY-SEC-007`);
+- caller `--allow-raw-unmediated` is rejected with `ERR_RAW_UNMEDIATED_DENIED_BY_GRANT` unless vault grant explicitly permits raw injection (`VERIFY-SEC-008`);
+- in-process `Grimoire.resolve()` strictly enforces mandatory action grants, returning null for ungranted or omitted actions (`VERIFY-SEC-009`, note: R-05 remains open until Gate G2 out-of-process boundary);
+- MCP virtual credential proxy binds `secretRef:<id>` to verified tool destination origins, failing closed on ungranted endpoints (`VERIFY-SEC-010`);
+- vault grant columns are HMAC-signed with a subkey derived from the master key, failing closed upon direct SQLite database tampering (`VERIFY-SEC-011`);
+- unsigned or altered grants and broker policy approvals are never honored and never signed automatically; a legacy credential becomes usable only after an operator reviews it with `hetzer creds grant --sign-existing` (`VERIFY-SEC-012`). Signatures carry no version, so a previously valid signed grant can be replayed by a writer who kept an old copy of the database, and a writer who can read the master key can still forge grants;
+- operator `hetzer creds grant <id>` CLI command safely configures grants behind interactive human TTY confirmation;
 - installer tests redirect user-level paths to a temporary home.
 - credential approval requests contain no secret material, expire, and expose status only to the requesting workflow;
 
@@ -97,3 +104,4 @@ Before release:
 - fuzzing for stream boundaries, encodings, scanners, and environment construction;
 - signed release provenance and reproducible build evidence;
 - third-party security review.
+- Exfil-hardening backlog (proposed, pending review): capability broker expansion (DB proxy, cloud signing sidecar), short-lived audience-bound leases, canonical matcher for known secrets, auto-sandbox for agent ancestry, default-deny exec policy profiles — see `docs/rfc-exfil-hardening-backlog.md`.

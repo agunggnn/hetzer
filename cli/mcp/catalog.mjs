@@ -114,20 +114,6 @@ export function createToolCatalog({ root = process.env.HETZER_ROOT || process.cw
             annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
             execute: async ({ text }) => scanText(text),
         },
-        {
-            name: "hetzer_sniffer_redact",
-            title: "Redact and Auto-Vault Secrets",
-            description: "Scans text, auto-vaults any detected raw credentials into Grimoire Vault, and returns sanitized text with secretRef references.",
-            inputSchema: {
-                type: "object",
-                properties: {
-                    text: { type: "string", description: "Text content containing potential raw credentials" },
-                },
-                required: ["text"],
-            },
-            annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
-            execute: async ({ text }) => redactAndVault(text, { root }),
-        },
     ];
 
     const addServiceTool = (service, definition) => {
@@ -148,6 +134,14 @@ export function createToolCatalog({ root = process.env.HETZER_ROOT || process.cw
             inputSchema: definition.inputSchema || EMPTY_SCHEMA,
             serviceId: service.id,
             permittedTargets,
+            destinationOrigin: (() => {
+                const base = serviceUrl(service, fileEnv);
+                try {
+                    return base ? new URL(base).origin : "";
+                } catch {
+                    return "";
+                }
+            })(),
             annotations: {
                 readOnlyHint: definition.annotations?.readOnlyHint ?? !hasSchemaProps,
                 destructiveHint: definition.annotations?.destructiveHint ?? false,
@@ -346,7 +340,7 @@ export function createToolCatalog({ root = process.env.HETZER_ROOT || process.cw
             let finalArgs = normalizedArgs;
             const collectedSecrets = [];
             try {
-                if (!["hetzer_vault_has", "hetzer_sniffer_scan", "hetzer_sniffer_redact"].includes(name)) {
+                if (!["hetzer_vault_has", "hetzer_sniffer_scan"].includes(name)) {
                     finalArgs = resolveSecretRefsInPayload(normalizedArgs, (id) => {
                         const v = getVault();
                         const entry = v.find(id);
@@ -354,6 +348,17 @@ export function createToolCatalog({ root = process.env.HETZER_ROOT || process.cw
                         const permittedTargets = tool.permittedTargets || new Set(["global", "shared"]);
                         if (!permittedTargets.has(entry.projectId)) {
                             throw new Error(`Credential 'secretRef:${id}' (target '${entry.projectId}') is not permitted for service '${tool.serviceId || name}'.`);
+                        }
+                        if (!tool.destinationOrigin) {
+                            throw new Error(`Credential 'secretRef:${id}' cannot be substituted in local non-service tool '${name}'.`);
+                        }
+                        if (!entry.allowedOrigins || !entry.allowedOrigins.includes(tool.destinationOrigin)) {
+                            throw new Error(
+                                `Credential 'secretRef:${id}' destination origin '${tool.destinationOrigin}' is not permitted by vault grant.`
+                            );
+                        }
+                        if (!entry.allowedActions || !entry.allowedActions.includes("mcp.tools/call")) {
+                            throw new Error(`Credential 'secretRef:${id}' does not have 'mcp.tools/call' action grant in Grimoire Vault.`);
                         }
                         const secret = v.resolve(id, { targetId: entry.projectId, action: "mcp.tools/call" });
                         if (secret === null) {
