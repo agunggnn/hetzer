@@ -19,7 +19,7 @@ import {
     writeInstanceKey,
 } from "../vault/hetzer-vault.mjs";
 import { autoIngestPlaintextEnv, migrateEnvCredentials } from "../vault/migrate-env.mjs";
-import { setupCanaryTrap } from "../vault/canary.mjs";
+import { listExternalCanaries, plantExternalCanary, removeExternalCanary, setupCanaryTrap } from "../vault/canary.mjs";
 import { readAuditEvents, recordAuditEvent, rotateAuditLedger, verifyAuditLedger } from "../vault/audit.mjs";
 import { redactAndVault, scanText, restoreSecrets } from "../vault/sniffer.mjs";
 import { getHetzerAsciiBanner, printHetzerBanner } from "./banner.mjs";
@@ -348,7 +348,7 @@ Commands:
   hook [install|uninstall|check] Manage Git Pre-Commit Guard to prevent accidental token leaks
   sniffer [scan|redact] <t> Detect or redact credentials supported by the scanner rules
   creds [list|request|approve|status|reveal|set|grant|isolate-key] Manage encrypted secrets in Grimoire Vault (AES-256-GCM)
-  canary [setup]            Deploy decoy canary honey-token tripwire to catch prompt injections
+  canary [setup|plant|list|remove] Deploy a local decoy, or plant an externally alerting one (canary plant <file> --var NAME)
   audit [verify [--require-mac]|tail [n]|rotate [--yes] [--reason <text>] [--allow-unkeyed]]
                               Verify the hash-chain (and MACs), inspect the ledger, or archive it and start a new one
   exec [--allow <ids>] [--policy <file>] [--sandbox [image]] [--sandbox-mount <dir>] [--host] [--strict] [--canary] [--timeout <t>] -- <c>
@@ -794,7 +794,50 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             process.stdout.write("================================================================================\n");
             return;
         }
-        throw new Error(`Unknown canary subcommand: '${sub}'. Use 'setup'.`);
+        if (sub === "plant") {
+            const usage = "Usage: hetzer canary plant <file> --var NAME [--var NAME] [--id decoy-<name>] [--label <text>]";
+            const file = args[1];
+            if (!file || file.startsWith("--")) throw new Error(usage);
+            const opts = args.slice(2);
+            const names = opts.flatMap((item, index) => (item === "--var" && opts[index + 1] ? [opts[index + 1]] : []));
+            if (!names.length) throw new Error(usage);
+            const option = (name) => { const index = opts.indexOf(name); return index >= 0 ? opts[index + 1] : undefined; };
+            // The decoy values come from the person who obtained them, never from a command line or an agent.
+            assertInteractiveHumanSession({ operation: "'hetzer canary plant'" });
+            const entries = [];
+            for (const name of names) {
+                entries.push({ name, value: await promptSecret(`Decoy value for ${name} (input hidden): `) });
+            }
+            const planted = plantExternalCanary({ root, file, entries, id: option("--id"), label: option("--label") });
+            process.stdout.write("================================================================================\n");
+            process.stdout.write("  HETZER - EXTERNAL CANARY PLANTED\n");
+            process.stdout.write("================================================================================\n");
+            process.stdout.write(`  [v] Canary ID      : ${planted.id}\n`);
+            process.stdout.write(`  [v] Bait file      : ${planted.file} (${planted.names.join(", ")})\n`);
+            process.stdout.write(`  [v] Kept out of Git: ${planted.gitExclude || "not in a Git repository"}\n`);
+            process.stdout.write(`  [v] Fingerprints   : ${planted.registryFile} (no values stored)\n`);
+            process.stdout.write("  The service that issued the decoy alerts you when it is used. Hetzer does not.\n");
+            process.stdout.write("================================================================================\n");
+            return;
+        }
+        if (sub === "list") {
+            const canaries = listExternalCanaries({ root });
+            if (!canaries.length) {
+                process.stdout.write("No external canaries are planted for this workspace. Plant one with 'hetzer canary plant <file> --var NAME'.\n");
+                return;
+            }
+            for (const entry of canaries) {
+                process.stdout.write(`${entry.id}  ${entry.present ? "present" : "MISSING OR CHANGED"}  ${entry.file}  ${entry.names.join(",")}${entry.label ? `  (${entry.label})` : ""}\n`);
+            }
+            return;
+        }
+        if (sub === "remove") {
+            if (!args[1]) throw new Error("Usage: hetzer canary remove <decoy-id>");
+            const removed = removeExternalCanary({ root, id: args[1] });
+            process.stdout.write(`Removed canary '${removed.id}' (${removed.removedLines} line(s) from ${removed.file}). Revoke it at the service that issued it.\n`);
+            return;
+        }
+        throw new Error(`Unknown canary subcommand: '${sub}'. Use 'setup', 'plant', 'list' or 'remove'.`);
     }
 
     if (command === "mcp") {

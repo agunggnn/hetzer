@@ -124,6 +124,8 @@ mandatory under `hetzer exec --strict`: the run does not start when they cannot 
 | `DOWNLOADER_BLOCKED` | `exec.mjs`, fail-soft | command name | `BLOCK` | `command`, `error` |
 | `REFLECTION_BLOCKED` | `exec.mjs`, fail-soft | command name | `BLOCK` | `command` |
 | `CANARY_TRIGGER` | `canary.mjs`, fail-soft | decoy credential id | `TRIGGERED` | `threatVector`, `timestamp` (the actor carries `actor` and `action`) |
+| `CANARY_PLANTED` | `canary.mjs`, `hetzer canary plant`, fail-soft | external canary id | `ALLOW` | `file`, `names`, `label` (never the values) |
+| `CANARY_REMOVED` | `canary.mjs`, `hetzer canary remove`, fail-soft | external canary id | `ALLOW` | `file`, `removedLines` |
 | `CRED_REQUEST` | `credential-request.mjs`, fail-soft | credential id | `ALLOW` | `requestId`, `ttlMs`, `allowedOrigins`, `rawInjection` |
 | `CRED_APPROVE` | `credential-request.mjs`, fail-soft | credential id | `ALLOW` | `requestId` |
 | `BROKER_LEASE_ISSUED` | `http-broker.mjs`, fail-soft | credential id | `ALLOW` | `targetOrigin`, `basePath`, `ttlSeconds`, `maxRequests`, `expiresAt` |
