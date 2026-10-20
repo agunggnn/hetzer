@@ -161,12 +161,15 @@ test("runDoctor treats Docker as optional when the srt sandbox engine is install
         const result = runDoctor({ root: tempRoot, defaultHome: "", exec, out: { write: (chunk) => { output += chunk; } } });
         assert.match(output, process.platform === "win32" ? /Docker CLI {8}: Not detected \[FAIL\]/ : /Docker CLI {8}: Not detected \[INFO\]/);
         if (process.platform === "win32") {
-            // Hetzer does not run srt on Windows, so Docker stays a reported issue there.
+            // Hetzer does not run srt on Windows, so a missing Docker stays a reported issue there, pointing at Docker.
             assert.match(output, /Sandbox \(srt\) {5}: Not supported on this platform/);
-            assert.equal(result.issues.some((issue) => /Docker/.test(issue.title)), true);
+            const sandboxIssue = result.issues.find((issue) => /No sandbox engine/.test(issue.title));
+            assert.ok(sandboxIssue, "Windows without Docker reports the missing sandbox engine");
+            assert.match(sandboxIssue.solution, /Docker Desktop/);
+            assert.doesNotMatch(sandboxIssue.solution, /sandbox-runtime/);
         } else {
             assert.match(output, /Sandbox \(srt\) {5}: 0\.0\.78 \[OK\]/);
-            assert.equal(result.issues.some((issue) => /Docker/.test(issue.title)), false);
+            assert.equal(result.issues.some((issue) => /Docker|sandbox engine/i.test(issue.title)), false);
         }
     } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });
