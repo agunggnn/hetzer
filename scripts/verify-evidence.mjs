@@ -24,14 +24,15 @@ import { resolveSecretEnvironment } from "../cli/vault/secret-env.mjs";
 import { detectAgentAncestor, setCredential } from "../cli/vault/creds.mjs";
 import { scanText, redactAndVault } from "../cli/vault/sniffer.mjs";
 import { scanAddedLines } from "../cli/core/git-hook.mjs";
-import { isCanaryCredential, triggerCanaryAlert } from "../cli/vault/canary.mjs";
+import { isCanaryCredential, listExternalCanaries, plantExternalCanary, removeExternalCanary, triggerCanaryAlert } from "../cli/vault/canary.mjs";
 import { computeAuditMac, Grimoire, isolateMasterKey, RETIRED_MASTER_KEY_ALIAS, resolveMasterKey, VAULT_FORMAT_VERSION } from "../cli/vault/hetzer-vault.mjs";
-import { initializeProject } from "../cli/core/cli.mjs";
+import { initializeProject, main as hetzerMain } from "../cli/core/cli.mjs";
 import { parseEnv } from "../cli/core/env.mjs";
 import * as sdk from "../sdk/index.mjs";
 import { createHetzer, SDK_ERROR_CODES } from "../sdk/index.mjs";
 import { createToolCatalog } from "../cli/mcp/catalog.mjs";
-import { DEFAULT_SANDBOX_IMAGE, executeSandboxedProcess, resolveSandboxMount } from "../cli/vault/sandbox.mjs";
+import { DEFAULT_SANDBOX_IMAGE, executeSandboxedProcess, resolveSandboxMount, selectSandboxEngine } from "../cli/vault/sandbox.mjs";
+import { buildSrtArgs, buildSrtSettings, createSrtRunDir, detectSrt, writeSrtSettings } from "../cli/vault/srt-sandbox.mjs";
 import {
     assertNoSensitivePathAccess,
     assertNoUntrustedDownloader,
@@ -1554,6 +1555,192 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
         observed: Object.entries(checks).map(([name, value]) => `${name}: ${value}`).join(". ") + ".",
         pass,
         boundary: "This removes the key from the workspace, not from the user account: any process running as the same OS user can still read ~/.hetzer/keys. It helps when the reader sees only the workspace (a sandbox that mounts the project, a repository upload, a backup of the project folder). A key supplied in HETZER_GRIMOIRE_KEY is never written to disk. Workspaces initialized before 0.7.0 keep their key in .env until 'hetzer creds isolate-key' moves it. The exec check matches command text, so a script that builds the path at run time is not caught; run untrusted code in the sandbox.",
+    });
+}
+
+// -----------------------------------------------------------------------------
+// Test 17: Container-free srt sandbox settings and engine selection
+// -----------------------------------------------------------------------------
+{
+    const scratch = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-verify-srt-")));
+    const home = path.join(scratch, "home");
+    const project = path.join(home, "proj");
+    const run = createSrtRunDir();
+    const checks = {};
+    let enforcement = "not run: srt is not installed on this host";
+    try {
+        fs.mkdirSync(path.join(home, ".ssh"), { recursive: true });
+        fs.mkdirSync(path.join(project, ".git", "hooks"), { recursive: true });
+        fs.writeFileSync(path.join(home, ".ssh", "id_ed25519"), "synthetic-not-a-key\n");
+        fs.writeFileSync(path.join(project, ".env"), "API_KEY=secretRef:x\n");
+        fs.writeFileSync(path.join(project, "readme.txt"), "project-file\n");
+        const plan = resolveSandboxMount({ mountDir: project, root: project, envFile: path.join(project, ".env"), homeDir: home });
+        const settings = buildSrtSettings({ mountDir: plan.mountDir, masks: plan.masks, homeDir: home, tmpDir: run.tmpDir, settingsFile: run.settingsFile });
+        checks.homeReadDenied = settings.filesystem.denyRead.includes(home) && settings.filesystem.denyRead.includes(path.join(home, ".ssh"));
+        checks.projectReadAllowed = settings.filesystem.allowRead.includes(plan.mountDir);
+        checks.workspaceEnvHidden = settings.filesystem.denyRead.includes(path.join(project, ".env"));
+        checks.writesConfined = settings.filesystem.allowWrite.every((entry) => entry === plan.mountDir || entry === run.tmpDir)
+            && !settings.filesystem.allowWrite.includes(fs.realpathSync.native(os.tmpdir()));
+        checks.noNetworkByDefault = settings.network.allowedDomains.length === 0;
+        const refused = (fn) => { try { fn(); return false; } catch (error) { return Boolean(error.code); } };
+        checks.credentialStoreReopenRefused = refused(() => buildSrtSettings({ mountDir: project, homeDir: home, tmpDir: run.tmpDir, allowRead: [path.join(home, ".ssh")] }));
+        checks.homeWriteRefused = refused(() => buildSrtSettings({ mountDir: project, homeDir: home, tmpDir: run.tmpDir, allowWrite: [home] }));
+        checks.wildcardHostRefused = refused(() => buildSrtSettings({ mountDir: project, homeDir: home, tmpDir: run.tmpDir, allowHosts: ["*"] }));
+        const docker = () => ({ status: 0, stdout: "1.0.0" });
+        checks.allowlistSelectsSrt = selectSandboxEngine({ sandboxAllowHosts: ["api.github.com"] }, { execSyncFn: docker, baseEnv: {}, platform: "linux" }).type === "srt";
+        checks.allowlistWithContainerRefused = refused(() => selectSandboxEngine({ sandboxEngine: "docker", sandboxAllowHosts: ["api.github.com"] }, { execSyncFn: docker, baseEnv: {}, platform: "linux" }));
+
+        const realSrt = detectSrt();
+        if (realSrt.ok) {
+            writeSrtSettings(run.settingsFile, settings);
+            const sandboxed = (command, args) => spawnSync(realSrt.bin, buildSrtArgs({ settingsFile: run.settingsFile, command, commandArgs: args }), {
+                cwd: plan.mountDir, encoding: "utf8", timeout: 60000, env: { PATH: process.env.PATH, HOME: home, LANG: "C", TMPDIR: run.tmpDir },
+            });
+            const real = {
+                projectReadable: sandboxed("cat", [path.join(project, "readme.txt")]).stdout.includes("project-file"),
+                sshKeyUnreadable: sandboxed("cat", [path.join(home, ".ssh", "id_ed25519")]).status !== 0,
+                envHidden: !sandboxed("cat", [path.join(project, ".env")]).stdout.includes("secretRef"),
+                hookNotWritable: (sandboxed("sh", ["-c", `echo x > ${JSON.stringify(path.join(project, ".git", "hooks", "pre-commit"))}`]), !fs.existsSync(path.join(project, ".git", "hooks", "pre-commit"))),
+                outsideWriteKeptOff: (sandboxed("touch", [path.join(home, "outside")]), !fs.existsSync(path.join(home, "outside"))),
+            };
+            checks.enforcedByRealSrt = Object.values(real).every(Boolean);
+            enforcement = `srt ${realSrt.version}: ${Object.entries(real).map(([name, value]) => `${name}=${value}`).join(", ")}`;
+        }
+    } finally {
+        fs.rmSync(scratch, { recursive: true, force: true });
+        fs.rmSync(run.dir, { recursive: true, force: true });
+    }
+    const pass = Object.values(checks).every(Boolean);
+
+    recordTest({
+        id: "VERIFY-SEC-017",
+        name: "Container-Free srt Sandbox Settings and Engine Selection",
+        target: "cli/vault/srt-sandbox.mjs -> buildSrtSettings(), detectSrt(); cli/vault/sandbox.mjs -> selectSandboxEngine(), executeSandboxedProcess()",
+        threat: "Code running in the sandbox reads credentials under the home directory or the Hetzer files in the project, writes start-up files or Git hooks that run on the host later, or sends data to any host",
+        input: "A temporary home directory with ~/.ssh, a project inside it with .env and .git/hooks; requests to re-open ~/.ssh, write the home directory, allow every host, and use an allowlist with a container engine",
+        method: "Build the settings Hetzer passes to srt and inspect them; run the refusals; select engines with a fake probe; when srt is installed, run cat, touch and sh under srt with those settings and check the host file system afterwards",
+        expected: "Home and credential stores read-denied, project re-allowed with .env still hidden, writes only to the project and the run's own temporary directory, no network without a listed host; the unsafe requests refused; allowlist options select srt and are refused with a container engine; under a real srt the project is readable, the key and .env are not, and a hook or a file outside the project does not reach the host",
+        observed: Object.entries(checks).map(([name, value]) => `${name}: ${value}`).join(". ") + `. Enforcement: ${enforcement}.`,
+        pass,
+        boundary: "srt is an external program (Anthropic sandbox-runtime, tested with 0.0.78) using sandbox-exec on macOS and bubblewrap with seccomp on Linux; Hetzer generates its policy and does not reimplement it. Kernel and sandbox vulnerabilities are outside it. Every --sandbox-allow-read, --sandbox-allow-write and --sandbox-allow-host entry is reachable. Hetzer's extra project paths are denied only when they exist. Brokered credentials are refused under srt. The network allowlist is exercised by cli/vault/srt-sandbox.test.mjs where CI enables it, not by this protocol.",
+    });
+}
+
+// -----------------------------------------------------------------------------
+// Test 18: hetzer agent runs the agent in the sandbox with no credential by default
+// -----------------------------------------------------------------------------
+if (process.platform !== "win32") {
+    const scratch = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-verify-agent-")));
+    const project = path.join(scratch, "project");
+    const envDump = path.join(scratch, "agent-env.txt");
+    const argsDump = path.join(scratch, "agent-args.txt");
+    const fakeSrt = path.join(scratch, "fake-srt");
+    const auditLog = path.join(scratch, "audit.log");
+    const secret = ["SYNTH", "agent", "raw", "value", "0123456789"].join("-");
+    const masterKey = ["verify", "agent", "master", "key", "0123456789abcdef"].join("-");
+    const saved = { exitCode: process.exitCode, audit: process.env.HETZER_AUDIT_LOG_PATH, srt: process.env.HETZER_SRT_BIN, key: process.env.HETZER_GRIMOIRE_KEY, stderr: process.stderr.write };
+    const checks = {};
+    try {
+        fs.mkdirSync(path.join(scratch, "data"), { recursive: true });
+        fs.mkdirSync(project);
+        const vault = new Grimoire({ dbPath: path.join(scratch, "data", "hetzer-vault.db"), masterKey });
+        vault.create({ id: "raw-cred", projectId: "proj", secret, allowedActions: ["process.start"], rawInjection: "allow" });
+        vault.close();
+        fs.writeFileSync(path.join(scratch, ".env"), "API_KEY=secretRef:raw-cred\n");
+        fs.writeFileSync(fakeSrt, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 0.0.78; exit 0; fi\nenv > ${JSON.stringify(envDump)}\nprintf '%s\\n' "$@" > ${JSON.stringify(argsDump)}\nexit 0\n`, { mode: 0o755 });
+        process.env.HETZER_AUDIT_LOG_PATH = auditLog;
+        process.env.HETZER_SRT_BIN = fakeSrt;
+        process.env.HETZER_GRIMOIRE_KEY = masterKey;
+        process.stderr.write = () => true;
+        await hetzerMain(["agent", "--sandbox-mount", project, "--", "/bin/true"], { root: scratch });
+        const childEnv = fs.readFileSync(envDump, "utf8");
+        const srtArgs = fs.readFileSync(argsDump, "utf8").trim().split("\n");
+        checks.ranThroughSrt = srtArgs.includes("--settings") && srtArgs.slice(srtArgs.indexOf("--")).join(" ") === "-- /bin/true";
+        checks.noCredentialByDefault = !childEnv.includes(secret) && !/^API_KEY=/m.test(childEnv);
+        checks.masterKeyNotPassed = !childEnv.includes(masterKey) && !/^HETZER_GRIMOIRE_KEY=/m.test(childEnv);
+        const events = fs.readFileSync(auditLog, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+        checks.startAndExitRecorded = events.some((event) => event.eventType === "SANDBOX_EXEC" && event.details.agent === true && event.details.engine === "srt")
+            && events.some((event) => event.eventType === "AGENT_EXIT" && event.details.status === 0);
+        let hostRefused = false;
+        try {
+            await hetzerMain(["agent", "--host", "--", "/bin/true"], { root: scratch });
+        } catch (error) {
+            hostRefused = /always runs the agent in a sandbox/.test(error.message);
+        }
+        checks.hostModeRefused = hostRefused;
+    } finally {
+        process.exitCode = saved.exitCode;
+        process.stderr.write = saved.stderr;
+        for (const [name, value] of [["HETZER_AUDIT_LOG_PATH", saved.audit], ["HETZER_SRT_BIN", saved.srt], ["HETZER_GRIMOIRE_KEY", saved.key]]) {
+            if (value === undefined) delete process.env[name];
+            else process.env[name] = value;
+        }
+        fs.rmSync(scratch, { recursive: true, force: true });
+    }
+    const pass = Object.values(checks).every(Boolean);
+
+    recordTest({
+        id: "VERIFY-SEC-018",
+        name: "Agent Containment Defaults (hetzer agent)",
+        target: "cli/core/cli.mjs -> 'agent' command; cli/vault/sandbox.mjs -> runSrtSandbox()",
+        threat: "A coding agent runs on the host with the user's full access, or is started in a sandbox that still receives the workspace credentials or the master key",
+        input: "A workspace whose .env binds a raw-injectable credential, HETZER_GRIMOIRE_KEY in the environment, and a stand-in srt that records its arguments and environment",
+        method: "Run 'hetzer agent -- /bin/true' and inspect what the engine received and what the audit ledger recorded; run it again with --host",
+        expected: "The agent is started through srt with Hetzer's settings file; neither the credential nor the master key reaches it without --allow; SANDBOX_EXEC (agent: true) and AGENT_EXIT are recorded; --host is refused",
+        observed: Object.entries(checks).map(([name, value]) => `${name}: ${value}`).join(". ") + ".",
+        pass,
+        boundary: "The stand-in engine shows what Hetzer hands to srt, not srt's enforcement (VERIFY-SEC-017 covers that when srt is installed). The session uses the terminal directly, so its output is not redacted; a credential named with --allow and --allow-raw-unmediated is visible to the agent. The agent's own API key and state directory are outside Hetzer.",
+    });
+}
+
+// -----------------------------------------------------------------------------
+// Test 19: External canaries are planted without leaving their values in a readable registry
+// -----------------------------------------------------------------------------
+{
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-verify-extcanary-")));
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-verify-extcanary-home-"));
+    const keyId = ["AKIA", "VERIFYDECOY", "00000"].join("");
+    const secretValue = ["verify", "decoy", "secret", "0123456789"].join("-");
+    const checks = {};
+    try {
+        const haveGit = spawnSync("git", ["-C", root, "init", "-q"], { encoding: "utf8" }).status === 0;
+        fs.writeFileSync(path.join(root, ".env"), "API_KEY=secretRef:api-key\n");
+        const bait = path.join(root, ".env.backup");
+        const planted = plantExternalCanary({
+            root, homeDir, file: bait, id: "decoy-verify",
+            entries: [{ name: "AWS_ACCESS_KEY_ID", value: keyId }, { name: "AWS_SECRET_ACCESS_KEY", value: secretValue }],
+        });
+        const registry = fs.readFileSync(planted.registryFile, "utf8");
+        checks.baitWritten = fs.readFileSync(bait, "utf8").includes(keyId);
+        checks.registryHoldsNoValue = !registry.includes(keyId) && !registry.includes(secretValue);
+        checks.registryOutsideWorkspace = path.relative(root, planted.registryFile).startsWith("..");
+        checks.keptOutOfGit = !haveGit || spawnSync("git", ["-C", root, "status", "--porcelain", "--", ".env.backup"], { encoding: "utf8" }).stdout.trim() === "";
+        let envRefused = false;
+        try {
+            plantExternalCanary({ root, homeDir, file: path.join(root, ".env"), entries: [{ name: "X_TOKEN", value: "x" }] });
+        } catch (error) {
+            envRefused = error.code === "ERR_CANARY_FILE_UNSAFE";
+        }
+        checks.workspaceEnvRefused = envRefused;
+        checks.listedPresent = listExternalCanaries({ root, homeDir }).some((entry) => entry.id === "decoy-verify" && entry.present);
+        checks.removed = removeExternalCanary({ root, homeDir, id: "decoy-verify" }).removedLines === 2 && !fs.existsSync(bait);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+    const pass = Object.values(checks).every(Boolean);
+
+    recordTest({
+        id: "VERIFY-SEC-019",
+        name: "External Canary Decoys",
+        target: "cli/vault/canary.mjs -> plantExternalCanary(), listExternalCanaries(), removeExternalCanary()",
+        threat: "Code that reads files directly takes credentials without ever asking Hetzer, so a local tripwire never fires; or the decoy registry tells a reader which values are decoys; or the decoy is committed",
+        input: "A Git workspace with a .env; a two-variable decoy planted in .env.backup; an attempt to plant in the workspace .env",
+        method: "Plant, read the registry and the bait file, ask Git for the bait file's status, attempt the refused location, list and remove",
+        expected: "The decoy is in the bait file; the registry outside the workspace holds fingerprints, not values; Git does not see the bait file; the workspace .env is refused; list shows the decoy present; remove deletes both lines and the emptied file",
+        observed: Object.entries(checks).map(([name, value]) => `${name}: ${value}`).join(". ") + ".",
+        pass,
+        boundary: "The alert comes from the service that issued the decoy, when the decoy is used; Hetzer makes no network call and cannot confirm the alert works. A scraper that recognises the decoy or never uses what it collects sets off nothing. The bait file is readable inside the sandbox on purpose.",
     });
 }
 

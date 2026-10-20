@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-10-13T06:59:32.763Z",
+  "timestamp": "2026-10-20T04:28:56.818Z",
   "nodeVersion": "v22.22.0",
   "platform": "linux",
   "results": [
@@ -59,7 +59,7 @@
       "input": "Small 30-byte build log line",
       "method": "Measure the median of 25 write-and-flush samples using dynamic retention and the bounded lexical scanner",
       "expected": "Median processing latency stays below 5ms and the complete line is emitted",
-      "observed": "Median processing latency: 0.017 ms. Output delivered: \"Compiling module auth.mjs...\".",
+      "observed": "Median processing latency: 0.021 ms. Output delivered: \"Compiling module auth.mjs...\".",
       "verdict": "PASS",
       "boundary": "Streams with secrets exceeding 128 chars scale buffer to 2x secret length to ensure boundary integrity."
     },
@@ -194,6 +194,54 @@
       "observed": "sdkHasNoRevealMember: true. packageExportsOnlySdk: true. sdkResultsHaveNoValue: true. idGrammarIsOne: true. sdkExecutionChecksGrant: true. freshVaultStamped: true. unstampedVaultRestamped: true. format1VaultMigrated: true. migrationRecordOwedUntilWritten: true. retiredKeyAliasRefused: true. newerVaultRefusedUntouched: true. inProcessCallerCanStillResolve: true.",
       "verdict": "PASS",
       "boundary": "The SDK narrows what a well-behaved caller can ask for. Code in the same process or under the same user can still import the vault module, call resolve() or read the database and key store (R-05 stays open for in-process callers; untrusted agents belong out of process in the sandbox). The package exports map limits specifiers, not file access. Lease interfaces are not part of apiVersion 1. Builds from before the format marker do not check it, so an older build can still open and alter a newer vault. The migration is one-way: rows in the dropped tables are counted in the audit record but not copied, and a build that checks the marker at format 1 refuses the migrated vault. The ledger record is written at least once (processes opening at the same moment can each write it) and only by a process that has the key. A legacy JSON vault is reported, not imported."
+    },
+    {
+      "id": "VERIFY-SEC-016",
+      "name": "Master Key Kept Outside the Workspace",
+      "target": "cli/core/cli.mjs -> initializeProject(); cli/vault/hetzer-vault.mjs -> locateMasterKey(), writeInstanceKey(), isolateMasterKey(); cli/vault/exec-policy.mjs -> SENSITIVE_HOST_PATTERNS",
+      "threat": "A tool or model that can read the workspace (a coding agent, a compromised dependency, a sandbox that mounts the project) reads the master key next to the encrypted vault and decrypts every credential",
+      "input": "A fresh workspace initialized with a temporary home directory; a workspace whose .env holds a key from an earlier build; a command string naming the key files",
+      "method": "Initialize, scan every file under the workspace for the key bytes, check the key file mode, resolve the key, re-initialize, delete the key file and initialize again; isolate the legacy key and resolve it; classify the command strings",
+      "expected": "The key is written only to ~/.hetzer/keys/<instance-id>.key with mode 0600 and no workspace file holds it; .env records only the non-secret instance id; re-initializing keeps the key; a missing key over an existing vault is refused with ERR_MASTER_KEY_NOT_FOUND instead of being replaced; isolate-key moves a legacy key out of .env; exec flags commands that name the key files",
+      "observed": "keyFileOutsideWorkspace: true. keyFileOwnerOnly: true. noWorkspaceFileHoldsKey: true. envHasOnlyInstanceId: true. keyResolves: true. reinitKeepsKey: true. lostKeyRefused: true. isolateKeyMovesLegacyKey: true. execGuardNamesKeyFiles: true.",
+      "verdict": "PASS",
+      "boundary": "This removes the key from the workspace, not from the user account: any process running as the same OS user can still read ~/.hetzer/keys. It helps when the reader sees only the workspace (a sandbox that mounts the project, a repository upload, a backup of the project folder). A key supplied in HETZER_GRIMOIRE_KEY is never written to disk. Workspaces initialized before 0.7.0 keep their key in .env until 'hetzer creds isolate-key' moves it. The exec check matches command text, so a script that builds the path at run time is not caught; run untrusted code in the sandbox."
+    },
+    {
+      "id": "VERIFY-SEC-017",
+      "name": "Container-Free srt Sandbox Settings and Engine Selection",
+      "target": "cli/vault/srt-sandbox.mjs -> buildSrtSettings(), detectSrt(); cli/vault/sandbox.mjs -> selectSandboxEngine(), executeSandboxedProcess()",
+      "threat": "Code running in the sandbox reads credentials under the home directory or the Hetzer files in the project, writes start-up files or Git hooks that run on the host later, or sends data to any host",
+      "input": "A temporary home directory with ~/.ssh, a project inside it with .env and .git/hooks; requests to re-open ~/.ssh, write the home directory, allow every host, and use an allowlist with a container engine",
+      "method": "Build the settings Hetzer passes to srt and inspect them; run the refusals; select engines with a fake probe; when srt is installed, run cat, touch and sh under srt with those settings and check the host file system afterwards",
+      "expected": "Home and credential stores read-denied, project re-allowed with .env still hidden, writes only to the project and the run's own temporary directory, no network without a listed host; the unsafe requests refused; allowlist options select srt and are refused with a container engine; under a real srt the project is readable, the key and .env are not, and a hook or a file outside the project does not reach the host",
+      "observed": "homeReadDenied: true. projectReadAllowed: true. workspaceEnvHidden: true. writesConfined: true. noNetworkByDefault: true. credentialStoreReopenRefused: true. homeWriteRefused: true. wildcardHostRefused: true. allowlistSelectsSrt: true. allowlistWithContainerRefused: true. enforcedByRealSrt: true. Enforcement: srt 0.0.78: projectReadable=true, sshKeyUnreadable=true, envHidden=true, hookNotWritable=true, outsideWriteKeptOff=true.",
+      "verdict": "PASS",
+      "boundary": "srt is an external program (Anthropic sandbox-runtime, tested with 0.0.78) using sandbox-exec on macOS and bubblewrap with seccomp on Linux; Hetzer generates its policy and does not reimplement it. Kernel and sandbox vulnerabilities are outside it. Every --sandbox-allow-read, --sandbox-allow-write and --sandbox-allow-host entry is reachable. Hetzer's extra project paths are denied only when they exist. Brokered credentials are refused under srt. The network allowlist is exercised by cli/vault/srt-sandbox.test.mjs where CI enables it, not by this protocol."
+    },
+    {
+      "id": "VERIFY-SEC-018",
+      "name": "Agent Containment Defaults (hetzer agent)",
+      "target": "cli/core/cli.mjs -> 'agent' command; cli/vault/sandbox.mjs -> runSrtSandbox()",
+      "threat": "A coding agent runs on the host with the user's full access, or is started in a sandbox that still receives the workspace credentials or the master key",
+      "input": "A workspace whose .env binds a raw-injectable credential, HETZER_GRIMOIRE_KEY in the environment, and a stand-in srt that records its arguments and environment",
+      "method": "Run 'hetzer agent -- /bin/true' and inspect what the engine received and what the audit ledger recorded; run it again with --host",
+      "expected": "The agent is started through srt with Hetzer's settings file; neither the credential nor the master key reaches it without --allow; SANDBOX_EXEC (agent: true) and AGENT_EXIT are recorded; --host is refused",
+      "observed": "ranThroughSrt: true. noCredentialByDefault: true. masterKeyNotPassed: true. startAndExitRecorded: true. hostModeRefused: true.",
+      "verdict": "PASS",
+      "boundary": "The stand-in engine shows what Hetzer hands to srt, not srt's enforcement (VERIFY-SEC-017 covers that when srt is installed). The session uses the terminal directly, so its output is not redacted; a credential named with --allow and --allow-raw-unmediated is visible to the agent. The agent's own API key and state directory are outside Hetzer."
+    },
+    {
+      "id": "VERIFY-SEC-019",
+      "name": "External Canary Decoys",
+      "target": "cli/vault/canary.mjs -> plantExternalCanary(), listExternalCanaries(), removeExternalCanary()",
+      "threat": "Code that reads files directly takes credentials without ever asking Hetzer, so a local tripwire never fires; or the decoy registry tells a reader which values are decoys; or the decoy is committed",
+      "input": "A Git workspace with a .env; a two-variable decoy planted in .env.backup; an attempt to plant in the workspace .env",
+      "method": "Plant, read the registry and the bait file, ask Git for the bait file's status, attempt the refused location, list and remove",
+      "expected": "The decoy is in the bait file; the registry outside the workspace holds fingerprints, not values; Git does not see the bait file; the workspace .env is refused; list shows the decoy present; remove deletes both lines and the emptied file",
+      "observed": "baitWritten: true. registryHoldsNoValue: true. registryOutsideWorkspace: true. keptOutOfGit: true. workspaceEnvRefused: true. listedPresent: true. removed: true.",
+      "verdict": "PASS",
+      "boundary": "The alert comes from the service that issued the decoy, when the decoy is used; Hetzer makes no network call and cannot confirm the alert works. A scraper that recognises the decoy or never uses what it collects sets off nothing. The bait file is readable inside the sandbox on purpose."
     }
   ]
 }

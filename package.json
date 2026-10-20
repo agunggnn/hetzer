@@ -1,6 +1,6 @@
 {
   "name": "@agunggnn/hetzer",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "description": "Local credential safety for AI-assisted workflows with an encrypted vault, scoped injection, output redaction, MCP proxy, and agent guidance.",
   "bin": {
     "hetzer": "cli/bin/hetzer.js"
@@ -24,6 +24,7 @@
     "scripts/build-package.mjs",
     "scripts/package-stage.mjs",
     "scripts/render-banner.mjs",
+    "docs/agent-sandbox.md",
     "docs/agent-sandbox-threat-model.md",
     "docs/architecture.md",
     "docs/audit-event-schema.md",
@@ -35,6 +36,7 @@
     "docs/mcp-guide.md",
     "docs/sdk-contract.md",
     "docs/upgrade-0.6.md",
+    "docs/upgrade-0.7.md",
     "docs/vault-format.md",
     "docs/system-logic-and-progress.md",
     "docs/value-benchmark.md",

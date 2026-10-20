@@ -78,3 +78,63 @@ jobs:
           node cli/bin/hetzer.js init "$RUNNER_TEMP/hetzer-smoke"
           cd "$RUNNER_TEMP/hetzer-smoke"
           node "$GITHUB_WORKSPACE/cli/bin/hetzer.js" doctor
+
+  srt-sandbox:
+    # Runs the container-free sandbox engine for real: the settings Hetzer generates are checked against
+    # Anthropic's sandbox-runtime (sandbox-exec on macOS, bubblewrap on Linux), including the network allowlist.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      SRT_VERSION: 0.0.78 # keep in sync with SRT_TESTED_VERSION in cli/vault/srt-sandbox.mjs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install srt prerequisites (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap socat ripgrep
+          # Ubuntu 24.04 restricts unprivileged user namespaces, which bubblewrap needs.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: Install srt prerequisites (macOS)
+        if: runner.os == 'macOS'
+        run: command -v rg || brew install ripgrep
+      - name: Install sandbox-runtime
+        run: |
+          npm install -g "@anthropic-ai/sandbox-runtime@$SRT_VERSION"
+          srt --version
+          test "$(srt --version | tr -d '[:space:]')" = "$SRT_VERSION"
+      - name: Check the version pin matches the code
+        run: grep -q "SRT_TESTED_VERSION = \"$SRT_VERSION\"" cli/vault/srt-sandbox.mjs
+      - name: Run srt tests, network allowlist included
+        env:
+          HETZER_SRT_NETWORK_TEST: "1"
+          HETZER_SRT_REQUIRED: "1"
+        run: node --test --test-reporter=spec cli/vault/srt-sandbox.test.mjs
+      - name: Evidence with real srt enforcement
+        run: |
+          npm run verify -- --no-write | tee verify.log
+          grep -q "enforcedByRealSrt: true" verify.log
+      - name: Smoke test through the CLI
+        run: |
+          mkdir -p "$RUNNER_TEMP/srt-smoke"
+          cd "$RUNNER_TEMP/srt-smoke"
+          node "$GITHUB_WORKSPACE/cli/bin/hetzer.js" init . > /dev/null
+          echo "project-file" > readme.txt
+          node "$GITHUB_WORKSPACE/cli/bin/hetzer.js" exec --sandbox-engine srt -- cat readme.txt | grep -q project-file
+          if node "$GITHUB_WORKSPACE/cli/bin/hetzer.js" exec --sandbox-engine srt -- cat .env; then
+            echo "the workspace .env was readable inside the srt sandbox" >&2
+            exit 1
+          fi
+          # --allow-sensitive-paths turns off Hetzer's command-text check, so srt is what has to refuse the read.
+          if node "$GITHUB_WORKSPACE/cli/bin/hetzer.js" exec --allow-sensitive-paths --sandbox-engine srt -- ls "$HOME/.hetzer/keys"; then
+            echo "the master key directory was readable inside the srt sandbox" >&2
+            exit 1
+          fi
