@@ -26,15 +26,17 @@ sequenceDiagram
 | Component | Source | Current behavior |
 |---|---|---|
 | Grimoire vault | `cli/vault/hetzer-vault.mjs` | AES-256-GCM credential values in SQLite with origin grants (`allowedOrigins`), mandatory action grants (`allowedActions`), raw injection policy (`rawInjection`), policy approvals (`vault_approved_policies`), private `#decryptRaw` isolation, and `matchesSecret()` |
+| Master key custody | `cli/vault/hetzer-vault.mjs` (`locateMasterKey`, `writeInstanceKey`, `isolateMasterKey`), `cli/core/cli.mjs` (`initializeProject`) | Lookup order: environment, workspace `.env` (builds before 0.7.0), `~/.hetzer/keys/<HETZER_INSTANCE_ID>.key`, shared `~/.hetzer/grimoire.key`. `init` writes a per-instance key file (0600 in a 0700 directory) and only the instance id to `.env`; refuses to replace a missing key over an existing vault; `doctor` warns while the key is in `.env` |
 | Human guard | `cli/vault/human-guard.mjs` | Same-user agentic reveal block enforcing interactive TTY, agent env denial, and process ancestry inspection with sub-ms caching |
 | Secret scanner | `cli/vault/sniffer.mjs` | Provider regexes, database URLs, bounded PEM keys, and Shannon-entropy candidates |
 | Process runner | `cli/vault/exec.mjs` | Broker-by-default selection, vault-gated raw injection opt-out, strict base environment, reflection guard, stream sanitizer, subprocess canary stream tripwire, execution timeout guard |
+| Agent runner | `cli/core/cli.mjs` (`hetzer agent`) | Starts a whole agent in the sandbox (srt unless an engine or image is named) with an inherited terminal, no credential unless `--allow` names one, `--host`/`--no-sandbox`/`--broker-policy` refused, a pre-start check for commands installed under the home directory, `SANDBOX_EXEC` (`agent: true`) and `AGENT_EXIT` audit events |
 | Execution policy | `cli/vault/exec-policy.mjs` | Declarative capability policies: command whitelisting, credential boundaries, raw-opt-out boundaries, strict isolation, and timeout limits |
-| Container sandbox | `cli/vault/sandbox.mjs` | Ephemeral OCI container isolation (`--cap-drop=ALL`, `--security-opt=no-new-privileges`, loopback broker translation), project-only mount with Hetzer-owned paths hidden, injected-variable allowlist passed by name, digest-pinned default image, stated network mode |
+| Sandbox | `cli/vault/sandbox.mjs`, `cli/vault/srt-sandbox.mjs` | Engines `docker`/`podman` (ephemeral OCI container, `--cap-drop=ALL`, `--security-opt=no-new-privileges`, loopback broker translation, project-only mount with Hetzer-owned paths hidden, variables forwarded by name) and `srt` (Anthropic sandbox-runtime as an external program, 0.0.78 tested: home directory, Hetzer home and credential stores read-denied, project re-allowed with Hetzer files hidden, writes only in the project and a per-run `TMPDIR`, Git hooks and other host-executed project files write-protected, network only to `--sandbox-allow-host` entries, brokered credentials refused). `--sandbox-engine` selects; `auto` tries Docker, Podman, then srt |
 | Audit ledger | `cli/vault/audit.mjs` | Single append-only event ledger with SHA-256 hash chaining (`prevHash`), version 2 entries covering the actor, optional HMAC with the `hetzer:audit-integrity:v1` subkey, vault events mirrored in |
 | Compose runner | `cli/vault/compose-runner.mjs` | Scoped Compose environment and sanitized Docker/containers output pipes |
 | Credential CLI | `cli/vault/creds.mjs` and `cli/vault/credential-request.mjs` | Set/list/reveal plus metadata-only request/approve/status handoff; direct secret entry requires a human TTY and reveal retains native confirmation |
-| Canary | `cli/vault/canary.mjs` | Decoy token injection, aborts guarded reveal/resolution/stream leak with exit code 43, terminates child process tree |
+| Canary | `cli/vault/canary.mjs` | Decoy token injection, aborts guarded reveal/resolution/stream leak with exit code 43, terminates child process tree. External decoys (`hetzer canary plant`): values from an outside alerting service written to an untracked bait file, kept out of Git with `.git/info/exclude`, only SHA-256 fingerprints stored in `~/.hetzer/canaries/` |
 | Git hooks | `cli/core/git-hook.mjs` | Dual Git hooks (`pre-commit` & `commit-msg`), scans staged `.env` names, diff additions, and commit message text |
 | HTTP broker | `cli/vault/http-broker.mjs` | Loopback proxy injecting upstream credentials via ephemeral capabilities; enforces vault-approved target origins, mandatory `broker.proxy` action grants, and short-lived TTLs |
 | MCP | `cli/mcp/` | FastMCP server, metadata-only tools, virtual credential proxy (`secretRef:<id>` payload resolution bound to verified tool destination origins), canary guard, response sanitation |
@@ -48,7 +50,7 @@ sequenceDiagram
 - execution policy enforcement restricts commands and credentials to declared JSON manifests;
 - same-user agentic direct Node imports cannot reveal credentials without an interactive human TTY;
 - process ancestry inspection caches results in-process to maintain sub-millisecond execution latency;
-- workspace `.env` master keys take precedence over global isolated stores to prevent multi-project key collisions;
+- a key in the workspace `.env` (written by builds before 0.7.0) takes precedence over key files; `init` writes new keys to a per-instance file so workspaces never share or overwrite one another's key, and no workspace file holds the key (`VERIFY-SEC-016`);
 - non-interactive runners, HTTP brokers, and MCP proxies resolve capability-scoped secrets without TTY blockage;
 - known short values and values divided across output chunks are redacted;
 - multiline PKCS#8 keys and credentialed database URLs are detected;
@@ -74,6 +76,9 @@ sequenceDiagram
 - vault grant columns are HMAC-signed with a subkey derived from the master key, failing closed upon direct SQLite database tampering (`VERIFY-SEC-011`);
 - unsigned or altered grants and broker policy approvals are never honored and never signed automatically; a legacy credential becomes usable only after an operator reviews it with `hetzer creds grant --sign-existing` (`VERIFY-SEC-012`). Signatures carry no version, so a previously valid signed grant can be replayed by a writer who kept an old copy of the database, and a writer who can read the master key can still forge grants;
 - operator `hetzer creds grant <id>` CLI command safely configures grants behind interactive human TTY confirmation;
+- the srt settings deny reads of the home directory, the Hetzer home and credential stores, re-allow the project with Hetzer files hidden, confine writes, allow no network without a listed host, refuse re-opening credential stores and writing the home directory, and are enforced by a real srt where one is installed (`VERIFY-SEC-017`, `cli/vault/srt-sandbox.test.mjs`, CI job `srt-sandbox` on Linux and macOS);
+- `hetzer agent` starts the agent through the sandbox without the workspace credentials or the master key, records its start and exit, and refuses host mode (`VERIFY-SEC-018`);
+- external decoys are written to an untracked bait file, the workspace `.env` is refused, and the registry outside the workspace holds fingerprints, not values (`VERIFY-SEC-019`);
 - installer tests redirect user-level paths to a temporary home.
 - credential approval requests contain no secret material, expire, and expose status only to the requesting workflow;
 
@@ -82,8 +87,9 @@ sequenceDiagram
 - Pattern and entropy scanning is heuristic and bounded. It cannot prove that text contains no secrets.
 - `hetzer exec` is not a sandbox. Raw-opted-out child code can transform a value, send it over the network, or access other same-user resources. Brokered clients can still make any operation permitted by their broker policy and upstream account.
 - TTY, environment-marker, process-name, and UI checks do not authenticate a human and can be imitated by same-user code.
-- The isolated key file is separate from the project but remains a user-readable file.
-- Canaries observe only guarded application paths.
+- Key files under `~/.hetzer/keys` are outside the workspace but readable by any process running as the same user outside a sandbox.
+- Local canaries observe only guarded application paths. External decoys alert, through the issuing service, only when used.
+- The sandbox engines are process sandboxes, not virtual machines; kernel and engine vulnerabilities, and every path or host re-opened with `--sandbox-allow-*`, are outside them. Container engines leave outbound network open unless `--sandbox-network none`. srt 0.0.78 cannot deny a project path that does not exist yet on Linux, and does not reach the host broker. Interactive `hetzer agent` sessions are not redacted.
 - Host binding compares `bindHosts` with the OS hostname of the running process. It identifies the machine, but it is not an attestation: same-user code that controls the hostname, or a copied vault on a machine given the same name, passes the check.
 - MCP sanitation covers Hetzer MCP results, not every tool a client can invoke.
 - Local Git hooks can be skipped.
@@ -105,7 +111,7 @@ Before release:
 
 - OS-backed key storage or external KMS integration;
 - server-side Git scanning integration;
-- stronger child-process isolation profiles;
+- stronger child-process isolation profiles (srt reaching the broker; a broker-only network profile for container engines);
 - fuzzing for stream boundaries, encodings, scanners, and environment construction;
 - signed release provenance and reproducible build evidence;
 - third-party security review.

@@ -11,10 +11,16 @@ import { configureMcp } from "../mcp/configure.mjs";
 import { diagnoseMcpService } from "../mcp/ping.mjs";
 import { KNOWN_CREDENTIALS, assertInteractiveHumanSession, authorizeCredentialReveal, listCredentials, promptSecret, revealCredential, setCredential } from "../vault/creds.mjs";
 import { approveCredentialRequest, createCredentialRequest, getCredentialRequest } from "../vault/credential-request.mjs";
-import { isolateMasterKey, resolveMasterKey } from "../vault/hetzer-vault.mjs";
+import {
+    generateInstanceId,
+    INSTANCE_ID_PATTERN,
+    isolateMasterKey,
+    locateMasterKey,
+    writeInstanceKey,
+} from "../vault/hetzer-vault.mjs";
 import { autoIngestPlaintextEnv, migrateEnvCredentials } from "../vault/migrate-env.mjs";
-import { setupCanaryTrap } from "../vault/canary.mjs";
-import { readAuditEvents, rotateAuditLedger, verifyAuditLedger } from "../vault/audit.mjs";
+import { listExternalCanaries, plantExternalCanary, removeExternalCanary, setupCanaryTrap } from "../vault/canary.mjs";
+import { readAuditEvents, recordAuditEvent, rotateAuditLedger, verifyAuditLedger } from "../vault/audit.mjs";
 import { redactAndVault, scanText, restoreSecrets } from "../vault/sniffer.mjs";
 import { getHetzerAsciiBanner, printHetzerBanner } from "./banner.mjs";
 import { runDoctor } from "./doctor.mjs";
@@ -151,6 +157,7 @@ export const KNOWN_COMMANDS = new Set([
     "canary",
     "audit",
     "exec",
+    "agent",
     "broker",
     "mcp",
     // Deprecated commands retained for informative redirection
@@ -223,11 +230,12 @@ function handleDeprecatedCommand(command) {
     process.exitCode = 1;
 }
 
-export function initializeProject(root) {
+export function initializeProject(root, { homeDir } = {}) {
     const resolvedRoot = path.resolve(root);
     // Refuses when only the retired key alias is configured: generating a key below would leave the existing vault undecryptable.
     const priorEnvFile = path.join(resolvedRoot, ".env");
-    resolveMasterKey({ root: resolvedRoot, envValues: fs.existsSync(priorEnvFile) ? parseEnv(fs.readFileSync(priorEnvFile, "utf8")) : {} });
+    const priorValues = fs.existsSync(priorEnvFile) ? parseEnv(fs.readFileSync(priorEnvFile, "utf8")) : {};
+    const located = locateMasterKey({ envValues: priorValues, homeDir });
     fs.mkdirSync(resolvedRoot, { recursive: true, mode: 0o700 });
     try { fs.chmodSync(resolvedRoot, 0o700); } catch { /* Windows */ }
     copyIfMissing(path.join(templatesDir, ".env.example"), path.join(resolvedRoot, ".env.example"));
@@ -239,18 +247,40 @@ export function initializeProject(root) {
     const envFile = path.join(resolvedRoot, ".env");
     copyIfMissing(path.join(resolvedRoot, ".env.example"), envFile);
     let text = fs.readFileSync(envFile, "utf8");
-    const values = parseEnv(text);
-    if (!values.HETZER_GRIMOIRE_KEY || String(values.HETZER_GRIMOIRE_KEY).startsWith("replace-")) {
-        text = replaceEnvValue(text, "HETZER_GRIMOIRE_KEY", crypto.randomBytes(48).toString("base64url"));
+    const vaultExists = fs.existsSync(path.join(dataDir, "hetzer-vault.db"));
+    // The shared key file belongs to whichever workspace was isolated into it; a new workspace gets its own key.
+    if (!located.key && vaultExists) {
+        const error = new Error(
+            `A vault exists at '${path.join(dataDir, "hetzer-vault.db")}' but no master key was found for it `
+            + "(HETZER_GRIMOIRE_KEY in the environment or .env, or the key file named by HETZER_INSTANCE_ID). "
+            + "Refusing to generate a new key: the credentials in that vault could not be decrypted with it. "
+            + "Restore the key, or move the vault aside if it holds nothing you need.",
+        );
+        error.code = "ERR_MASTER_KEY_NOT_FOUND";
+        throw error;
     }
+    const keepExisting = located.key && (located.source !== "shared-file" || vaultExists);
+    let masterKey = keepExisting ? located.key : "";
+    const keySource = keepExisting ? located.source : "instance-file";
+    let keyFile = "";
+    if (!keepExisting) {
+        const values = parseEnv(text);
+        const instanceId = INSTANCE_ID_PATTERN.test(String(values.HETZER_INSTANCE_ID || "").trim())
+            ? String(values.HETZER_INSTANCE_ID).trim()
+            : generateInstanceId();
+        masterKey = crypto.randomBytes(48).toString("base64url");
+        keyFile = writeInstanceKey({ instanceId, masterKey, homeDir });
+        text = replaceEnvValue(text, "HETZER_INSTANCE_ID", instanceId);
+    }
+    // An empty placeholder would be read as "no key"; drop it so .env does not suggest the key belongs there.
+    if (keySource !== "env-file") text = text.replace(/^HETZER_GRIMOIRE_KEY=\s*$\n?/m, "");
     fs.writeFileSync(envFile, text, { encoding: "utf8", mode: 0o600 });
     try { fs.chmodSync(envFile, 0o600); } catch { /* Windows ACLs are managed by the host. */ }
 
-    const current = parseEnv(text);
     migrateEnvCredentials({
         root: resolvedRoot,
         envFile,
-        masterKey: process.env.HETZER_GRIMOIRE_KEY || current.HETZER_GRIMOIRE_KEY,
+        masterKey,
         authorizationRef: "user:hetzer-init",
     });
     try {
@@ -259,6 +289,8 @@ export function initializeProject(root) {
     return {
         root: resolvedRoot,
         envFile,
+        keySource,
+        keyFile,
     };
 }
 
@@ -272,6 +304,16 @@ function printInitWizard(result) {
     process.stdout.write(`[v] Instance Location : ${result.root}${isGlobal ? " (Global User Home)" : " (Local Workspace)"}\n`);
     process.stdout.write(`[v] Configuration File: .env (permissions secured chmod 600)\n`);
     process.stdout.write(`[v] Grimoire Vault    : data/hetzer-vault.db (AES-256-GCM Encrypted)\n`);
+    if (result.keySource === "instance-file") {
+        process.stdout.write(`[v] Master Key        : ${result.keyFile || "~/.hetzer/keys/ (outside the workspace)"} (mode 0600)\n`);
+    } else if (result.keySource === "env-file") {
+        process.stdout.write("[!] Master Key        : stored in this workspace's .env, next to the vault.\n");
+        process.stdout.write("                        Move it out of the workspace: hetzer creds isolate-key\n");
+    } else if (result.keySource === "environment") {
+        process.stdout.write("[v] Master Key        : supplied by HETZER_GRIMOIRE_KEY in the environment (not written to disk)\n");
+    } else if (result.keySource === "shared-file") {
+        process.stdout.write(`[v] Master Key        : shared key file ~/.hetzer/grimoire.key (outside the workspace)\n`);
+    }
     process.stdout.write(`[v] MCP Server        : .mcp.json configured\n`);
     if (isGlobal && !globalCli) {
         process.stdout.write(`[!] Global Access     : 'hetzer' is NOT in your system PATH (running via npx or local script).\n`);
@@ -306,11 +348,15 @@ Commands:
   hook [install|uninstall|check] Manage Git Pre-Commit Guard to prevent accidental token leaks
   sniffer [scan|redact] <t> Detect or redact credentials supported by the scanner rules
   creds [list|request|approve|status|reveal|set|grant|isolate-key] Manage encrypted secrets in Grimoire Vault (AES-256-GCM)
-  canary [setup]            Deploy decoy canary honey-token tripwire to catch prompt injections
+  canary [setup|plant|list|remove] Deploy a local decoy, or plant an externally alerting one (canary plant <file> --var NAME)
   audit [verify [--require-mac]|tail [n]|rotate [--yes] [--reason <text>] [--allow-unkeyed]]
                               Verify the hash-chain (and MACs), inspect the ledger, or archive it and start a new one
   exec [--allow <ids>] [--policy <file>] [--sandbox [image]] [--sandbox-mount <dir>] [--host] [--strict] [--canary] [--timeout <t>] -- <c>
                               Run with mediated credentials; raw injection requires an audited opt-out
+       [--sandbox-engine <auto|docker|podman|srt>] [--sandbox-allow-host <host>] [--sandbox-allow-read <dir>] [--sandbox-allow-write <dir>]
+                              The srt engine needs no container: home unreadable, writes only in the project, network only to listed hosts
+  agent [--sandbox-allow-host <host>] [--sandbox-allow-read <dir>] [--sandbox-allow-write <dir>] [--allow <ids>] -- <agent>
+                              Run a whole coding agent inside the sandbox (srt by default), with no credentials unless --allow names them
   broker --policy <file> -- <command>   Run an HTTP client using a short-lived capability instead of the real credential
   mcp configure|serve|ping  Configure, start bridge, or run MCP diagnostic ping
   mcp tools <service>       List MCP tools with Offline / Hybrid / LLM classification
@@ -694,8 +740,12 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             process.stdout.write("================================================================================\n");
             process.stdout.write("  HETZER - GRIMOIRE MASTER KEY ISOLATION\n");
             process.stdout.write("================================================================================\n");
-            process.stdout.write(`  [v] Master Key moved to : ${res.isolatedFile} (mode 0600)\n`);
-            process.stdout.write(`  [v] Workspace Stripped  : ${res.envFile}\n`);
+            if (res.alreadyIsolated) {
+                process.stdout.write(`  [v] Master Key already at: ${res.isolatedFile} (outside the workspace)\n`);
+            } else {
+                process.stdout.write(`  [v] Master Key moved to : ${res.isolatedFile} (mode 0600)\n`);
+                process.stdout.write(`  [v] Workspace Stripped  : ${res.envFile} (now records HETZER_INSTANCE_ID)\n`);
+            }
             process.stdout.write("--------------------------------------------------------------------------------\n");
             process.stdout.write("  Result: The workspace .env no longer contains the master key.\n");
             process.stdout.write("  Note: Processes running as the same OS user may still read the isolated key file.\n");
@@ -744,7 +794,50 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             process.stdout.write("================================================================================\n");
             return;
         }
-        throw new Error(`Unknown canary subcommand: '${sub}'. Use 'setup'.`);
+        if (sub === "plant") {
+            const usage = "Usage: hetzer canary plant <file> --var NAME [--var NAME] [--id decoy-<name>] [--label <text>]";
+            const file = args[1];
+            if (!file || file.startsWith("--")) throw new Error(usage);
+            const opts = args.slice(2);
+            const names = opts.flatMap((item, index) => (item === "--var" && opts[index + 1] ? [opts[index + 1]] : []));
+            if (!names.length) throw new Error(usage);
+            const option = (name) => { const index = opts.indexOf(name); return index >= 0 ? opts[index + 1] : undefined; };
+            // The decoy values come from the person who obtained them, never from a command line or an agent.
+            assertInteractiveHumanSession({ operation: "'hetzer canary plant'" });
+            const entries = [];
+            for (const name of names) {
+                entries.push({ name, value: await promptSecret(`Decoy value for ${name} (input hidden): `) });
+            }
+            const planted = plantExternalCanary({ root, file, entries, id: option("--id"), label: option("--label") });
+            process.stdout.write("================================================================================\n");
+            process.stdout.write("  HETZER - EXTERNAL CANARY PLANTED\n");
+            process.stdout.write("================================================================================\n");
+            process.stdout.write(`  [v] Canary ID      : ${planted.id}\n`);
+            process.stdout.write(`  [v] Bait file      : ${planted.file} (${planted.names.join(", ")})\n`);
+            process.stdout.write(`  [v] Kept out of Git: ${planted.gitExclude || "not in a Git repository"}\n`);
+            process.stdout.write(`  [v] Fingerprints   : ${planted.registryFile} (no values stored)\n`);
+            process.stdout.write("  The service that issued the decoy alerts you when it is used. Hetzer does not.\n");
+            process.stdout.write("================================================================================\n");
+            return;
+        }
+        if (sub === "list") {
+            const canaries = listExternalCanaries({ root });
+            if (!canaries.length) {
+                process.stdout.write("No external canaries are planted for this workspace. Plant one with 'hetzer canary plant <file> --var NAME'.\n");
+                return;
+            }
+            for (const entry of canaries) {
+                process.stdout.write(`${entry.id}  ${entry.present ? "present" : "MISSING OR CHANGED"}  ${entry.file}  ${entry.names.join(",")}${entry.label ? `  (${entry.label})` : ""}\n`);
+            }
+            return;
+        }
+        if (sub === "remove") {
+            if (!args[1]) throw new Error("Usage: hetzer canary remove <decoy-id>");
+            const removed = removeExternalCanary({ root, id: args[1] });
+            process.stdout.write(`Removed canary '${removed.id}' (${removed.removedLines} line(s) from ${removed.file}). Revoke it at the service that issued it.\n`);
+            return;
+        }
+        throw new Error(`Unknown canary subcommand: '${sub}'. Use 'setup', 'plant', 'list' or 'remove'.`);
     }
 
     if (command === "mcp") {
@@ -825,7 +918,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
     if (command === "exec") {
         const marker = args.indexOf("--");
         if (marker === -1 || !args[marker + 1]) {
-            throw new Error("Usage: hetzer exec [--policy <file>] [--broker-policy <file>] [--allow NAME,NAME] [--allow-raw-unmediated NAME,NAME] [--strict] [--canary] [--sandbox [image]] [--sandbox-network <net>] [--sandbox-mount <dir>] [--sandbox-ro] [--allow-sensitive-paths] [--host] [--no-sandbox] [--timeout <duration>] -- <command> [args]");
+            throw new Error("Usage: hetzer exec [--policy <file>] [--broker-policy <file>] [--allow NAME,NAME] [--allow-raw-unmediated NAME,NAME] [--strict] [--canary] [--sandbox [image]] [--sandbox-engine <auto|docker|podman|srt>] [--sandbox-network <net>] [--sandbox-allow-host <host>] [--sandbox-allow-read <dir>] [--sandbox-allow-write <dir>] [--sandbox-mount <dir>] [--sandbox-ro] [--allow-sensitive-paths] [--host] [--no-sandbox] [--timeout <duration>] -- <command> [args]");
         }
         const execOptions = args.slice(0, marker);
         const hasSandboxOption = execOptions.includes("--sandbox") || execOptions.some((o) => o.startsWith("--sandbox"));
@@ -847,6 +940,45 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             ...args.slice(marker + 1),
         ]);
         const result = await executeProcess(parsedExecOptions);
+        process.exitCode = result.status;
+        return;
+    }
+
+    if (command === "agent") {
+        const marker = args.indexOf("--");
+        const usage = "Usage: hetzer agent [--sandbox-engine <srt|docker|podman>] [--sandbox-allow-host <host>] [--sandbox-allow-read <dir>] [--sandbox-allow-write <dir>] [--sandbox-mount <dir>] [--sandbox-ro] [--allow <ids> --allow-raw-unmediated <ids>] [--strict] -- <agent command> [args]";
+        if (marker === -1 || !args[marker + 1]) throw new Error(usage);
+        const agentOptions = args.slice(0, marker);
+        for (const refused of ["--host", "--no-sandbox", "--broker-policy"]) {
+            if (agentOptions.includes(refused)) {
+                throw new Error(`'hetzer agent' always runs the agent in a sandbox and does not take ${refused}.\n${usage}`);
+            }
+        }
+        const { executeProcess, parseArguments } = await import("../vault/exec.mjs");
+        const parsed = parseArguments(["--root", root, "--env-file", envFile, "--sandbox", ...agentOptions, "--", ...args.slice(marker + 1)]);
+        // An agent gets no credential unless one is named; its own API key comes from its own login or config.
+        if (parsed.allowNames === undefined) parsed.allowNames = [];
+        // The agent's binary usually lives on the host, not in an image: srt unless an engine or image was named.
+        if (!parsed.sandboxEngine && !parsed.sandboxImage) parsed.sandboxEngine = "srt";
+        parsed.interactive = true;
+        parsed.agent = true;
+        if (parsed.allowRawUnmediated.length) {
+            process.stderr.write("[hetzer] agent: the session uses the terminal directly, so its output is not redacted; injected credentials can appear on screen.\n");
+        }
+        const startedAt = Date.now();
+        const result = await executeProcess(parsed);
+        try {
+            recordAuditEvent({
+                eventType: "AGENT_EXIT",
+                target: path.basename(parsed.command),
+                result: "ALLOW",
+                details: { command: parsed.command, status: result.status, durationMs: Date.now() - startedAt },
+                root,
+                envFile,
+            });
+        } catch (error) {
+            process.stderr.write(`[hetzer] warning: audit event not recorded (${error.code || error.message})\n`);
+        }
         process.exitCode = result.status;
         return;
     }

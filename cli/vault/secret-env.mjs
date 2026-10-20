@@ -54,7 +54,7 @@ export function resolveSecretEnvironment({
 
     const masterKey = resolveMasterKey({ root, envValues: values, baseEnv });
     if (!masterKey || String(masterKey).startsWith("secretRef:")) {
-        throw new Error("HETZER_GRIMOIRE_KEY must be supplied at runtime (or isolated in ~/.hetzer/grimoire.key) to resolve secretRef bindings.");
+        throw new Error("A master key must be available to resolve secretRef bindings: HETZER_GRIMOIRE_KEY at runtime, or the key file written by 'hetzer init' (~/.hetzer/keys/<HETZER_INSTANCE_ID>.key).");
     }
     const envVault = resolveVaultPath(root, vaultPath);
     const vault = new Grimoire({

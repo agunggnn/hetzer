@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parseEnv } from "../core/env.mjs";
-import { Grimoire, resolveVaultPath } from "./hetzer-vault.mjs";
+import { Grimoire, resolveMasterKey, resolveVaultPath } from "./hetzer-vault.mjs";
 
 const BINDINGS = {
     NINE_ROUTER_JWT_SECRET: ["nine-router-jwt-secret", "nine-router", "jwt_secret"],
@@ -24,7 +24,7 @@ export function autoIngestPlaintextEnv({ root, envFile, masterKey }) {
     if (!fs.existsSync(envFile)) return [];
     let text = fs.readFileSync(envFile, "utf8");
     const values = parseEnv(text);
-    const resolvedMasterKey = masterKey || process.env.HETZER_GRIMOIRE_KEY || values.HETZER_GRIMOIRE_KEY || "";
+    const resolvedMasterKey = masterKey || resolveMasterKey({ envValues: values });
     if (!resolvedMasterKey || String(resolvedMasterKey).startsWith("secretRef:")) {
         return [];
     }
@@ -202,7 +202,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         const migrated = migrateEnvCredentials({
             root,
             envFile,
-            masterKey: process.env.HETZER_GRIMOIRE_KEY || values.HETZER_GRIMOIRE_KEY || "",
+            masterKey: resolveMasterKey({ envValues: values }),
             authorizationRef: option("--authorization-ref"),
         });
         process.stdout.write(`Secured ${migrated.length} environment credential(s) as secretRef bindings.\n`);

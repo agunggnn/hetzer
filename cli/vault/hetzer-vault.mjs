@@ -146,85 +146,137 @@ function retiredKeyAliasError(where) {
     return error;
 }
 
+/** Names the per-instance key file. Random, not secret: it lets a workspace find its key outside the workspace. */
+export const INSTANCE_ID_PATTERN = /^[a-f0-9]{32}$/;
+
+export function generateInstanceId() {
+    return crypto.randomBytes(16).toString("hex");
+}
+
+function resolveKeyHome({ homeDir, baseEnv = process.env } = {}) {
+    return homeDir || baseEnv.HETZER_INSTALL_HOME || (baseEnv === process.env ? os.homedir() : "");
+}
+
+/** `~/.hetzer/keys/<instance-id>.key`, or "" when the id is malformed or no home directory is known. */
+export function getInstanceKeyPath(instanceId, homeDir) {
+    const id = String(instanceId || "").trim();
+    if (!INSTANCE_ID_PATTERN.test(id)) return "";
+    try {
+        const home = homeDir || os.homedir();
+        return path.join(home, ".hetzer", "keys", `${id}.key`);
+    } catch {
+        return "";
+    }
+}
+
+function readKeyFile(file) {
+    if (!file || !fs.existsSync(file)) return "";
+    try {
+        const value = fs.readFileSync(file, "utf8").trim();
+        return value && !value.startsWith("secretRef:") ? value : "";
+    } catch {
+        return "";
+    }
+}
+
 /**
- * Lookup order: runtime environment, workspace `.env`, isolated key file. Throws
- * `ERR_MASTER_KEY_ALIAS_RETIRED` when the retired alias is the key the previous build would have used
- * and the current name is not set in either place, so an upgrade never continues with no key or with
- * another key in silence.
+ * Writes a master key to its per-instance file (directory 0700, file 0600). An existing file is kept when it holds
+ * the same key and refused when it holds another one, so a second init never replaces a key a vault depends on.
  */
-export function resolveMasterKey({ root = process.cwd(), envValues = {}, baseEnv = process.env, homeDir } = {}) {
-    // 1. Explicit runtime environment variable (highest priority)
-    const envKey = baseEnv.HETZER_GRIMOIRE_KEY;
-    if (envKey && !String(envKey).startsWith("secretRef:")) {
-        return String(envKey).trim();
+export function writeInstanceKey({ instanceId, masterKey, homeDir } = {}) {
+    const file = getInstanceKeyPath(instanceId, resolveKeyHome({ homeDir }));
+    if (!file) throw new Error("Unable to determine the per-instance key path (malformed HETZER_INSTANCE_ID or no home directory).");
+    const key = String(masterKey || "").trim();
+    if (!key) throw new Error("Refusing to write an empty master key.");
+    const existing = readKeyFile(file);
+    if (existing) {
+        if (normalizeMasterKey(existing) === normalizeMasterKey(key)) return file;
+        const error = new Error(`A different master key already exists at '${file}'. Refusing to overwrite it.`);
+        error.code = "ERR_MASTER_KEY_CONFLICT";
+        throw error;
     }
+    const dir = path.dirname(file);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try { fs.chmodSync(path.dirname(dir), 0o700); fs.chmodSync(dir, 0o700); } catch { /* Windows */ }
+    fs.writeFileSync(file, key + "\n", { encoding: "utf8", mode: 0o600, flag: "wx" });
+    secureFilePermissions(file);
+    return file;
+}
 
-    // 2. Local .env file (explicit workspace configuration)
-    const fileKey = envValues.HETZER_GRIMOIRE_KEY;
-    if (fileKey && !String(fileKey).startsWith("secretRef:")) {
-        return String(fileKey).trim();
-    }
-
+/**
+ * Lookup order: runtime environment, workspace `.env` (written by builds before 0.7.0), the per-instance key file
+ * named by `HETZER_INSTANCE_ID`, then the shared isolated key file. Returns `{ key, source }` with `source` one of
+ * "environment", "env-file", "instance-file", "shared-file" or "" (no key). Throws `ERR_MASTER_KEY_ALIAS_RETIRED`
+ * when the retired alias is the key the previous build would have used and the current name is not set in either
+ * place, so an upgrade never continues with no key or with another key in silence.
+ */
+export function locateMasterKey({ envValues = {}, baseEnv = process.env, homeDir } = {}) {
     const usable = (value) => Boolean(value) && !String(value).startsWith("secretRef:");
+    if (usable(baseEnv.HETZER_GRIMOIRE_KEY)) return { key: String(baseEnv.HETZER_GRIMOIRE_KEY).trim(), source: "environment" };
+    if (usable(envValues.HETZER_GRIMOIRE_KEY)) return { key: String(envValues.HETZER_GRIMOIRE_KEY).trim(), source: "env-file" };
+
     const aliasWhere = usable(baseEnv[RETIRED_MASTER_KEY_ALIAS])
         ? "the environment"
         : (usable(envValues[RETIRED_MASTER_KEY_ALIAS]) ? "the workspace .env" : "");
     const alias = aliasWhere === "the environment" ? baseEnv[RETIRED_MASTER_KEY_ALIAS] : envValues[RETIRED_MASTER_KEY_ALIAS];
+    // The alias used to take precedence over the key files. Same key: nothing changes.
+    const accept = (key, source) => {
+        if (aliasWhere && normalizeMasterKey(alias) !== normalizeMasterKey(key)) throw retiredKeyAliasError(aliasWhere);
+        return { key, source };
+    };
 
-    // 3. User-level Home Isolated Store (~/.hetzer/grimoire.key) fallback.
-    // Isolated outside project workspace so workspace agents cannot read it!
-    const effectiveHome = homeDir || baseEnv.HETZER_INSTALL_HOME || (baseEnv === process.env ? os.homedir() : "");
-    const isolatedFile = effectiveHome ? getIsolatedKeyPath(effectiveHome) : "";
-    if (isolatedFile && fs.existsSync(isolatedFile)) {
-        try {
-            const val = fs.readFileSync(isolatedFile, "utf8").trim();
-            if (val && !val.startsWith("secretRef:")) {
-                // The alias used to take precedence over the isolated file. Same key: nothing changes.
-                if (aliasWhere && normalizeMasterKey(alias) !== normalizeMasterKey(val)) throw retiredKeyAliasError(aliasWhere);
-                return val;
-            }
-        } catch (error) {
-            if (error?.code === "ERR_MASTER_KEY_ALIAS_RETIRED") throw error;
-            // Continue to fallback
-        }
+    // Key files live outside the workspace, so a sandbox that mounts only the workspace cannot read them.
+    const effectiveHome = resolveKeyHome({ homeDir, baseEnv });
+    if (effectiveHome) {
+        const instanceKey = readKeyFile(getInstanceKeyPath(envValues.HETZER_INSTANCE_ID, effectiveHome));
+        if (instanceKey) return accept(instanceKey, "instance-file");
+        const sharedKey = readKeyFile(getIsolatedKeyPath(effectiveHome));
+        if (sharedKey) return accept(sharedKey, "shared-file");
     }
 
     if (aliasWhere) throw retiredKeyAliasError(aliasWhere);
-    return "";
+    return { key: "", source: "" };
 }
 
-export function isolateMasterKey({ root = process.cwd(), envFile } = {}) {
+export function resolveMasterKey({ envValues = {}, baseEnv = process.env, homeDir } = {}) {
+    return locateMasterKey({ envValues, baseEnv, homeDir }).key;
+}
+
+function replaceEnvLine(text, name, value) {
+    const lines = String(text || "").split(/\r?\n/).filter((line) => !line.startsWith(`${name}=`));
+    while (lines.length && lines[lines.length - 1] === "") lines.pop();
+    if (value !== undefined) lines.push(`${name}=${value}`);
+    return lines.join("\n") + "\n";
+}
+
+/**
+ * Moves the master key out of the workspace `.env` into `~/.hetzer/keys/<instance-id>.key` and records the
+ * instance id in `.env`. The id is not secret; the key file is mode 0600 in a 0700 directory.
+ */
+export function isolateMasterKey({ root = process.cwd(), envFile, homeDir } = {}) {
     const targetEnv = envFile || path.join(root, ".env");
-    let currentKey = "";
     let envContent = "";
+    let values = {};
     if (fs.existsSync(targetEnv)) {
         envContent = fs.readFileSync(targetEnv, "utf8");
-        const values = parseEnv(envContent);
-        currentKey = values.HETZER_GRIMOIRE_KEY || "";
+        values = parseEnv(envContent);
     }
-    if (!currentKey) {
-        currentKey = process.env.HETZER_GRIMOIRE_KEY || "";
-    }
-    currentKey = String(currentKey).trim();
-    if (!currentKey) {
+    const currentKey = String(values.HETZER_GRIMOIRE_KEY || process.env.HETZER_GRIMOIRE_KEY || "").trim();
+    if (!currentKey || currentKey.startsWith("secretRef:")) {
+        const located = locateMasterKey({ envValues: values, homeDir });
+        if (located.source === "instance-file") {
+            return { isolatedFile: getInstanceKeyPath(values.HETZER_INSTANCE_ID, resolveKeyHome({ homeDir })), envFile: targetEnv, alreadyIsolated: true };
+        }
         throw new Error("No HETZER_GRIMOIRE_KEY found to isolate. Run 'hetzer init' first.");
     }
 
-    const isolatedFile = getIsolatedKeyPath();
-    if (!isolatedFile) {
-        throw new Error("Unable to determine user home directory for key isolation.");
-    }
+    const instanceId = INSTANCE_ID_PATTERN.test(String(values.HETZER_INSTANCE_ID || "").trim())
+        ? String(values.HETZER_INSTANCE_ID).trim()
+        : generateInstanceId();
+    const isolatedFile = writeInstanceKey({ instanceId, masterKey: currentKey, homeDir });
 
-    fs.mkdirSync(path.dirname(isolatedFile), { recursive: true });
-    fs.writeFileSync(isolatedFile, currentKey + "\n", { encoding: "utf8", mode: 0o600 });
-    secureFilePermissions(isolatedFile);
-
-    // Strip HETZER_GRIMOIRE_KEY from .env
     if (fs.existsSync(targetEnv)) {
-        const cleanedEnv = envContent
-            .split(/\r?\n/)
-            .filter((line) => !line.startsWith("HETZER_GRIMOIRE_KEY="))
-            .join("\n");
+        const cleanedEnv = replaceEnvLine(replaceEnvLine(envContent, "HETZER_GRIMOIRE_KEY"), "HETZER_INSTANCE_ID", instanceId);
         fs.writeFileSync(targetEnv, cleanedEnv, { encoding: "utf8", mode: 0o600 });
         secureFilePermissions(targetEnv);
     }
@@ -232,6 +284,7 @@ export function isolateMasterKey({ root = process.cwd(), envFile } = {}) {
     return {
         isolatedFile,
         envFile: targetEnv,
+        alreadyIsolated: false,
     };
 }
 

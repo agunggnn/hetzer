@@ -14,21 +14,104 @@ import {
     suggestCommand,
 } from "./cli.mjs";
 import { parseEnv } from "./env.mjs";
-import { Grimoire } from "../vault/hetzer-vault.mjs";
+import { Grimoire, isolateMasterKey, locateMasterKey, resolveMasterKey } from "../vault/hetzer-vault.mjs";
 
-test("initializeProject creates a secured, repeatable project contract", () => {
+function listFiles(dir) {
+    return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const full = path.join(dir, entry.name);
+        return entry.isDirectory() ? listFiles(full) : [full];
+    });
+}
+
+test("initializeProject keeps the master key outside the workspace and is repeatable", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-core-init-"));
-    const initResult = initializeProject(root);
-    assert.equal(initResult.root, path.resolve(root));
-    const first = fs.readFileSync(path.join(root, ".env"), "utf8");
-    const values = parseEnv(first);
-    assert.ok(values.HETZER_GRIMOIRE_KEY.length >= 32);
-    assert.equal(fs.existsSync(path.join(root, "data", "hetzer-vault.db")), true);
-    assert.equal(fs.existsSync(path.join(root, ".mcp.json")), true);
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-core-home-"));
+    try {
+        const initResult = initializeProject(root, { homeDir });
+        assert.equal(initResult.root, path.resolve(root));
+        assert.equal(initResult.keySource, "instance-file");
+        const first = fs.readFileSync(path.join(root, ".env"), "utf8");
+        const values = parseEnv(first);
+        assert.equal(values.HETZER_GRIMOIRE_KEY, undefined);
+        assert.match(values.HETZER_INSTANCE_ID, /^[a-f0-9]{32}$/);
+        const keyFile = path.join(homeDir, ".hetzer", "keys", `${values.HETZER_INSTANCE_ID}.key`);
+        assert.equal(initResult.keyFile, keyFile);
+        const masterKey = fs.readFileSync(keyFile, "utf8").trim();
+        assert.ok(masterKey.length >= 32);
+        if (process.platform !== "win32") assert.equal(fs.statSync(keyFile).mode & 0o777, 0o600);
+        for (const file of listFiles(root)) {
+            assert.equal(fs.readFileSync(file).includes(masterKey), false, `${file} must not contain the master key`);
+        }
+        assert.equal(fs.existsSync(path.join(root, "data", "hetzer-vault.db")), true);
+        assert.equal(fs.existsSync(path.join(root, ".mcp.json")), true);
+        assert.equal(resolveMasterKey({ envValues: values, homeDir }), masterKey);
 
-    initializeProject(root);
-    assert.equal(fs.readFileSync(path.join(root, ".env"), "utf8"), first);
-    fs.rmSync(root, { recursive: true, force: true });
+        initializeProject(root, { homeDir });
+        assert.equal(fs.readFileSync(path.join(root, ".env"), "utf8"), first);
+        assert.equal(fs.readFileSync(keyFile, "utf8").trim(), masterKey);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+});
+
+test("initializeProject keeps a key already in .env and isolate-key moves it to the instance key file", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-core-legacy-"));
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-core-home-"));
+    const legacyKey = ["legacy", "workspace", "key", "value", "0123456789"].join("-");
+    try {
+        fs.writeFileSync(path.join(root, ".env"), `HETZER_PROJECT_NAME=legacy\nHETZER_GRIMOIRE_KEY=${legacyKey}\n`);
+        const result = initializeProject(root, { homeDir });
+        assert.equal(result.keySource, "env-file");
+        assert.equal(parseEnv(fs.readFileSync(path.join(root, ".env"), "utf8")).HETZER_GRIMOIRE_KEY, legacyKey);
+
+        const isolated = isolateMasterKey({ root, homeDir });
+        const values = parseEnv(fs.readFileSync(path.join(root, ".env"), "utf8"));
+        assert.equal(values.HETZER_GRIMOIRE_KEY, undefined);
+        assert.equal(isolated.isolatedFile, path.join(homeDir, ".hetzer", "keys", `${values.HETZER_INSTANCE_ID}.key`));
+        assert.equal(locateMasterKey({ envValues: values, homeDir }).source, "instance-file");
+        assert.equal(resolveMasterKey({ envValues: values, homeDir }), legacyKey);
+        assert.equal(isolateMasterKey({ root, homeDir }).alreadyIsolated, true);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+});
+
+test("initializeProject refuses to generate a key over an existing vault whose key is missing", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-core-lost-"));
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-core-home-"));
+    try {
+        const { keyFile } = initializeProject(root, { homeDir });
+        fs.rmSync(keyFile);
+        assert.throws(() => initializeProject(root, { homeDir }), (error) => error.code === "ERR_MASTER_KEY_NOT_FOUND");
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+});
+
+test("a new workspace does not adopt the shared isolated key; an existing vault keeps using it", () => {
+    const fresh = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-core-fresh-"));
+    const existing = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-core-shared-"));
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-core-home-"));
+    const sharedKey = ["shared", "isolated", "key", "value", "0123456789"].join("-");
+    try {
+        fs.mkdirSync(path.join(homeDir, ".hetzer"), { recursive: true });
+        fs.writeFileSync(path.join(homeDir, ".hetzer", "grimoire.key"), `${sharedKey}\n`);
+
+        const freshResult = initializeProject(fresh, { homeDir });
+        assert.equal(freshResult.keySource, "instance-file");
+        assert.notEqual(fs.readFileSync(freshResult.keyFile, "utf8").trim(), sharedKey);
+
+        fs.mkdirSync(path.join(existing, "data"), { recursive: true });
+        new Grimoire({ dbPath: path.join(existing, "data", "hetzer-vault.db"), masterKey: sharedKey }).close();
+        fs.writeFileSync(path.join(existing, ".env"), "HETZER_PROJECT_NAME=shared\n");
+        assert.equal(initializeProject(existing, { homeDir }).keySource, "shared-file");
+        assert.equal(parseEnv(fs.readFileSync(path.join(existing, ".env"), "utf8")).HETZER_INSTANCE_ID, undefined);
+    } finally {
+        for (const dir of [fresh, existing, homeDir]) fs.rmSync(dir, { recursive: true, force: true });
+    }
 });
 
 test("defaultHetzerHome resolves ~/.hetzer or HETZER_HOME", () => {
@@ -187,6 +270,7 @@ test("protec alias triggers protect command successfully", async () => {
 test("init wizard adapts prefix and hints when CLI is not in PATH", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-init-path-"));
     const originalTestGlobal = process.env.HETZER_TEST_GLOBAL_CLI;
+    const originalInstallHome = process.env.HETZER_INSTALL_HOME;
     let output = "";
     const originalStdout = process.stdout.write;
     process.stdout.write = (chunk) => {
@@ -195,13 +279,17 @@ test("init wizard adapts prefix and hints when CLI is not in PATH", async () => 
     };
     try {
         process.env.HETZER_TEST_GLOBAL_CLI = "false";
-        await main(["init", tempDir], { root: tempDir });
+        process.env.HETZER_INSTALL_HOME = path.join(tempDir, "home");
+        await main(["init", path.join(tempDir, "ws")], { root: tempDir });
         assert.match(output, /HETZER - INITIALIZATION SUCCESSFUL/);
+        assert.match(output, /Master Key {8}: .*\.hetzer[\\/]keys[\\/][a-f0-9]{32}\.key \(mode 0600\)/);
         assert.match(output, /npx hetzer exec/);
         assert.match(output, /npx hetzer creds/);
     } finally {
         if (originalTestGlobal === undefined) delete process.env.HETZER_TEST_GLOBAL_CLI;
         else process.env.HETZER_TEST_GLOBAL_CLI = originalTestGlobal;
+        if (originalInstallHome === undefined) delete process.env.HETZER_INSTALL_HOME;
+        else process.env.HETZER_INSTALL_HOME = originalInstallHome;
         process.stdout.write = originalStdout;
         fs.rmSync(tempDir, { recursive: true, force: true });
     }
@@ -286,6 +374,44 @@ test("exec command runs through the in-process execution path", async () => {
         if (originalAuditPath === undefined) delete process.env.HETZER_AUDIT_LOG_PATH;
         else process.env.HETZER_AUDIT_LOG_PATH = originalAuditPath;
         fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test("agent command runs the agent through srt with no credentials and records its start and exit", { skip: process.platform === "win32" ? "fake srt is a shell script" : false }, async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-agent-cli-"));
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-agent-project-"));
+    const auditPath = path.join(tempDir, "audit.log");
+    const argsFile = path.join(tempDir, "srt-args.txt");
+    const fakeSrt = path.join(tempDir, "fake-srt");
+    const saved = { exitCode: process.exitCode, audit: process.env.HETZER_AUDIT_LOG_PATH, srt: process.env.HETZER_SRT_BIN, stderr: process.stderr.write };
+    fs.writeFileSync(fakeSrt, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 0.0.78; exit 0; fi\nprintf '%s\\n' "$@" > ${JSON.stringify(argsFile)}\nexit 7\n`, { mode: 0o755 });
+    process.env.HETZER_AUDIT_LOG_PATH = auditPath;
+    process.env.HETZER_SRT_BIN = fakeSrt;
+    process.stderr.write = () => true;
+    try {
+        fs.writeFileSync(path.join(tempDir, ".env"), "API_KEY=secretRef:some-cred\n", "utf8");
+        await main(["agent", "--sandbox-mount", project, "--sandbox-allow-host", "api.example.test", "--", "/bin/true", "--flag"], { root: tempDir });
+        assert.equal(process.exitCode, 7, "the agent's exit status is returned");
+        const srtArgs = fs.readFileSync(argsFile, "utf8").trim().split("\n");
+        assert.deepEqual(srtArgs.slice(srtArgs.indexOf("--")), ["--", "/bin/true", "--flag"]);
+        const events = fs.readFileSync(auditPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+        const start = events.find((event) => event.eventType === "SANDBOX_EXEC");
+        assert.equal(start.details.engine, "srt");
+        assert.equal(start.details.agent, true);
+        assert.deepEqual(start.details.allowHosts, ["api.example.test"]);
+        const exit = events.find((event) => event.eventType === "AGENT_EXIT");
+        assert.equal(exit.details.status, 7);
+
+        await assert.rejects(main(["agent", "--host", "--", "/bin/true"], { root: tempDir }), /always runs the agent in a sandbox/);
+    } finally {
+        process.exitCode = saved.exitCode;
+        process.stderr.write = saved.stderr;
+        if (saved.audit === undefined) delete process.env.HETZER_AUDIT_LOG_PATH;
+        else process.env.HETZER_AUDIT_LOG_PATH = saved.audit;
+        if (saved.srt === undefined) delete process.env.HETZER_SRT_BIN;
+        else process.env.HETZER_SRT_BIN = saved.srt;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+        fs.rmSync(project, { recursive: true, force: true });
     }
 });
 

@@ -125,9 +125,9 @@ With Hetzer, you get:
 2. **Grimoire Vault (AES-256-GCM)**: SQLite-backed encrypted credential storage. Configuration can use `secretRef:<id>` in place of plaintext values.
 3. **Agent integrations & MCP Virtual Proxy**: Installs guidance and MCP configuration for Hermes Agent, Google Antigravity, OpenCode, CommandCode, Cursor, Claude, Cline, Codex, and Gemini. Virtual proxy resolves `secretRef:<id>` in tool arguments and sanitizes outgoing responses.
 4. **Dual Git Guards (`pre-commit` & `commit-msg`)**: Inspects staged filenames, diff additions before commit, and validates commit messages against raw credentials.
-5. **Canary Honey-Tokens & Active Stream Tripwires**: Deploys decoy canary tokens (`HETZER_CANARY_TOKEN`, `canary-*`). Guarded resolution aborts with exit code 43. Guarded subprocesses (`hetzer exec --canary`) terminate child processes if canary tokens leak into stdout/stderr.
+5. **Canary Honey-Tokens & Active Stream Tripwires**: Deploys decoy canary tokens (`HETZER_CANARY_TOKEN`, `canary-*`). Guarded resolution aborts with exit code 43. Guarded subprocesses (`hetzer exec --canary`) terminate child processes if canary tokens leak into stdout/stderr. `hetzer canary plant` plants a decoy issued by an outside alerting service (for example canarytokens.org), so a scraper that never asks Hetzer still sets off an alert when it uses what it took.
 6. **HTTP Credential Broker**: Loopback proxy (`127.0.0.1`) injecting upstream credentials via ephemeral capabilities without exposing raw secrets to child environments.
-7. **Ephemeral Container Sandbox (`hetzer exec --sandbox`)**: Runs agent commands in transient containers (`--cap-drop=ALL`, `--pids-limit=100`, project-only mount with Hetzer-owned paths hidden).
+7. **Sandbox (`hetzer exec --sandbox`, `hetzer agent`)**: Runs a command, or a whole coding agent, with only the project visible. Engines: Docker or Podman containers (`--cap-drop=ALL`, `--pids-limit=100`, project-only mount with Hetzer-owned paths hidden), or `srt` ([Anthropic sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime), installed separately) with no container: the home directory and Hetzer files unreadable, writes only in the project, network only to hosts you list. See [docs/agent-sandbox.md](docs/agent-sandbox.md).
 
 All built with **0 external npm dependencies** (100% Node.js standard library: `node:crypto`, `node:sqlite`, `node:fs`, `node:perf_hooks`).
 
@@ -137,11 +137,12 @@ All built with **0 external npm dependencies** (100% Node.js standard library: `
 
 | Control | Covered | Boundary |
 |---|---|---|
-| Vault at rest | AES-256-GCM encryption with a unique random IV and authenticated metadata | A process that can read both the database and master-key file can decrypt entries |
+| Vault at rest | AES-256-GCM encryption with a unique random IV and authenticated metadata; `hetzer init` keeps the master key outside the workspace (`~/.hetzer/keys/`) | A process running as the same OS user can read both the database and the key file and decrypt entries; the sandbox hides both |
+| Sandbox | Project-only view: containers mount only the project; `srt` denies reads of the home directory and Hetzer files, writes outside the project, and network except listed hosts | Not a VM: kernel or engine vulnerabilities, and anything you re-open with `--sandbox-allow-*`, are outside it; container engines allow outbound network unless `--sandbox-network none` |
 | `hetzer exec` | Mediates selected HTTP credentials through reviewed broker policies; raw injection requires an explicit audited opt-out | Raw-opted-out values exist in child memory; transformed output, direct device/file/network writes, and unrelated processes remain outside this path |
 | Scanner | Supported patterns, database URLs, private-key blocks up to 16 KiB, and high-entropy candidates | Pattern matching can produce false positives and false negatives |
 | Git hooks | Staged `.env` filenames, diff additions (`pre-commit`), and commit message text (`commit-msg`) | Hooks can be bypassed via `--no-verify` and do not scan past repository history |
-| Canary tripwires | Guarded resolution, reveal, and subprocess stream outputs (`hetzer exec --canary`) | Detects and aborts guarded paths/leaks; does not detect arbitrary out-of-band disk reads by the same OS user |
+| Canary tripwires | Guarded resolution, reveal, and subprocess stream outputs (`hetzer exec --canary`); external decoys (`hetzer canary plant`) alert through the service that issued them when used | Local tripwires do not detect out-of-band disk reads; an external decoy alerts only when it is used, not when it is read, and only through that service |
 | MCP proxy | Resolves `secretRef:<id>` in tool payloads, enforces canary checks, and sanitizes tool outputs | Covers integrated FastMCP requests; does not intercept external or unmanaged tool calls |
 | Agent skills | Instructions and MCP metadata-only vault tools | Instructions do not enforce access control against the local OS user |
 
@@ -371,10 +372,13 @@ All Hetzer commands are executed via the `hetzer` CLI:
 | `hetzer creds request <id>` | Creates a short-lived metadata-only request an agent can hand off to a human |
 | `hetzer creds approve <request-id>` | Human-only masked approval that stores the requested credential without returning its value |
 | `hetzer creds status <request-id>` | Reports only `pending`, `approved`, or `expired` |
-| `hetzer creds isolate-key` | Moves master key outside workspace to `~/.hetzer/grimoire.key` (mode 0600) |
+| `hetzer creds isolate-key` | Moves a master key from the workspace `.env` (builds before 0.7.0) to `~/.hetzer/keys/<instance-id>.key` (mode 0600) |
 | `hetzer canary [setup]` | Deploys decoy canary honey-tokens to catch prompt injection & scraping |
+| `hetzer canary plant <file> --var NAME` | Plants a decoy from an outside alerting service in an untracked bait file; `canary list` and `canary remove <id>` manage them |
 | `hetzer audit [verify [--require-mac]\|tail [n]\|rotate --yes]` | Verifies the SHA-256 hash-chain (and MACs), inspects the tamper-evident audit ledger, or archives it and starts a new one |
 | `hetzer exec [--allow <ids>] [--policy <file>] [--sandbox [image]] [--sandbox-mount <dir>] [--host] [--strict] [--canary] [--timeout <t>] -- <c>` | Runs with broker-mediated credentials, transient container sandbox, stream redaction, and canary tripwire |
+| `hetzer exec --sandbox-engine srt [--sandbox-allow-host <host>] -- <c>` | Runs the command under `srt` with no container: home unreadable, writes only in the project, network only to listed hosts |
+| `hetzer agent [--sandbox-allow-host <host>] [--sandbox-allow-read <dir>] [--sandbox-allow-write <dir>] -- <agent>` | Runs a whole coding agent inside the sandbox (`srt` by default) with no credentials unless `--allow` names them |
 | `hetzer broker --policy <file> -- <c>` | Runs an HTTP client using short-lived capability instead of real credentials |
 | `hetzer protect` | Arms workspace with credential-safety guidance, Git pre-commit hook, and .env protection |
 | `hetzer sniffer [scan\|redact]` | Scans or redacts supported credential candidates from input text |
@@ -436,7 +440,7 @@ Grimoire Vault can store arbitrary values up to its configured size limit. Autom
 - **Other OS accounts**: POSIX mode `0600` restricts ordinary cross-account access. Administrators, the same account, backups, and platform-specific ACL behavior remain in scope.
 
 ### 5. How do I achieve maximum security on production servers?
-If you prefer not to store `HETZER_GRIMOIRE_KEY` on disk, omit it from `.env` and provide it strictly via the in-memory terminal environment:
+`hetzer init` writes the master key to `~/.hetzer/keys/<instance-id>.key`, outside the workspace. If you prefer not to store `HETZER_GRIMOIRE_KEY` on disk at all, provide it strictly via the in-memory terminal environment:
 ```bash
 export HETZER_GRIMOIRE_KEY="your-private-master-key"
 ```

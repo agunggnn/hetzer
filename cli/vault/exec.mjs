@@ -545,7 +545,7 @@ export function resolveCommandForSpawn(command, commandArgs = []) {
 export function parseArguments(argv) {
     const marker = argv.indexOf("--");
     if (marker === -1 || !argv[marker + 1]) {
-        throw new Error("Usage: exec --root <path> --env-file <path> [--policy <path>] [--policy-hash <sha256>] [--broker-policy <path>] [--allow NAME,NAME] [--allow-raw-unmediated NAME,NAME] [--strict] [--canary] [--sandbox [image]] [--sandbox-network <net>] [--sandbox-mount <dir>] [--sandbox-ro] [--timeout <duration>] -- <command> [args]");
+        throw new Error("Usage: exec --root <path> --env-file <path> [--policy <path>] [--policy-hash <sha256>] [--broker-policy <path>] [--allow NAME,NAME] [--allow-raw-unmediated NAME,NAME] [--strict] [--canary] [--sandbox [image]] [--sandbox-engine <auto|docker|podman|srt>] [--sandbox-network <net>] [--sandbox-allow-host <host>] [--sandbox-allow-read <dir>] [--sandbox-allow-write <dir>] [--sandbox-mount <dir>] [--sandbox-ro] [--timeout <duration>] -- <command> [args]");
     }
     const options = argv.slice(0, marker);
     const value = (name) => {
@@ -557,7 +557,13 @@ export function parseArguments(argv) {
     const rawTimeout = value("--timeout");
     const rawPolicy = value("--policy");
     const rawPolicyHash = value("--policy-hash");
-    const isSandbox = (options.includes("--sandbox") || Boolean(value("--sandbox-image"))) && !options.includes("--no-sandbox") && !options.includes("--host");
+    const sandboxEngine = value("--sandbox-engine") || undefined;
+    const sandboxAllowHosts = names(values("--sandbox-allow-host"));
+    const sandboxAllowRead = values("--sandbox-allow-read").map((dir) => path.resolve(dir));
+    const sandboxAllowWrite = values("--sandbox-allow-write").map((dir) => path.resolve(dir));
+    // Engine and allowlist options only make sense in a sandbox, so they imply one.
+    const impliesSandbox = Boolean(sandboxEngine) || sandboxAllowHosts.length > 0 || sandboxAllowRead.length > 0 || sandboxAllowWrite.length > 0;
+    const isSandbox = (options.includes("--sandbox") || Boolean(value("--sandbox-image")) || impliesSandbox) && !options.includes("--no-sandbox") && !options.includes("--host");
     const rawSandboxVal = value("--sandbox");
     const sandboxImage = value("--sandbox-image") || (rawSandboxVal && !rawSandboxVal.startsWith("-") ? rawSandboxVal : undefined);
     const sandboxNetwork = value("--sandbox-network") || undefined;
@@ -583,6 +589,10 @@ export function parseArguments(argv) {
         sandboxNetwork,
         sandboxMountDir,
         sandboxRo: options.includes("--sandbox-ro"),
+        sandboxEngine,
+        sandboxAllowHosts,
+        sandboxAllowRead,
+        sandboxAllowWrite,
         strict: options.includes("--strict"),
         canary: options.includes("--canary"),
         timeout: rawTimeout || undefined,

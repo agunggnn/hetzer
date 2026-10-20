@@ -23,7 +23,7 @@ The package declares no third-party runtime npm dependencies. It depends on Node
 
 Vault metadata is stored in SQLite. Credential values are encrypted separately using AES-256-GCM. Each encryption uses a random 12-byte IV, an authentication tag, and additional authenticated data bound to the credential identifier and creation time. The master key is normalized and expanded with HKDF-SHA-256.
 
-The master key is resolved with deterministic precedence: explicit runtime environment (`HETZER_GRIMOIRE_KEY`), followed by local workspace `.env` configuration, falling back to the user-level isolated file (`~/.hetzer/grimoire.key`). `hetzer creds isolate-key` moves a workspace key into the user-level file and requests POSIX mode `0600` (along with Windows DACL hardening). This separates the key from the workspace to prevent automated agent file-reads; it does not protect against the same OS user executing arbitrary commands outside a container sandbox.
+The master key is resolved with deterministic precedence: explicit runtime environment (`HETZER_GRIMOIRE_KEY`), followed by local workspace `.env` configuration (written by builds before 0.7.0), the per-instance key file named by `HETZER_INSTANCE_ID` (`~/.hetzer/keys/<instance-id>.key`, written by `hetzer init` from 0.7.0), and finally the shared user-level file (`~/.hetzer/grimoire.key`, read for workspaces isolated before 0.7.0). `hetzer creds isolate-key` moves a workspace key into the per-instance file and requests POSIX mode `0600` (along with Windows DACL hardening). This separates the key from the workspace to prevent automated agent file-reads; it does not protect against the same OS user executing arbitrary commands outside a container sandbox.
 
 Credential records can restrict target and action. `secretRef:<id>` resolution checks the target, allowed action, validity, and expiry before decryption. Internal decryption is decoupled into private `#decryptRaw`, capability-scoped `resolve()`, non-revealing equality `matchesSecret()`, and human-guarded `reveal()`.
 
@@ -80,11 +80,16 @@ Hetzer focuses on single-command, ephemeral process containment via `hetzer exec
 - **Network**: outbound access is open by default and the sandbox prints the mode before starting. `--sandbox-network none` removes it but cannot be combined with a brokered credential.
 - **Not covered**: files that appear after the container starts are not hidden; the broker still binds `0.0.0.0` in sandbox mode and accepts RFC 1918 clients (capability-gated); a sandbox does not protect a credential that was raw-injected into it.
  
+### Container-free engine: `srt`
+
+`--sandbox-engine srt` (and `hetzer agent`, which uses it by default) runs the command under Anthropic's sandbox-runtime, invoked as an external program like `docker`: `sandbox-exec` on macOS, bubblewrap with seccomp on Linux, and a host proxy that only lets `--sandbox-allow-host` entries through. Hetzer writes the settings for each run to a private temporary directory and removes them afterwards: reads of the home directory, the Hetzer home and named credential stores are denied, the project is re-allowed with the same Hetzer-owned paths hidden, writes are limited to the project and a per-run `TMPDIR`, and `.git/hooks`, `.git/config` and other files that tools execute later are write-protected. srt is started from the project with `shell: false`; it shell-quotes the command's arguments for its own wrapper. Brokered credentials are refused under srt because its network namespace does not reach the host loopback broker. Rationale and limits: [ADR-0004](adr/0004-container-free-sandbox-and-agent-containment.md), [agent-sandbox.md](agent-sandbox.md).
+
 Multi-container full-stack operations (such as 9Router AI gateways, PostgreSQL/pgvector memory clusters, and cognitive extractors) were removed from the Hetzer core CLI in 0.6.0, which lets Hetzer keep a clean, zero-dependency footprint strictly focused on credential safety and agent armor.
 
 ## Proposed architecture decisions
 
 - [ADR-0001: Authority model first, then a local-first engine with thin adapters](adr/0001-authority-model-and-engine-boundary.md) — **Proposed.** Based on the [October 2026 architecture and security review](architecture-review-2026-10.md).
+- [ADR-0004: Container-free sandbox engine and agent containment](adr/0004-container-free-sandbox-and-agent-containment.md) — **Accepted**, implemented in 0.7.0.
 
 ## Closed architecture proposals
 
