@@ -119,6 +119,20 @@ test("runDoctor formats report and returns health status", () => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
+test("runDoctor treats Docker as optional when the srt sandbox engine is installed", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-doctor-srt-"));
+    let output = "";
+    try {
+        const exec = (cmd) => (cmd === "srt" ? { status: 0, stdout: "0.0.78\n" } : { status: 1, stdout: "", stderr: "not found" });
+        const result = runDoctor({ root: tempRoot, defaultHome: "", exec, out: { write: (chunk) => { output += chunk; } } });
+        assert.match(output, /Sandbox \(srt\) {5}: 0\.0\.78 \[OK\]/);
+        assert.match(output, /Docker CLI {8}: Not detected \[FAIL\]/);
+        assert.equal(result.issues.some((issue) => /Docker/.test(issue.title)), false);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
 test("runDoctor warns when the master key is stored in the workspace .env", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-doctor-key-"));
     const exec = (cmd, args) => {

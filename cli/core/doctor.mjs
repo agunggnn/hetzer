@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { auditAgentContext } from "../skills/audit.mjs";
 import { scanText } from "../vault/sniffer.mjs";
+import { detectSrt, SRT_PACKAGE, SRT_TESTED_VERSION } from "../vault/srt-sandbox.mjs";
 import { NODE_ENGINE_RANGE, supportsNodeSqlite } from "./node-version.mjs";
 
 export function getOperatingSystemInfo() {
@@ -333,6 +334,9 @@ export function runDoctor({ root, defaultHome, exec = spawnSync, out = process.s
     const cliCheck = checkDockerCli(exec);
     const daemonCheck = checkDockerDaemon(exec, osInfo);
     const composeCheck = checkDockerCompose(exec, osInfo);
+    const srtCheck = detectSrt(exec);
+    // Docker is only needed for container sandboxes; the srt engine covers --sandbox without it.
+    const containerOptional = srtCheck.ok;
 
     const isGlobal = Boolean(defaultHome && root === defaultHome);
     const envFile = path.join(root, ".env");
@@ -394,6 +398,11 @@ export function runDoctor({ root, defaultHome, exec = spawnSync, out = process.s
         out.write(`  Docker Compose    : Plugin v2 Not Found [FAIL]\n`);
     }
 
+    // Container-free sandbox engine
+    out.write(srtCheck.ok
+        ? `  Sandbox (srt)     : ${srtCheck.version || "installed"}${srtCheck.version && srtCheck.version !== SRT_TESTED_VERSION ? ` (tested with ${SRT_TESTED_VERSION})` : ""} [OK]\n`
+        : `  Sandbox (srt)     : Not installed (optional; npm install -g ${SRT_PACKAGE}@${SRT_TESTED_VERSION}) [INFO]\n`);
+
     // Hetzer Root & Instance
     const rootLabel = isGlobal ? `${root} (Global User Home)` : `${root} (Local Workspace)`;
     out.write(`  Hetzer Root       : ${rootLabel}\n`);
@@ -439,7 +448,7 @@ export function runDoctor({ root, defaultHome, exec = spawnSync, out = process.s
             solution: "Update Node.js to the current v22 LTS or v24 LTS (https://nodejs.org).",
         });
     }
-    if (!cliCheck.ok) {
+    if (!cliCheck.ok && !containerOptional) {
         issues.push({
             title: "Docker CLI Not Found",
             detail: cliCheck.error,
@@ -448,14 +457,14 @@ export function runDoctor({ root, defaultHome, exec = spawnSync, out = process.s
                 : "Download and install Docker Desktop from https://www.docker.com/products/docker-desktop",
         });
     }
-    if (!daemonCheck.ok) {
+    if (!daemonCheck.ok && !containerOptional) {
         issues.push({
             title: daemonCheck.error || "Docker Engine Not Connected",
             detail: daemonCheck.rawError,
             solution: daemonCheck.guide,
         });
     }
-    if (!composeCheck.ok) {
+    if (!composeCheck.ok && !containerOptional) {
         issues.push({
             title: "Docker Compose v2 Plugin Not Found",
             detail: composeCheck.error,

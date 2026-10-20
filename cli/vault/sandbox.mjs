@@ -9,6 +9,7 @@ import { getAuditLogPath, recordAuditEvent } from "./audit.mjs";
 import { parseDuration, pipeSanitizedChild, prepareExecutionEnvironment } from "./exec.mjs";
 import { getIsolatedKeyPath, resolveVaultPath } from "./hetzer-vault.mjs";
 import { strictBaseEnvironment } from "./secret-env.mjs";
+import { buildSrtArgs, buildSrtSettings, createSrtRunDir, detectSrt, validateSandboxHosts, writeSrtSettings } from "./srt-sandbox.mjs";
 
 // Variables forwarded to the container besides the ones Hetzer injected itself. Everything else in
 // the host environment (PATH, USERPROFILE, tokens, the vault master key) stays on the host.
@@ -81,8 +82,7 @@ export function buildContainerCliEnv({ baseEnv = process.env, containerValues = 
     return { ...cliEnv, ...containerValues };
 }
 
-export function detectContainerEngine(exec = spawnSync) {
-    const preferred = process.env.HETZER_CONTAINER_ENGINE?.trim();
+export function detectContainerEngine(exec = spawnSync, preferred = process.env.HETZER_CONTAINER_ENGINE?.trim()) {
     const candidates = preferred ? [preferred] : ["docker", "podman"];
 
     for (const engine of candidates) {
@@ -364,6 +364,166 @@ export function buildSandboxDockerArgs({
     return args;
 }
 
+export const SANDBOX_ENGINES = ["auto", "docker", "podman", "srt"];
+
+/**
+ * Picks the sandbox engine for a run. `--sandbox-engine` (or HETZER_SANDBOX_ENGINE) names one; otherwise
+ * Docker, then Podman, then srt. Options only srt implements (--sandbox-allow-host, --sandbox-allow-read,
+ * --sandbox-allow-write) select srt, and an image selects a container engine; asking for both is refused.
+ */
+export function selectSandboxEngine(options = {}, { execSyncFn = spawnSync, baseEnv = process.env, platform = process.platform } = {}) {
+    const requested = String(options.sandboxEngine || baseEnv.HETZER_SANDBOX_ENGINE || "auto").trim().toLowerCase();
+    if (!SANDBOX_ENGINES.includes(requested)) {
+        throw sandboxError("ERR_SANDBOX_ENGINE_INVALID", `Unknown sandbox engine '${requested}'. Use one of: ${SANDBOX_ENGINES.join(", ")}.`);
+    }
+    const srtOnly = [
+        ["--sandbox-allow-host", options.sandboxAllowHosts],
+        ["--sandbox-allow-read", options.sandboxAllowRead],
+        ["--sandbox-allow-write", options.sandboxAllowWrite],
+    ].filter(([, list]) => Array.isArray(list) && list.length).map(([flag]) => flag);
+    const image = options.sandboxImage || (typeof options.sandbox === "string" ? options.sandbox : "");
+    const network = String(options.sandboxNetwork || "").trim().toLowerCase();
+    if (srtOnly.length && image) {
+        throw sandboxError("ERR_SANDBOX_OPTIONS_CONFLICT",
+            `${srtOnly.join(", ")} need the srt engine, and a sandbox image needs a container engine. Use one or the other.`);
+    }
+    const wantsSrt = requested === "srt" || (requested === "auto" && srtOnly.length > 0);
+    if (wantsSrt) {
+        if (image) throw sandboxError("ERR_SANDBOX_OPTIONS_CONFLICT", "The srt engine runs on the host file system and does not take an image.");
+        if (network && network !== "none") {
+            throw sandboxError("ERR_SANDBOX_OPTIONS_CONFLICT",
+                `The srt engine denies network access except for --sandbox-allow-host entries; --sandbox-network '${network}' does not apply to it.`);
+        }
+        const srt = detectSrt(execSyncFn, baseEnv, platform);
+        if (!srt.ok) throw sandboxError("ERR_SANDBOX_ENGINE_UNAVAILABLE", `Sandbox unavailable: ${srt.error}`);
+        return srt;
+    }
+    if (srtOnly.length) {
+        throw sandboxError("ERR_SANDBOX_OPTIONS_CONFLICT",
+            `${srtOnly.join(", ")} need the srt engine; the ${requested} engine cannot restrict by host name or path. Use --sandbox-engine srt, or --sandbox-network none with ${requested}.`);
+    }
+    const container = detectContainerEngine(execSyncFn, requested === "auto" ? baseEnv.HETZER_CONTAINER_ENGINE?.trim() : requested);
+    if (container.ok) return container;
+    if (requested === "auto" && !image) {
+        const srt = detectSrt(execSyncFn, baseEnv, platform);
+        if (srt.ok) return srt;
+        const err = sandboxError("ERR_DOCKER_SANDBOX_UNAVAILABLE",
+            `Sandbox unavailable: ${container.error} ${srt.error}\n`
+            + "Install Docker or Podman, or the srt engine (no container needed), or run without '--sandbox'.");
+        throw err;
+    }
+    const err = sandboxError("ERR_DOCKER_SANDBOX_UNAVAILABLE",
+        `Container sandbox unavailable: ${container.error}\n`
+        + "To run untrusted agent processes in an isolated container, install and start Docker or Podman, or run without '--sandbox'.");
+    throw err;
+}
+
+function recordSandboxStart(effectiveOptions, baseEnv, details) {
+    try {
+        recordAuditEvent({
+            eventType: "SANDBOX_EXEC",
+            target: path.basename(effectiveOptions.command || "unknown"),
+            result: "ALLOW",
+            details: { ...details, command: effectiveOptions.command, ...(effectiveOptions.agent ? { agent: true } : {}) },
+            root: effectiveOptions.root,
+            baseEnv,
+            envFile: effectiveOptions.envFile,
+        });
+    } catch (error) {
+        // Same rule as host exec: under --strict a run without its start record does not start.
+        if (effectiveOptions.strict) {
+            const failure = new Error(`Audit event could not be recorded and --strict requires it: ${error.message}`);
+            failure.code = "ERR_AUDIT_WRITE_FAILED";
+            throw failure;
+        }
+        process.stderr.write(`[hetzer] warning: audit event not recorded (${error.code || error.message})\n`);
+    }
+}
+
+/**
+ * Interactive runs (an agent's terminal UI) need the terminal itself, so their output is not piped through the
+ * redactor; they are started without injected credentials unless a raw-injection grant was asked for.
+ */
+function waitForInteractiveChild(child, { timeoutMs } = {}) {
+    return new Promise((resolve, reject) => {
+        let timer;
+        if (timeoutMs) {
+            timer = setTimeout(() => { try { child.kill("SIGTERM"); } catch { /* already gone */ } }, timeoutMs);
+        }
+        child.once("error", (error) => {
+            if (timer) clearTimeout(timer);
+            reject(error);
+        });
+        child.once("close", (code, signal) => {
+            if (timer) clearTimeout(timer);
+            resolve({ status: code ?? (signal ? 128 : 1), signal: signal || null });
+        });
+    });
+}
+
+function runSandboxChild(spawnFn, file, args, { env, interactive, secretsToRedact, outStream, errStream, root, timeoutMs }) {
+    const child = spawnFn(file, args, {
+        stdio: interactive ? "inherit" : ["inherit", "pipe", "pipe"],
+        env,
+        windowsHide: true,
+        shell: false,
+    });
+    if (interactive) return waitForInteractiveChild(child, { timeoutMs });
+    return pipeSanitizedChild(child, secretsToRedact, { outStream, errStream, root, timeoutMs });
+}
+
+async function runSrtSandbox({
+    engineCheck, effectiveOptions, mountPlan, env, secretsToRedact, injectedNames, brokerUrlNames,
+    outStream, errStream, baseEnv, spawnFn,
+}) {
+    const allowHosts = validateSandboxHosts(effectiveOptions.sandboxAllowHosts || []);
+    const run = createSrtRunDir();
+    try {
+        writeSrtSettings(run.settingsFile, buildSrtSettings({
+            mountDir: mountPlan.mountDir,
+            masks: mountPlan.masks,
+            hetzerHome: process.env.HETZER_HOME ? path.resolve(process.env.HETZER_HOME) : undefined,
+            allowHosts,
+            allowRead: effectiveOptions.sandboxAllowRead || [],
+            allowWrite: effectiveOptions.sandboxAllowWrite || [],
+            readOnly: Boolean(effectiveOptions.sandboxRo),
+            tmpDir: run.tmpDir,
+            settingsFile: run.settingsFile,
+        }));
+        // srt hands its own environment to the command: the base names (PATH, HOME, locale), the run's own
+        // temporary directory and the variables Hetzer injected. The master key and unrelated host variables stay out.
+        const childEnv = {
+            ...strictBaseEnvironment(baseEnv),
+            TMPDIR: run.tmpDir,
+            TMP: run.tmpDir,
+            TEMP: run.tmpDir,
+            ...selectContainerEnv({ env, injectedNames, brokerUrlNames }).values,
+        };
+        errStream.write(
+            `[hetzer] sandbox (srt ${engineCheck.version || "unknown version"}): project ${mountPlan.mountDir}${effectiveOptions.sandboxRo ? " (read-only)" : " (read-write)"}; `
+            + `home directory and Hetzer files unreadable; hidden Hetzer paths in the project: ${mountPlan.masks.files.length + mountPlan.masks.dirs.length}; `
+            + `network: ${allowHosts.length ? `only ${allowHosts.join(", ")}` : "none"}\n`,
+        );
+        recordSandboxStart(effectiveOptions, baseEnv, { engine: "srt", engineVersion: engineCheck.version, allowHosts });
+        const timeoutMs = effectiveOptions.timeoutMs ?? (effectiveOptions.timeout ? parseDuration(effectiveOptions.timeout) : undefined);
+        return await runSandboxChild(spawnFn, engineCheck.bin, buildSrtArgs({
+            settingsFile: run.settingsFile,
+            command: effectiveOptions.command,
+            commandArgs: effectiveOptions.commandArgs,
+        }), {
+            env: childEnv,
+            interactive: Boolean(effectiveOptions.interactive),
+            secretsToRedact,
+            outStream,
+            errStream,
+            root: effectiveOptions.root,
+            timeoutMs,
+        });
+    } finally {
+        try { fs.rmSync(run.dir, { recursive: true, force: true }); } catch { /* temp dir only */ }
+    }
+}
+
 export async function executeSandboxedProcess(options, {
     outStream = process.stdout,
     errStream = process.stderr,
@@ -373,18 +533,12 @@ export async function executeSandboxedProcess(options, {
     execSyncFn = spawnSync,
     spawnFn = spawn,
 } = {}) {
-    const engineCheck = detectContainerEngine(execSyncFn);
-    if (!engineCheck.ok) {
-        const err = new Error(
-            `Container sandbox unavailable: ${engineCheck.error}\n` +
-            "To run untrusted agent processes in an isolated container, install and start Docker or Podman, or run without '--sandbox'."
-        );
-        err.code = "ERR_DOCKER_SANDBOX_UNAVAILABLE";
-        err.exitCode = 1;
-        throw err;
-    }
-
+    const engineCheck = selectSandboxEngine(options, { execSyncFn, baseEnv });
     const effectiveOptions = { ...options };
+    if (engineCheck.type === "srt" && effectiveOptions.brokerPolicyFiles?.length) {
+        throw sandboxError("ERR_SANDBOX_BROKER_UNSUPPORTED",
+            "The srt engine does not reach the host credential broker yet. Use a container engine for brokered credentials, or a raw-injection grant.");
+    }
     // Validate the mount before any credential is resolved or any broker is started.
     const mountPlan = resolveSandboxMount({
         mountDir: effectiveOptions.sandboxMountDir,
@@ -396,6 +550,24 @@ export async function executeSandboxedProcess(options, {
         effectiveOptions,
         { baseEnv, brokerFetchFn, brokerRandomBytes },
     );
+
+    if (engineCheck.type === "srt") {
+        try {
+            if (brokers.length) {
+                throw sandboxError("ERR_SANDBOX_BROKER_UNSUPPORTED",
+                    "The srt engine does not reach the host credential broker yet. Use a container engine for brokered credentials, or a raw-injection grant.");
+            }
+            return await runSrtSandbox({
+                engineCheck, effectiveOptions, mountPlan, env, secretsToRedact, injectedNames, brokerUrlNames,
+                outStream, errStream, baseEnv, spawnFn,
+            });
+        } finally {
+            await Promise.all(brokers.map(async (opened) => {
+                await opened.broker.close();
+                opened.secret = "";
+            }));
+        }
+    }
 
     let maskDir = null;
     try {
@@ -430,39 +602,13 @@ export async function executeSandboxedProcess(options, {
             engine: engineCheck.engine,
         });
 
-        try {
-            recordAuditEvent({
-                eventType: "SANDBOX_EXEC",
-                target: path.basename(effectiveOptions.command || "unknown"),
-                result: "ALLOW",
-                details: {
-                    engine: engineCheck.engine,
-                    image: sandboxImage,
-                    command: effectiveOptions.command,
-                },
-                root: effectiveOptions.root,
-                baseEnv,
-                envFile: effectiveOptions.envFile,
-            });
-        } catch (error) {
-            // Same rule as host exec: under --strict a run without its start record does not start.
-            if (effectiveOptions.strict) {
-                const failure = new Error(`Audit event could not be recorded and --strict requires it: ${error.message}`);
-                failure.code = "ERR_AUDIT_WRITE_FAILED";
-                throw failure;
-            }
-            process.stderr.write(`[hetzer] warning: audit event not recorded (${error.code || error.message})\n`);
-        }
-
-        const child = spawnFn(engineCheck.engine, dockerArgs, {
-            stdio: ["inherit", "pipe", "pipe"],
-            env: buildContainerCliEnv({ baseEnv, containerValues: containerEnv.values }),
-            windowsHide: true,
-            shell: false,
-        });
+        recordSandboxStart(effectiveOptions, baseEnv, { engine: engineCheck.engine, image: sandboxImage });
 
         const timeoutMs = effectiveOptions.timeoutMs ?? (effectiveOptions.timeout ? parseDuration(effectiveOptions.timeout) : undefined);
-        return await pipeSanitizedChild(child, secretsToRedact, {
+        return await runSandboxChild(spawnFn, engineCheck.engine, dockerArgs, {
+            env: buildContainerCliEnv({ baseEnv, containerValues: containerEnv.values }),
+            interactive: Boolean(effectiveOptions.interactive),
+            secretsToRedact,
             outStream,
             errStream,
             root: effectiveOptions.root,

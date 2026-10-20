@@ -352,6 +352,8 @@ Commands:
                               Verify the hash-chain (and MACs), inspect the ledger, or archive it and start a new one
   exec [--allow <ids>] [--policy <file>] [--sandbox [image]] [--sandbox-mount <dir>] [--host] [--strict] [--canary] [--timeout <t>] -- <c>
                               Run with mediated credentials; raw injection requires an audited opt-out
+       [--sandbox-engine <auto|docker|podman|srt>] [--sandbox-allow-host <host>] [--sandbox-allow-read <dir>] [--sandbox-allow-write <dir>]
+                              The srt engine needs no container: home unreadable, writes only in the project, network only to listed hosts
   broker --policy <file> -- <command>   Run an HTTP client using a short-lived capability instead of the real credential
   mcp configure|serve|ping  Configure, start bridge, or run MCP diagnostic ping
   mcp tools <service>       List MCP tools with Offline / Hybrid / LLM classification
@@ -870,7 +872,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
     if (command === "exec") {
         const marker = args.indexOf("--");
         if (marker === -1 || !args[marker + 1]) {
-            throw new Error("Usage: hetzer exec [--policy <file>] [--broker-policy <file>] [--allow NAME,NAME] [--allow-raw-unmediated NAME,NAME] [--strict] [--canary] [--sandbox [image]] [--sandbox-network <net>] [--sandbox-mount <dir>] [--sandbox-ro] [--allow-sensitive-paths] [--host] [--no-sandbox] [--timeout <duration>] -- <command> [args]");
+            throw new Error("Usage: hetzer exec [--policy <file>] [--broker-policy <file>] [--allow NAME,NAME] [--allow-raw-unmediated NAME,NAME] [--strict] [--canary] [--sandbox [image]] [--sandbox-engine <auto|docker|podman|srt>] [--sandbox-network <net>] [--sandbox-allow-host <host>] [--sandbox-allow-read <dir>] [--sandbox-allow-write <dir>] [--sandbox-mount <dir>] [--sandbox-ro] [--allow-sensitive-paths] [--host] [--no-sandbox] [--timeout <duration>] -- <command> [args]");
         }
         const execOptions = args.slice(0, marker);
         const hasSandboxOption = execOptions.includes("--sandbox") || execOptions.some((o) => o.startsWith("--sandbox"));
