@@ -125,9 +125,15 @@ test("runDoctor treats Docker as optional when the srt sandbox engine is install
     try {
         const exec = (cmd) => (cmd === "srt" ? { status: 0, stdout: "0.0.78\n" } : { status: 1, stdout: "", stderr: "not found" });
         const result = runDoctor({ root: tempRoot, defaultHome: "", exec, out: { write: (chunk) => { output += chunk; } } });
-        assert.match(output, /Sandbox \(srt\) {5}: 0\.0\.78 \[OK\]/);
         assert.match(output, /Docker CLI {8}: Not detected \[FAIL\]/);
-        assert.equal(result.issues.some((issue) => /Docker/.test(issue.title)), false);
+        if (process.platform === "win32") {
+            // Hetzer does not run srt on Windows, so Docker stays a reported issue there.
+            assert.match(output, /Sandbox \(srt\) {5}: Not supported on this platform/);
+            assert.equal(result.issues.some((issue) => /Docker/.test(issue.title)), true);
+        } else {
+            assert.match(output, /Sandbox \(srt\) {5}: 0\.0\.78 \[OK\]/);
+            assert.equal(result.issues.some((issue) => /Docker/.test(issue.title)), false);
+        }
     } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });
     }

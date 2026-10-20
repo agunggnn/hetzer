@@ -202,7 +202,7 @@ function fakeChild() {
     return child;
 }
 
-test("executeSandboxedProcess with srt passes settings by file, keeps the master key out and removes the file", async () => {
+test("executeSandboxedProcess with srt passes settings by file, keeps the master key out and removes the file", { skip: process.platform === "win32" ? "Hetzer runs srt on macOS and Linux only" : false }, async () => {
     const root = tempDir("hetzer-srt-root-");
     const project = tempDir("hetzer-srt-project-");
     const masterKey = ["synthetic", "srt", "master", "key", "0123456789abcdef"].join("-");
@@ -262,7 +262,7 @@ test("executeSandboxedProcess with srt passes settings by file, keeps the master
     }
 });
 
-test("executeSandboxedProcess with srt refuses brokered credentials before resolving them", async () => {
+test("executeSandboxedProcess with srt refuses brokered credentials before resolving them", { skip: process.platform === "win32" ? "Hetzer runs srt on macOS and Linux only" : false }, async () => {
     let spawned = false;
     await assert.rejects(executeSandboxedProcess({
         root: os.tmpdir(),

@@ -62,7 +62,7 @@ export function validateSandboxHosts(hosts = []) {
 
 export function detectSrt(exec = spawnSync, env = process.env, platform = process.platform) {
     if (platform !== "darwin" && platform !== "linux") {
-        return { ok: false, error: `The srt sandbox engine is supported by Hetzer on macOS and Linux only (this host: ${platform}).` };
+        return { ok: false, unsupported: true, error: `The srt sandbox engine is supported by Hetzer on macOS and Linux only (this host: ${platform}).` };
     }
     const bin = String(env.HETZER_SRT_BIN || "").trim() || "srt";
     try {

@@ -401,7 +401,9 @@ export function runDoctor({ root, defaultHome, exec = spawnSync, out = process.s
     // Container-free sandbox engine
     out.write(srtCheck.ok
         ? `  Sandbox (srt)     : ${srtCheck.version || "installed"}${srtCheck.version && srtCheck.version !== SRT_TESTED_VERSION ? ` (tested with ${SRT_TESTED_VERSION})` : ""} [OK]\n`
-        : `  Sandbox (srt)     : Not installed (optional; npm install -g ${SRT_PACKAGE}@${SRT_TESTED_VERSION}) [INFO]\n`);
+        : (srtCheck.unsupported
+            ? "  Sandbox (srt)     : Not supported on this platform (macOS and Linux only) [INFO]\n"
+            : `  Sandbox (srt)     : Not installed (optional; npm install -g ${SRT_PACKAGE}@${SRT_TESTED_VERSION}) [INFO]\n`));
 
     // Hetzer Root & Instance
     const rootLabel = isGlobal ? `${root} (Global User Home)` : `${root} (Local Workspace)`;
