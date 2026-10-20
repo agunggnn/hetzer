@@ -48,6 +48,9 @@ export const SENSITIVE_HOST_PATTERNS = [
     /(?:^|[\\/])\.ssh[\\/](?:id_rsa|id_ed25519|id_ecdsa|id_dsa|authorized_keys|known_hosts|config)\b/i,
     /(?:^|[\\/])\.gnupg[\\/](?:secring|pubring)\.gpg\b/i,
     /(?:appdata|localappdata)[\\/]roaming[\\/]gcloud[\\/]/i,
+
+    // Hetzer master key files outside the workspace
+    /(?:^|[\\/])\.hetzer[\\/](?:keys[\\/]|grimoire\.key\b)/i,
 ];
 
 export const UNTRUSTED_DOWNLOADER_PATTERNS = [

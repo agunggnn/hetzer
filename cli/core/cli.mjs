@@ -11,7 +11,13 @@ import { configureMcp } from "../mcp/configure.mjs";
 import { diagnoseMcpService } from "../mcp/ping.mjs";
 import { KNOWN_CREDENTIALS, assertInteractiveHumanSession, authorizeCredentialReveal, listCredentials, promptSecret, revealCredential, setCredential } from "../vault/creds.mjs";
 import { approveCredentialRequest, createCredentialRequest, getCredentialRequest } from "../vault/credential-request.mjs";
-import { isolateMasterKey, resolveMasterKey } from "../vault/hetzer-vault.mjs";
+import {
+    generateInstanceId,
+    INSTANCE_ID_PATTERN,
+    isolateMasterKey,
+    locateMasterKey,
+    writeInstanceKey,
+} from "../vault/hetzer-vault.mjs";
 import { autoIngestPlaintextEnv, migrateEnvCredentials } from "../vault/migrate-env.mjs";
 import { setupCanaryTrap } from "../vault/canary.mjs";
 import { readAuditEvents, rotateAuditLedger, verifyAuditLedger } from "../vault/audit.mjs";
@@ -223,11 +229,12 @@ function handleDeprecatedCommand(command) {
     process.exitCode = 1;
 }
 
-export function initializeProject(root) {
+export function initializeProject(root, { homeDir } = {}) {
     const resolvedRoot = path.resolve(root);
     // Refuses when only the retired key alias is configured: generating a key below would leave the existing vault undecryptable.
     const priorEnvFile = path.join(resolvedRoot, ".env");
-    resolveMasterKey({ root: resolvedRoot, envValues: fs.existsSync(priorEnvFile) ? parseEnv(fs.readFileSync(priorEnvFile, "utf8")) : {} });
+    const priorValues = fs.existsSync(priorEnvFile) ? parseEnv(fs.readFileSync(priorEnvFile, "utf8")) : {};
+    const located = locateMasterKey({ envValues: priorValues, homeDir });
     fs.mkdirSync(resolvedRoot, { recursive: true, mode: 0o700 });
     try { fs.chmodSync(resolvedRoot, 0o700); } catch { /* Windows */ }
     copyIfMissing(path.join(templatesDir, ".env.example"), path.join(resolvedRoot, ".env.example"));
@@ -239,18 +246,40 @@ export function initializeProject(root) {
     const envFile = path.join(resolvedRoot, ".env");
     copyIfMissing(path.join(resolvedRoot, ".env.example"), envFile);
     let text = fs.readFileSync(envFile, "utf8");
-    const values = parseEnv(text);
-    if (!values.HETZER_GRIMOIRE_KEY || String(values.HETZER_GRIMOIRE_KEY).startsWith("replace-")) {
-        text = replaceEnvValue(text, "HETZER_GRIMOIRE_KEY", crypto.randomBytes(48).toString("base64url"));
+    const vaultExists = fs.existsSync(path.join(dataDir, "hetzer-vault.db"));
+    // The shared key file belongs to whichever workspace was isolated into it; a new workspace gets its own key.
+    if (!located.key && vaultExists) {
+        const error = new Error(
+            `A vault exists at '${path.join(dataDir, "hetzer-vault.db")}' but no master key was found for it `
+            + "(HETZER_GRIMOIRE_KEY in the environment or .env, or the key file named by HETZER_INSTANCE_ID). "
+            + "Refusing to generate a new key: the credentials in that vault could not be decrypted with it. "
+            + "Restore the key, or move the vault aside if it holds nothing you need.",
+        );
+        error.code = "ERR_MASTER_KEY_NOT_FOUND";
+        throw error;
     }
+    const keepExisting = located.key && (located.source !== "shared-file" || vaultExists);
+    let masterKey = keepExisting ? located.key : "";
+    const keySource = keepExisting ? located.source : "instance-file";
+    let keyFile = "";
+    if (!keepExisting) {
+        const values = parseEnv(text);
+        const instanceId = INSTANCE_ID_PATTERN.test(String(values.HETZER_INSTANCE_ID || "").trim())
+            ? String(values.HETZER_INSTANCE_ID).trim()
+            : generateInstanceId();
+        masterKey = crypto.randomBytes(48).toString("base64url");
+        keyFile = writeInstanceKey({ instanceId, masterKey, homeDir });
+        text = replaceEnvValue(text, "HETZER_INSTANCE_ID", instanceId);
+    }
+    // An empty placeholder would be read as "no key"; drop it so .env does not suggest the key belongs there.
+    if (keySource !== "env-file") text = text.replace(/^HETZER_GRIMOIRE_KEY=\s*$\n?/m, "");
     fs.writeFileSync(envFile, text, { encoding: "utf8", mode: 0o600 });
     try { fs.chmodSync(envFile, 0o600); } catch { /* Windows ACLs are managed by the host. */ }
 
-    const current = parseEnv(text);
     migrateEnvCredentials({
         root: resolvedRoot,
         envFile,
-        masterKey: process.env.HETZER_GRIMOIRE_KEY || current.HETZER_GRIMOIRE_KEY,
+        masterKey,
         authorizationRef: "user:hetzer-init",
     });
     try {
@@ -259,6 +288,8 @@ export function initializeProject(root) {
     return {
         root: resolvedRoot,
         envFile,
+        keySource,
+        keyFile,
     };
 }
 
@@ -272,6 +303,16 @@ function printInitWizard(result) {
     process.stdout.write(`[v] Instance Location : ${result.root}${isGlobal ? " (Global User Home)" : " (Local Workspace)"}\n`);
     process.stdout.write(`[v] Configuration File: .env (permissions secured chmod 600)\n`);
     process.stdout.write(`[v] Grimoire Vault    : data/hetzer-vault.db (AES-256-GCM Encrypted)\n`);
+    if (result.keySource === "instance-file") {
+        process.stdout.write(`[v] Master Key        : ${result.keyFile || "~/.hetzer/keys/ (outside the workspace)"} (mode 0600)\n`);
+    } else if (result.keySource === "env-file") {
+        process.stdout.write("[!] Master Key        : stored in this workspace's .env, next to the vault.\n");
+        process.stdout.write("                        Move it out of the workspace: hetzer creds isolate-key\n");
+    } else if (result.keySource === "environment") {
+        process.stdout.write("[v] Master Key        : supplied by HETZER_GRIMOIRE_KEY in the environment (not written to disk)\n");
+    } else if (result.keySource === "shared-file") {
+        process.stdout.write(`[v] Master Key        : shared key file ~/.hetzer/grimoire.key (outside the workspace)\n`);
+    }
     process.stdout.write(`[v] MCP Server        : .mcp.json configured\n`);
     if (isGlobal && !globalCli) {
         process.stdout.write(`[!] Global Access     : 'hetzer' is NOT in your system PATH (running via npx or local script).\n`);
@@ -694,8 +735,12 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             process.stdout.write("================================================================================\n");
             process.stdout.write("  HETZER - GRIMOIRE MASTER KEY ISOLATION\n");
             process.stdout.write("================================================================================\n");
-            process.stdout.write(`  [v] Master Key moved to : ${res.isolatedFile} (mode 0600)\n`);
-            process.stdout.write(`  [v] Workspace Stripped  : ${res.envFile}\n`);
+            if (res.alreadyIsolated) {
+                process.stdout.write(`  [v] Master Key already at: ${res.isolatedFile} (outside the workspace)\n`);
+            } else {
+                process.stdout.write(`  [v] Master Key moved to : ${res.isolatedFile} (mode 0600)\n`);
+                process.stdout.write(`  [v] Workspace Stripped  : ${res.envFile} (now records HETZER_INSTANCE_ID)\n`);
+            }
             process.stdout.write("--------------------------------------------------------------------------------\n");
             process.stdout.write("  Result: The workspace .env no longer contains the master key.\n");
             process.stdout.write("  Note: Processes running as the same OS user may still read the isolated key file.\n");

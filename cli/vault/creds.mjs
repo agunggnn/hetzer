@@ -199,7 +199,7 @@ function openVault(root, envFile) {
     const values = fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, "utf8")) : {};
     const masterKey = resolveMasterKey({ root, envValues: values });
     if (!masterKey || String(masterKey).startsWith("secretRef:")) {
-        throw new Error("HETZER_GRIMOIRE_KEY is not set in ~/.hetzer/grimoire.key, .env, or environment. Run 'hetzer init' first.");
+        throw new Error("No master key found (HETZER_GRIMOIRE_KEY in the environment or .env, ~/.hetzer/keys/<HETZER_INSTANCE_ID>.key, or ~/.hetzer/grimoire.key). Run 'hetzer init' first.");
     }
     const envVault = resolveVaultPath(root);
     const dbPath = envVault || path.join(root, "data", "hetzer-vault.db");

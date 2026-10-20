@@ -119,6 +119,34 @@ test("runDoctor formats report and returns health status", () => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
+test("runDoctor warns when the master key is stored in the workspace .env", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-doctor-key-"));
+    const exec = (cmd, args) => {
+        if (args.includes("--version")) return { status: 0, stdout: "Docker version 27.1.1\n" };
+        if (args.includes("info")) return { status: 0, stdout: '"27.1.1"\n' };
+        if (args.includes("compose")) return { status: 0, stdout: "Docker Compose version v2.29.1\n" };
+        return { status: 0 };
+    };
+    const run = () => {
+        let output = "";
+        const result = runDoctor({ root: tempRoot, defaultHome: "", exec, out: { write: (chunk) => { output += chunk; } } });
+        return { result, output };
+    };
+    try {
+        fs.writeFileSync(path.join(tempRoot, ".env"), `HETZER_GRIMOIRE_KEY=${["doctor", "key", "value"].join("-")}\n`);
+        const inWorkspace = run();
+        assert.match(inWorkspace.output, /Master Key {8}: Stored in the workspace \.env, next to the vault \[WARN\]/);
+        assert.ok(inWorkspace.result.issues.some((issue) => issue.title === "Master Key Stored in the Workspace"));
+
+        fs.writeFileSync(path.join(tempRoot, ".env"), "HETZER_INSTANCE_ID=0123456789abcdef0123456789abcdef\nHETZER_GRIMOIRE_KEY=\n");
+        const isolated = run();
+        assert.match(isolated.output, /Master Key {8}: Not stored in the workspace \[OK\]/);
+        assert.equal(isolated.result.issues.some((issue) => issue.title === "Master Key Stored in the Workspace"), false);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
 test("runDoctor validates a Compose file only when the project has one", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-doctor-compose-"));
     fs.writeFileSync(path.join(tempRoot, ".env"), "HETZER_VAULT_PATH=\n");

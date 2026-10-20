@@ -234,6 +234,7 @@ export function resolveSandboxMount({
         path.join(resolvedRoot, ".hetzer"),
         path.join(resolvedRoot, "data", "credential-requests"),
         hetzerHome,
+        path.join(homeDir, ".hetzer", "keys"),
     ]);
 
     const files = [];

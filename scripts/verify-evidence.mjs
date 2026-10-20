@@ -25,7 +25,9 @@ import { detectAgentAncestor, setCredential } from "../cli/vault/creds.mjs";
 import { scanText, redactAndVault } from "../cli/vault/sniffer.mjs";
 import { scanAddedLines } from "../cli/core/git-hook.mjs";
 import { isCanaryCredential, triggerCanaryAlert } from "../cli/vault/canary.mjs";
-import { computeAuditMac, Grimoire, RETIRED_MASTER_KEY_ALIAS, resolveMasterKey, VAULT_FORMAT_VERSION } from "../cli/vault/hetzer-vault.mjs";
+import { computeAuditMac, Grimoire, isolateMasterKey, RETIRED_MASTER_KEY_ALIAS, resolveMasterKey, VAULT_FORMAT_VERSION } from "../cli/vault/hetzer-vault.mjs";
+import { initializeProject } from "../cli/core/cli.mjs";
+import { parseEnv } from "../cli/core/env.mjs";
 import * as sdk from "../sdk/index.mjs";
 import { createHetzer, SDK_ERROR_CODES } from "../sdk/index.mjs";
 import { createToolCatalog } from "../cli/mcp/catalog.mjs";
@@ -1491,6 +1493,67 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
         observed: Object.entries(checks).map(([name, value]) => `${name}: ${value}`).join(". ") + ".",
         pass,
         boundary: "The SDK narrows what a well-behaved caller can ask for. Code in the same process or under the same user can still import the vault module, call resolve() or read the database and key store (R-05 stays open for in-process callers; untrusted agents belong out of process in the sandbox). The package exports map limits specifiers, not file access. Lease interfaces are not part of apiVersion 1. Builds from before the format marker do not check it, so an older build can still open and alter a newer vault. The migration is one-way: rows in the dropped tables are counted in the audit record but not copied, and a build that checks the marker at format 1 refuses the migrated vault. The ledger record is written at least once (processes opening at the same moment can each write it) and only by a process that has the key. A legacy JSON vault is reported, not imported.",
+    });
+}
+
+// -----------------------------------------------------------------------------
+// Test 16: The master key stays outside the workspace
+// -----------------------------------------------------------------------------
+{
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-verify-keyhome-"));
+    const homeDir = path.join(scratch, "home");
+    const root = path.join(scratch, "workspace");
+    const legacyRoot = path.join(scratch, "legacy");
+    const listFiles = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const full = path.join(dir, entry.name);
+        return entry.isDirectory() ? listFiles(full) : [full];
+    });
+    const checks = {};
+    try {
+        const first = initializeProject(root, { homeDir });
+        const values = parseEnv(fs.readFileSync(path.join(root, ".env"), "utf8"));
+        const masterKey = fs.readFileSync(first.keyFile, "utf8").trim();
+        checks.keyFileOutsideWorkspace = first.keySource === "instance-file" && path.relative(root, first.keyFile).startsWith("..");
+        checks.keyFileOwnerOnly = process.platform === "win32" || (fs.statSync(first.keyFile).mode & 0o777) === 0o600;
+        checks.noWorkspaceFileHoldsKey = listFiles(root).every((file) => !fs.readFileSync(file).includes(masterKey));
+        checks.envHasOnlyInstanceId = values.HETZER_GRIMOIRE_KEY === undefined && /^[a-f0-9]{32}$/.test(values.HETZER_INSTANCE_ID || "");
+        checks.keyResolves = resolveMasterKey({ envValues: values, homeDir }) === masterKey;
+        initializeProject(root, { homeDir });
+        checks.reinitKeepsKey = fs.readFileSync(first.keyFile, "utf8").trim() === masterKey;
+        fs.rmSync(first.keyFile);
+        try {
+            initializeProject(root, { homeDir });
+            checks.lostKeyRefused = false;
+        } catch (error) {
+            checks.lostKeyRefused = error.code === "ERR_MASTER_KEY_NOT_FOUND";
+        }
+
+        const legacyKey = ["verify", "legacy", "env", "key", "0123456789"].join("-");
+        fs.mkdirSync(legacyRoot, { recursive: true });
+        fs.writeFileSync(path.join(legacyRoot, ".env"), `HETZER_GRIMOIRE_KEY=${legacyKey}\n`);
+        const isolated = isolateMasterKey({ root: legacyRoot, homeDir });
+        const legacyValues = parseEnv(fs.readFileSync(path.join(legacyRoot, ".env"), "utf8"));
+        checks.isolateKeyMovesLegacyKey = legacyValues.HETZER_GRIMOIRE_KEY === undefined
+            && fs.readFileSync(isolated.isolatedFile, "utf8").trim() === legacyKey
+            && resolveMasterKey({ envValues: legacyValues, homeDir }) === legacyKey;
+        checks.execGuardNamesKeyFiles = isSensitivePathAccess(`cat ${path.join("~", ".hetzer", "keys", "a.key")}`)
+            && isSensitivePathAccess(`cat ${path.join("~", ".hetzer", "grimoire.key")}`);
+    } finally {
+        fs.rmSync(scratch, { recursive: true, force: true });
+    }
+    const pass = Object.values(checks).every(Boolean);
+
+    recordTest({
+        id: "VERIFY-SEC-016",
+        name: "Master Key Kept Outside the Workspace",
+        target: "cli/core/cli.mjs -> initializeProject(); cli/vault/hetzer-vault.mjs -> locateMasterKey(), writeInstanceKey(), isolateMasterKey(); cli/vault/exec-policy.mjs -> SENSITIVE_HOST_PATTERNS",
+        threat: "A tool or model that can read the workspace (a coding agent, a compromised dependency, a sandbox that mounts the project) reads the master key next to the encrypted vault and decrypts every credential",
+        input: "A fresh workspace initialized with a temporary home directory; a workspace whose .env holds a key from an earlier build; a command string naming the key files",
+        method: "Initialize, scan every file under the workspace for the key bytes, check the key file mode, resolve the key, re-initialize, delete the key file and initialize again; isolate the legacy key and resolve it; classify the command strings",
+        expected: "The key is written only to ~/.hetzer/keys/<instance-id>.key with mode 0600 and no workspace file holds it; .env records only the non-secret instance id; re-initializing keeps the key; a missing key over an existing vault is refused with ERR_MASTER_KEY_NOT_FOUND instead of being replaced; isolate-key moves a legacy key out of .env; exec flags commands that name the key files",
+        observed: Object.entries(checks).map(([name, value]) => `${name}: ${value}`).join(". ") + ".",
+        pass,
+        boundary: "This removes the key from the workspace, not from the user account: any process running as the same OS user can still read ~/.hetzer/keys. It helps when the reader sees only the workspace (a sandbox that mounts the project, a repository upload, a backup of the project folder). A key supplied in HETZER_GRIMOIRE_KEY is never written to disk. Workspaces initialized before 0.7.0 keep their key in .env until 'hetzer creds isolate-key' moves it. The exec check matches command text, so a script that builds the path at run time is not caught; run untrusted code in the sandbox.",
     });
 }
 

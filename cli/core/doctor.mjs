@@ -399,9 +399,13 @@ export function runDoctor({ root, defaultHome, exec = spawnSync, out = process.s
     out.write(`  Hetzer Root       : ${rootLabel}\n`);
 
     // Instance Status
+    const keyInWorkspace = envExists && /^HETZER_GRIMOIRE_KEY=\s*[^\s#]/m.test(fs.readFileSync(envFile, "utf8"));
     if (envExists) {
         out.write(`  Instance Status   : Initialized (.env active) [OK]\n`);
         out.write(`  File Permissions  : ${permCheck.note} ${permCheck.ok ? "[OK]" : "[WARN]"}\n`);
+        out.write(keyInWorkspace
+            ? "  Master Key        : Stored in the workspace .env, next to the vault [WARN]\n"
+            : "  Master Key        : Not stored in the workspace [OK]\n");
         if (composeConfigValid === true) {
             out.write(`  Compose Config    : Configuration valid [OK]\n`);
         } else if (composeConfigValid === false) {
@@ -463,6 +467,13 @@ export function runDoctor({ root, defaultHome, exec = spawnSync, out = process.s
             title: "Docker Compose Validation Failed",
             detail: composeConfigError,
             solution: "Check docker-compose.yml syntax or re-run 'hetzer init'.",
+        });
+    }
+    if (keyInWorkspace) {
+        issues.push({
+            title: "Master Key Stored in the Workspace",
+            detail: "The workspace .env holds HETZER_GRIMOIRE_KEY, so anything that can read the workspace can decrypt the vault.",
+            solution: "Move it to ~/.hetzer/keys/ (outside the workspace):\n    hetzer creds isolate-key",
         });
     }
     if (agentContextCheck.issues && agentContextCheck.issues.length > 0) {
