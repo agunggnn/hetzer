@@ -20,7 +20,7 @@ import {
 } from "../vault/hetzer-vault.mjs";
 import { autoIngestPlaintextEnv, migrateEnvCredentials } from "../vault/migrate-env.mjs";
 import { setupCanaryTrap } from "../vault/canary.mjs";
-import { readAuditEvents, rotateAuditLedger, verifyAuditLedger } from "../vault/audit.mjs";
+import { readAuditEvents, recordAuditEvent, rotateAuditLedger, verifyAuditLedger } from "../vault/audit.mjs";
 import { redactAndVault, scanText, restoreSecrets } from "../vault/sniffer.mjs";
 import { getHetzerAsciiBanner, printHetzerBanner } from "./banner.mjs";
 import { runDoctor } from "./doctor.mjs";
@@ -157,6 +157,7 @@ export const KNOWN_COMMANDS = new Set([
     "canary",
     "audit",
     "exec",
+    "agent",
     "broker",
     "mcp",
     // Deprecated commands retained for informative redirection
@@ -354,6 +355,8 @@ Commands:
                               Run with mediated credentials; raw injection requires an audited opt-out
        [--sandbox-engine <auto|docker|podman|srt>] [--sandbox-allow-host <host>] [--sandbox-allow-read <dir>] [--sandbox-allow-write <dir>]
                               The srt engine needs no container: home unreadable, writes only in the project, network only to listed hosts
+  agent [--sandbox-allow-host <host>] [--sandbox-allow-read <dir>] [--sandbox-allow-write <dir>] [--allow <ids>] -- <agent>
+                              Run a whole coding agent inside the sandbox (srt by default), with no credentials unless --allow names them
   broker --policy <file> -- <command>   Run an HTTP client using a short-lived capability instead of the real credential
   mcp configure|serve|ping  Configure, start bridge, or run MCP diagnostic ping
   mcp tools <service>       List MCP tools with Offline / Hybrid / LLM classification
@@ -894,6 +897,45 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             ...args.slice(marker + 1),
         ]);
         const result = await executeProcess(parsedExecOptions);
+        process.exitCode = result.status;
+        return;
+    }
+
+    if (command === "agent") {
+        const marker = args.indexOf("--");
+        const usage = "Usage: hetzer agent [--sandbox-engine <srt|docker|podman>] [--sandbox-allow-host <host>] [--sandbox-allow-read <dir>] [--sandbox-allow-write <dir>] [--sandbox-mount <dir>] [--sandbox-ro] [--allow <ids> --allow-raw-unmediated <ids>] [--strict] -- <agent command> [args]";
+        if (marker === -1 || !args[marker + 1]) throw new Error(usage);
+        const agentOptions = args.slice(0, marker);
+        for (const refused of ["--host", "--no-sandbox", "--broker-policy"]) {
+            if (agentOptions.includes(refused)) {
+                throw new Error(`'hetzer agent' always runs the agent in a sandbox and does not take ${refused}.\n${usage}`);
+            }
+        }
+        const { executeProcess, parseArguments } = await import("../vault/exec.mjs");
+        const parsed = parseArguments(["--root", root, "--env-file", envFile, "--sandbox", ...agentOptions, "--", ...args.slice(marker + 1)]);
+        // An agent gets no credential unless one is named; its own API key comes from its own login or config.
+        if (parsed.allowNames === undefined) parsed.allowNames = [];
+        // The agent's binary usually lives on the host, not in an image: srt unless an engine or image was named.
+        if (!parsed.sandboxEngine && !parsed.sandboxImage) parsed.sandboxEngine = "srt";
+        parsed.interactive = true;
+        parsed.agent = true;
+        if (parsed.allowRawUnmediated.length) {
+            process.stderr.write("[hetzer] agent: the session uses the terminal directly, so its output is not redacted; injected credentials can appear on screen.\n");
+        }
+        const startedAt = Date.now();
+        const result = await executeProcess(parsed);
+        try {
+            recordAuditEvent({
+                eventType: "AGENT_EXIT",
+                target: path.basename(parsed.command),
+                result: "ALLOW",
+                details: { command: parsed.command, status: result.status, durationMs: Date.now() - startedAt },
+                root,
+                envFile,
+            });
+        } catch (error) {
+            process.stderr.write(`[hetzer] warning: audit event not recorded (${error.code || error.message})\n`);
+        }
         process.exitCode = result.status;
         return;
     }

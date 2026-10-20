@@ -9,7 +9,15 @@ import { getAuditLogPath, recordAuditEvent } from "./audit.mjs";
 import { parseDuration, pipeSanitizedChild, prepareExecutionEnvironment } from "./exec.mjs";
 import { getIsolatedKeyPath, resolveVaultPath } from "./hetzer-vault.mjs";
 import { strictBaseEnvironment } from "./secret-env.mjs";
-import { buildSrtArgs, buildSrtSettings, createSrtRunDir, detectSrt, validateSandboxHosts, writeSrtSettings } from "./srt-sandbox.mjs";
+import {
+    buildSrtArgs,
+    buildSrtSettings,
+    createSrtRunDir,
+    detectSrt,
+    findUnreadableCommand,
+    validateSandboxHosts,
+    writeSrtSettings,
+} from "./srt-sandbox.mjs";
 
 // Variables forwarded to the container besides the ones Hetzer injected itself. Everything else in
 // the host environment (PATH, USERPROFILE, tokens, the vault master key) stays on the host.
@@ -281,6 +289,7 @@ export function buildSandboxDockerArgs({
     commandArgs = [],
     engine = "docker",
     platform = process.platform,
+    tty = false,
 } = {}) {
     if (env !== undefined) {
         // Values on the engine command line are visible to every local process and to `docker inspect`.
@@ -299,6 +308,7 @@ export function buildSandboxDockerArgs({
     }
     const resolvedMount = path.resolve(mountDir);
     const args = ["run", "--rm", "-i"];
+    if (tty) args.push("-t");
 
     if (containerName) {
         args.push("--name", containerName);
@@ -477,6 +487,17 @@ async function runSrtSandbox({
     outStream, errStream, baseEnv, spawnFn,
 }) {
     const allowHosts = validateSandboxHosts(effectiveOptions.sandboxAllowHosts || []);
+    const unreadable = findUnreadableCommand({
+        command: effectiveOptions.command,
+        pathEnv: baseEnv.PATH,
+        homeDir: os.homedir(),
+        readable: [mountPlan.mountDir, ...(effectiveOptions.sandboxAllowRead || []), ...(effectiveOptions.sandboxAllowWrite || [])],
+    });
+    if (unreadable) {
+        throw sandboxError("ERR_SANDBOX_COMMAND_UNREADABLE",
+            `'${unreadable.path}' is under the home directory, which the srt sandbox cannot read, so the command would not start. `
+            + `Re-open its directory with --sandbox-allow-read ${unreadable.suggestion} (credential stores under it stay hidden).`);
+    }
     const run = createSrtRunDir();
     try {
         writeSrtSettings(run.settingsFile, buildSrtSettings({
@@ -600,6 +621,7 @@ export async function executeSandboxedProcess(options, {
             command: effectiveOptions.command,
             commandArgs: effectiveOptions.commandArgs,
             engine: engineCheck.engine,
+            tty: Boolean(effectiveOptions.interactive && process.stdin.isTTY && process.stdout.isTTY),
         });
 
         recordSandboxStart(effectiveOptions, baseEnv, { engine: engineCheck.engine, image: sandboxImage });

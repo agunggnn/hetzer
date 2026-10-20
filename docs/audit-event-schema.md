@@ -118,7 +118,8 @@ mandatory under `hetzer exec --strict`: the run does not start when they cannot 
 | Event type | Emitted by | `target` | `result` | `details` keys |
 |---|---|---|---|---|
 | `EXEC` | `exec.mjs`, start of a host run (mandatory under `--strict`) | command name | `ALLOW` | `command`, `strict`, `canary`, `sandbox` |
-| `SANDBOX_EXEC` | `sandbox.mjs`, start of a sandboxed run (mandatory under `--strict`) | command name | `ALLOW` | `engine`, `image`, `command` |
+| `SANDBOX_EXEC` | `sandbox.mjs`, start of a sandboxed run (mandatory under `--strict`) | command name | `ALLOW` | `engine`, `command`; `image` (container engines); `engineVersion`, `allowHosts` (srt); `agent` (set by `hetzer agent`) |
+| `AGENT_EXIT` | `cli.mjs`, end of a `hetzer agent` session, fail-soft | command name | `ALLOW` | `command`, `status`, `durationMs` |
 | `SENSITIVE_PATH_BLOCKED` | `exec.mjs`, fail-soft | command name | `BLOCK` | `command`, `error` |
 | `DOWNLOADER_BLOCKED` | `exec.mjs`, fail-soft | command name | `BLOCK` | `command`, `error` |
 | `REFLECTION_BLOCKED` | `exec.mjs`, fail-soft | command name | `BLOCK` | `command` |

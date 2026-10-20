@@ -15,6 +15,7 @@ import {
     buildSrtSettings,
     createSrtRunDir,
     detectSrt,
+    findUnreadableCommand,
     SRT_TESTED_VERSION,
     validateSandboxHosts,
     writeSrtSettings,
@@ -122,6 +123,28 @@ test("parseArguments reads the srt options, and they imply a sandbox", () => {
     assert.equal(parseArguments(["--sandbox-engine", "srt", "--", "x"]).sandbox, true);
     assert.equal(parseArguments(["--sandbox-engine", "srt", "--host", "--", "x"]).sandbox, false, "--host still wins");
     assert.equal(parseArguments(["--", "x"]).sandbox, false);
+});
+
+test("findUnreadableCommand names a command or interpreter installed under the home directory", () => {
+    const home = tempDir("hetzer-srt-cmd-home-");
+    try {
+        const binDir = path.join(home, ".local", "bin");
+        const nodeDir = path.join(home, ".nvm", "bin");
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.mkdirSync(nodeDir, { recursive: true });
+        fs.writeFileSync(path.join(binDir, "agent-cli"), "#!/usr/bin/env fake-node\n", { mode: 0o755 });
+        fs.writeFileSync(path.join(nodeDir, "fake-node"), "", { mode: 0o755 });
+        const pathEnv = [binDir, nodeDir, "/usr/bin"].join(path.delimiter);
+        const check = (readable) => findUnreadableCommand({ command: "agent-cli", pathEnv, homeDir: home, readable });
+
+        assert.deepEqual(check([]), { path: path.join(binDir, "agent-cli"), suggestion: path.join(home, ".local") });
+        assert.deepEqual(check([path.join(home, ".local")]), { path: path.join(nodeDir, "fake-node"), suggestion: path.join(home, ".nvm") });
+        assert.equal(check([path.join(home, ".local"), path.join(home, ".nvm")]), null);
+        assert.equal(findUnreadableCommand({ command: "/bin/sh", pathEnv, homeDir: home }), null, "a system command is readable");
+        assert.equal(findUnreadableCommand({ command: "does-not-exist", pathEnv, homeDir: home }), null);
+    } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+    }
 });
 
 test("buildSrtArgs ends srt options before the command", () => {

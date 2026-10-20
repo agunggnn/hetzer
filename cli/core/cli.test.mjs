@@ -377,6 +377,44 @@ test("exec command runs through the in-process execution path", async () => {
     }
 });
 
+test("agent command runs the agent through srt with no credentials and records its start and exit", { skip: process.platform === "win32" ? "fake srt is a shell script" : false }, async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-agent-cli-"));
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-agent-project-"));
+    const auditPath = path.join(tempDir, "audit.log");
+    const argsFile = path.join(tempDir, "srt-args.txt");
+    const fakeSrt = path.join(tempDir, "fake-srt");
+    const saved = { exitCode: process.exitCode, audit: process.env.HETZER_AUDIT_LOG_PATH, srt: process.env.HETZER_SRT_BIN, stderr: process.stderr.write };
+    fs.writeFileSync(fakeSrt, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 0.0.78; exit 0; fi\nprintf '%s\\n' "$@" > ${JSON.stringify(argsFile)}\nexit 7\n`, { mode: 0o755 });
+    process.env.HETZER_AUDIT_LOG_PATH = auditPath;
+    process.env.HETZER_SRT_BIN = fakeSrt;
+    process.stderr.write = () => true;
+    try {
+        fs.writeFileSync(path.join(tempDir, ".env"), "API_KEY=secretRef:some-cred\n", "utf8");
+        await main(["agent", "--sandbox-mount", project, "--sandbox-allow-host", "api.example.com", "--", "/bin/true", "--flag"], { root: tempDir });
+        assert.equal(process.exitCode, 7, "the agent's exit status is returned");
+        const srtArgs = fs.readFileSync(argsFile, "utf8").trim().split("\n");
+        assert.deepEqual(srtArgs.slice(srtArgs.indexOf("--")), ["--", "/bin/true", "--flag"]);
+        const events = fs.readFileSync(auditPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+        const start = events.find((event) => event.eventType === "SANDBOX_EXEC");
+        assert.equal(start.details.engine, "srt");
+        assert.equal(start.details.agent, true);
+        assert.deepEqual(start.details.allowHosts, ["api.example.com"]);
+        const exit = events.find((event) => event.eventType === "AGENT_EXIT");
+        assert.equal(exit.details.status, 7);
+
+        await assert.rejects(main(["agent", "--host", "--", "/bin/true"], { root: tempDir }), /always runs the agent in a sandbox/);
+    } finally {
+        process.exitCode = saved.exitCode;
+        process.stderr.write = saved.stderr;
+        if (saved.audit === undefined) delete process.env.HETZER_AUDIT_LOG_PATH;
+        else process.env.HETZER_AUDIT_LOG_PATH = saved.audit;
+        if (saved.srt === undefined) delete process.env.HETZER_SRT_BIN;
+        else process.env.HETZER_SRT_BIN = saved.srt;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+        fs.rmSync(project, { recursive: true, force: true });
+    }
+});
+
 test("check-update and upgrade command direct users to npm", async () => {
     let stderr = "";
     const originalStderr = process.stderr.write;

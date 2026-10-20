@@ -148,11 +148,65 @@ export function buildSrtSettings({
         },
         filesystem: {
             denyRead,
-            allowRead: [mountDir, ...extraRead],
+            // A path the command may write is one it may read back.
+            allowRead: [...new Set([mountDir, ...extraRead, ...extraWrite])],
             allowWrite: [...new Set([...writable, runTmp, ...extraWrite])],
             denyWrite: [...new Set([hetzer, path.join(home, ".hetzer"), ...hidden, ...(settingsFile ? [settingsFile] : [])])],
         },
     };
+}
+
+function findOnPath(command, pathEnv = "") {
+    if (command.includes("/")) return path.resolve(command);
+    for (const dir of String(pathEnv).split(path.delimiter).filter(Boolean)) {
+        const candidate = path.join(dir, command);
+        try {
+            if (fs.statSync(candidate).isFile()) return candidate;
+        } catch {
+            // next directory
+        }
+    }
+    return "";
+}
+
+function interpreterOf(file, pathEnv) {
+    let head;
+    try {
+        const fd = fs.openSync(file, "r");
+        try {
+            const buffer = Buffer.alloc(256);
+            head = buffer.subarray(0, fs.readSync(fd, buffer, 0, 256, 0)).toString("utf8");
+        } finally {
+            fs.closeSync(fd);
+        }
+    } catch {
+        return "";
+    }
+    const match = /^#!\s*(\S+)(?:[ \t]+(\S+))?/.exec(head);
+    if (!match) return "";
+    const [, program, firstArg] = match;
+    return path.basename(program) === "env" && firstArg ? findOnPath(firstArg, pathEnv) : program;
+}
+
+/**
+ * The home directory is unreadable inside the srt sandbox, so a command installed there (a per-user agent
+ * install, a version manager's node) cannot start. Finds the command, and the interpreter its `#!` line names,
+ * and returns the first one that lies under the home directory outside every readable path, with the directory
+ * to pass to --sandbox-allow-read. Returns null when both are readable or cannot be found.
+ */
+export function findUnreadableCommand({ command, pathEnv = process.env.PATH, homeDir = os.homedir(), readable = [] } = {}) {
+    const home = realPathOrResolved(homeDir);
+    const open = readable.map(realPathOrResolved);
+    const executable = findOnPath(String(command || ""), pathEnv);
+    for (const candidate of [executable, executable ? interpreterOf(realPathOrResolved(executable), pathEnv) : ""]) {
+        if (!candidate) continue;
+        const real = realPathOrResolved(candidate);
+        if (!isSameOrInside(real, home) || open.some((dir) => isSameOrInside(real, dir))) continue;
+        // Suggest the first directory below the home directory (~/.nvm, ~/.local), not the whole home.
+        const first = path.relative(home, real).split(path.sep)[0];
+        return { path: real, suggestion: path.join(home, first) };
+    }
+    return null;
 }
 
 /** `srt --settings <file> -- <command> [args]`. srt shell-quotes each argument before its own wrapper runs it. */
