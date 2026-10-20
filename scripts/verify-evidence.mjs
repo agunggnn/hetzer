@@ -21,7 +21,7 @@ import { computeAuditEntryHash, GENESIS_HASH, recordAuditEvent, rotateAuditLedge
 import { createStreamSanitizer, executeProcess, prepareExecutionEnvironment, sanitizeStreamOutput } from "../cli/vault/exec.mjs";
 import { loadBrokerPolicy, openHttpCredentialBroker, startHttpCredentialBroker, validateBrokerPolicy } from "../cli/vault/http-broker.mjs";
 import { resolveSecretEnvironment } from "../cli/vault/secret-env.mjs";
-import { detectAgentAncestor, setCredential } from "../cli/vault/creds.mjs";
+import { assertInteractiveHumanSession, detectAgentAncestor, setCredential } from "../cli/vault/creds.mjs";
 import { scanText, redactAndVault } from "../cli/vault/sniffer.mjs";
 import { scanAddedLines } from "../cli/core/git-hook.mjs";
 import { isCanaryCredential, listExternalCanaries, plantExternalCanary, removeExternalCanary, triggerCanaryAlert } from "../cli/vault/canary.mjs";
@@ -240,25 +240,41 @@ FORBIDDEN_TOKEN=secretRef:forbidden-token
 // Test 3: Process Ancestry Heuristic (5-Generation Inspection)
 // -----------------------------------------------------------------------------
 {
-    const mockAncestorChainWithAgent = ["cmd.exe", "powershell.exe", "code.exe", "explorer.exe"];
+    const mockAncestorChainWithAgent = ["zsh", "Code Helper", "claude", "launchd"];
+    const mockAncestorChainWithEditor = ["cmd.exe", "powershell.exe", "code.exe", "explorer.exe"];
     const mockAncestorChainClean = ["cmd.exe", "powershell.exe", "bash", "init"];
 
     const agentResult = detectAgentAncestor(mockAncestorChainWithAgent);
+    const editorResult = detectAgentAncestor(mockAncestorChainWithEditor);
     const cleanResult = detectAgentAncestor(mockAncestorChainClean);
+    const refused = (ancestor, allowEditorTerminal = false) => {
+        try {
+            assertInteractiveHumanSession({ input: { isTTY: true }, env: {}, ancestor, allowEditorTerminal });
+            return false;
+        } catch {
+            return true;
+        }
+    };
+    const agentRefusedEverywhere = refused(agentResult) && refused(agentResult, true);
+    const editorRefusedForReveal = refused(editorResult);
+    const editorAllowedForInputOnly = !refused(editorResult, true);
+    const cleanAllowed = !refused(cleanResult);
 
-    const pass = agentResult.isAgent === true && cleanResult.isAgent === false;
+    const pass = agentResult.isAgent === true && editorResult.isAgent === false && editorResult.editorProcess === "code.exe"
+        && cleanResult.isAgent === false && !cleanResult.editorProcess
+        && agentRefusedEverywhere && editorRefusedForReveal && editorAllowedForInputOnly && cleanAllowed;
 
     recordTest({
         id: "VERIFY-SEC-003",
         name: "Process Ancestry Name Heuristic",
-        target: "cli/vault/creds.mjs -> detectAgentAncestor()",
+        target: "cli/vault/creds.mjs -> detectAgentAncestor(), assertInteractiveHumanSession()",
         threat: "Autonomous agent invoking 'hetzer creds reveal' through nested subprocess layers to steal plaintext",
-        input: `Agent tree: [${mockAncestorChainWithAgent.join(" -> ")}] vs Clean tree: [${mockAncestorChainClean.join(" -> ")}]`,
-        method: "Feed representative process-name chains into the ancestry name classifier",
-        expected: "Agent ancestors (code, cursor, claude, agy) detected and flagged with isAgent: true; clean trees pass",
-        observed: `Agent chain flagged: ${agentResult.isAgent} (${agentResult.processName || "none"}). Clean chain flagged: ${cleanResult.isAgent}.`,
+        input: `Agent tree: [${mockAncestorChainWithAgent.join(" -> ")}], editor tree: [${mockAncestorChainWithEditor.join(" -> ")}], clean tree: [${mockAncestorChainClean.join(" -> ")}]`,
+        method: "Classify representative process-name chains, then run the human guard on each with and without allowEditorTerminal",
+        expected: "An agent name (claude, agy, opencode, copilot) wins over an editor name and is refused everywhere; an editor-only tree (code, cursor) is refused for reveal and allowed only for input-only operations; a clean tree is allowed",
+        observed: `Agent chain: isAgent ${agentResult.isAgent} (${agentResult.processName || "none"}), refused everywhere ${agentRefusedEverywhere}. Editor chain: isAgent ${editorResult.isAgent}, editor ${editorResult.editorProcess || "none"}, refused for reveal ${editorRefusedForReveal}, allowed for input-only ${editorAllowedForInputOnly}. Clean chain allowed: ${cleanAllowed}.`,
         pass,
-        boundary: "This protocol tests name classification, not live Windows/macOS/Linux process collection or an OS security boundary.",
+        boundary: "This protocol tests name classification and the guard decision, not live Windows/macOS/Linux process collection or an OS security boundary. A process that detaches from its parent leaves the inspected ancestry.",
     });
 }
 

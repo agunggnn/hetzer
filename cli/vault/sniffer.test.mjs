@@ -55,6 +55,22 @@ test("sniffer detects PKCS8 private keys, credentialed database URLs, and high-e
     assert.equal(scanText(candidate).matches.some((item) => item.type === "high_entropy"), true);
 });
 
+test("sniffer skips NAME=<hex> identifiers and checksums but still flags hex values under secret names", () => {
+    const hex32 = "6194906c9bee104c507e3a9b290eece9";
+    const hex40 = `${hex32}0a1b2c3d`;
+    const high = (text) => scanText(text).matches.filter((item) => item.type === "high_entropy");
+    assert.deepEqual(high(`HETZER_INSTANCE_ID=${hex32}\n`), []);
+    assert.deepEqual(high(`COMMIT_SHA=${hex40}\nBUILD_ID=${hex32}\n`), []);
+    assert.equal(high(`MAILGUN_API_KEY=${hex32}\n`).length, 1, "MAILGUN_API_KEY=<hex> must stay a finding");
+    // Secret-named assignments are never skipped: they are scored on the whole token, as before this rule.
+    for (const name of ["WEBHOOK_SECRET", "SESSION_TOKEN", "DB_PASSWORD", "HMAC_SIGNATURE"]) {
+        const token = `${name}=${hex32}`;
+        assert.equal(high(`${token}\n`).length, shannonEntropy(token) >= 4.3 ? 1 : 0, `${name}=<hex> is scored, not skipped`);
+    }
+    const mixed = ["Zx9", "Qm4", "Tr7", "Lp2", "Wv8", "Kd5", "Hn3", "Gb6", "Yc1"].join("");
+    assert.equal(high(`HETZER_INSTANCE_ID=${mixed}\n`).length, 1, "a non-hex value is scored as before");
+});
+
 test("sniffer ignores agent tool and call IDs including toolu_ prefixes", () => {
     const claudeToolId = "toolu_01A5b8GzK2mQ9xR4vN8pL3sT";
     assert.ok(shannonEntropy(claudeToolId) >= 4.3);

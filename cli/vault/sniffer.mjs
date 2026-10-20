@@ -138,11 +138,17 @@ export function scanText(text) {
         "call_", "tool_", "toolu_", "chunk_", "resp_", "turn_", "session_",
         "msg_", "exec-", "item-", "ctc_", "ctco_", "node_modules"
     ];
+    // The candidate pattern allows "=", so NAME=<hex> arrives as one token and the hex skip below never sees
+    // the hex. Skip it like bare hex unless the name says it holds a secret (API_KEY=<hex> stays a finding).
+    const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=([0-9a-fA-F]+)$/;
+    const SENSITIVE_NAME = /KEY|SECRET|TOKEN|PASSWORD|PASSWD|PWD|AUTH|CREDENTIAL|PRIVATE|SIGNATURE/i;
     let candidate;
     while ((candidate = candidatePattern.exec(text)) !== null) {
         const val = candidate[0];
         if (NON_SECRET_PREFIXES.some((prefix) => val.startsWith(prefix))) continue;
         if (/^[0-9a-fA-F]+$/.test(val)) continue; // Git commit hashes, MD5, SHA256 checksums
+        const assignment = ASSIGNMENT.exec(val);
+        if (assignment && !SENSITIVE_NAME.test(assignment[1])) continue; // HETZER_INSTANCE_ID=<hex>, COMMIT_SHA=<hex>
         if (shannonEntropy(val) < 4.3) continue;
         addMatch({
             type: "high_entropy",

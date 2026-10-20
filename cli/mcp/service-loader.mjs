@@ -104,30 +104,6 @@ export function loadModuleRegistry({ root = process.cwd(), disabledModules = "",
         }
     }
 
-    if (!modules.some((m) => m.id === "sample-mod")) {
-        modules.push({
-            id: "sample-mod",
-            label: "Sample Module",
-            version: "1",
-            profile: "sample-mod",
-            lifecycle: "external",
-            surface: "headless",
-            defaultEnabled: true,
-            requires: [],
-            composeFiles: [],
-            services: [{
-                id: "sample-mod",
-                label: "Sample Service",
-                portEnv: "SAMPLE_MOD_MCP_PORT",
-                fallbackPort: 8001,
-                mcpServer: { name: "sample-mod", transport: "http", path: "/mcp" },
-            }],
-            runtime: null,
-            source: "builtin:sample-mod",
-            enabled: true,
-        });
-    }
-
     const active = modules.filter((m) => m.enabled);
     const services = active.flatMap((m) => (m.services || []).map((service) => ({
         ...service,

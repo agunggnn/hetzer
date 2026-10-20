@@ -51,6 +51,13 @@ export function configureMcp(root) {
     for (const name of managedNames) {
         if (!activeNames.has(name)) delete config.mcpServers[name];
     }
+    // Hetzer up to 0.7.0 registered a placeholder "sample-mod" server that nothing listens on. Remove it only
+    // when it is exactly that placeholder and no module in this workspace defines the name.
+    const stale = config.mcpServers["sample-mod"];
+    if (!managedNames.has("sample-mod") && stale && Object.keys(stale).length === 2
+        && stale.type === "http" && stale.url === "http://127.0.0.1:8001/mcp") {
+        delete config.mcpServers["sample-mod"];
+    }
     for (const service of activeServers) {
         const baseUrl = serviceUrl(service, fileEnv);
         if (!baseUrl) continue;

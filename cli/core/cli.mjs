@@ -18,7 +18,7 @@ import {
     locateMasterKey,
     writeInstanceKey,
 } from "../vault/hetzer-vault.mjs";
-import { autoIngestPlaintextEnv, migrateEnvCredentials } from "../vault/migrate-env.mjs";
+import { autoIngestPlaintextEnv, listPlaintextCredentialNames, migrateEnvCredentials } from "../vault/migrate-env.mjs";
 import { listExternalCanaries, plantExternalCanary, removeExternalCanary, setupCanaryTrap } from "../vault/canary.mjs";
 import { readAuditEvents, recordAuditEvent, rotateAuditLedger, verifyAuditLedger } from "../vault/audit.mjs";
 import { redactAndVault, scanText, restoreSecrets } from "../vault/sniffer.mjs";
@@ -190,6 +190,31 @@ function copyIfMissing(source, target) {
     return true;
 }
 
+const GITIGNORE_START = "# hetzer:start";
+const GITIGNORE_END = "# hetzer:end";
+const GITIGNORE_ENTRIES = [
+    "# Local credentials, vault and audit state: never commit these.",
+    ".env",
+    ".env.*",
+    "!.env.example",
+    "data/hetzer-vault.db*",
+    ".hetzer/",
+];
+
+/**
+ * Adds a marked block to the workspace .gitignore so `git add .` does not pick up the plaintext .env,
+ * the vault or the local audit ledger. Lines the user wrote are kept; a block already present is left alone.
+ */
+export function ensureHetzerGitignore(root) {
+    const file = path.join(root, ".gitignore");
+    const existing = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+    if (existing.includes(GITIGNORE_START)) return { file, changed: false };
+    const block = [GITIGNORE_START, ...GITIGNORE_ENTRIES, GITIGNORE_END].join("\n");
+    const separator = existing === "" ? "" : existing.endsWith("\n") ? "\n" : "\n\n";
+    fs.writeFileSync(file, `${existing}${separator}${block}\n`, "utf8");
+    return { file, changed: true };
+}
+
 function run(file, args, options = {}) {
     const adjustedArgs = file === process.execPath && !args.includes("--no-warnings=ExperimentalWarning")
         ? ["--no-warnings=ExperimentalWarning", ...args]
@@ -286,11 +311,14 @@ export function initializeProject(root, { homeDir } = {}) {
     try {
         configureMcp(resolvedRoot);
     } catch { /* ignore */ }
+    // The global instance in the Hetzer home is not a project anyone commits.
+    const gitignore = resolvedRoot === path.resolve(defaultHetzerHome()) ? null : ensureHetzerGitignore(resolvedRoot);
     return {
         root: resolvedRoot,
         envFile,
         keySource,
         keyFile,
+        gitignore,
     };
 }
 
@@ -315,6 +343,9 @@ function printInitWizard(result) {
         process.stdout.write(`[v] Master Key        : shared key file ~/.hetzer/grimoire.key (outside the workspace)\n`);
     }
     process.stdout.write(`[v] MCP Server        : .mcp.json configured\n`);
+    if (result.gitignore) {
+        process.stdout.write(`[v] Git Ignore        : .env, the vault and .hetzer/ ${result.gitignore.changed ? "added to" : "already in"} .gitignore\n`);
+    }
     if (isGlobal && !globalCli) {
         process.stdout.write(`[!] Global Access     : 'hetzer' is NOT in your system PATH (running via npx or local script).\n`);
         process.stdout.write(`                        To run direct commands, install globally:\n`);
@@ -430,11 +461,12 @@ export async function main(argv = process.argv.slice(2), options = {}) {
     if (["protect", "armor", "protec"].includes(command)) {
         const workspaceRoot = rootOption ? path.resolve(rootOption) : process.cwd();
 
-        // 1. Install universal skills to all detected and supported AI agents
+        // 1. Install agent guidance into this project only; `hetzer skill install all` also updates installed apps.
         run(process.execPath, [
             path.join(cliRoot, "skills", "installer.mjs"),
             "install",
             "all",
+            "--project-only",
         ], { cwd: workspaceRoot });
 
         // 2. Install git pre-commit hook if .git folder exists
@@ -451,26 +483,38 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             }
         }
 
-        // 3. Scan & auto-ingest .env if present
+        // 3. Scan & auto-ingest .env if present. Only names are printed, never values.
         let envStatus = "No .env file found";
+        let envOk = true;
         const envFile = path.join(workspaceRoot, ".env");
         if (fs.existsSync(envFile)) {
+            const plaintext = listPlaintextCredentialNames(parseEnv(fs.readFileSync(envFile, "utf8")));
             try {
                 const migrated = autoIngestPlaintextEnv({ root: workspaceRoot, envFile });
-                envStatus = migrated.length
-                    ? `${migrated.length} credential(s) vaulted into AES-256-GCM`
-                    : "No credentials migrated; review Vault key and .env values";
+                const left = listPlaintextCredentialNames(parseEnv(fs.readFileSync(envFile, "utf8")));
+                if (left.length) {
+                    envOk = false;
+                    envStatus = `${left.length} plaintext credential(s) still in .env (${left.join(", ")}).\n`
+                        + (isHetzerWorkspace(workspaceRoot)
+                            ? "                           They were not moved into the vault; run 'hetzer init' to check the vault key."
+                            : "                           This project has no vault yet: run 'hetzer init', then 'hetzer protect' again.");
+                } else if (migrated.length) {
+                    envStatus = `${migrated.length} credential(s) moved into the vault (AES-256-GCM)`;
+                } else {
+                    envStatus = plaintext.length ? "Credentials already in the vault" : "No plaintext credentials found";
+                }
             } catch {
-                envStatus = "Migration failed; run the migration command for diagnostics";
+                envOk = false;
+                envStatus = "Migration failed; run 'hetzer init' for diagnostics";
             }
         }
 
         process.stdout.write("\n================================================================================\n");
         process.stdout.write("  🛡️ HETZER CREDENTIAL GUARDS CONFIGURED\n");
         process.stdout.write("================================================================================\n");
-        process.stdout.write("  [v] Agent Skills       : Installation attempted for supported detected agents\n");
-        process.stdout.write(`  [v] Git Pre-Commit     : ${gitHookInstalled ? "Hook installed for supported scanner rules" : "Skipped (no .git directory found)"}\n`);
-        process.stdout.write(`  [v] Workspace .env     : ${envStatus}\n`);
+        process.stdout.write("  [v] Agent Skills       : Guidance written to this project (other apps unchanged)\n");
+        process.stdout.write(`  ${gitHookInstalled ? "[v]" : "[!]"} Git Pre-Commit     : ${gitHookInstalled ? "Hook installed for supported scanner rules" : "Skipped (no .git directory found)"}\n`);
+        process.stdout.write(`  ${envOk ? "[v]" : "[!]"} Workspace .env     : ${envStatus}\n`);
         process.stdout.write("  [v] Resource Overhead  : 0 Docker containers, 0 background RAM, 0 npm dependencies\n");
         const contextAudit = auditAgentContext(workspaceRoot);
         process.stdout.write(`  [v] Context Overhead   : ${contextAudit.summary}\n`);
@@ -671,7 +715,16 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             const id = args[1];
             if (!id) throw new Error("Usage: hetzer creds set <id>");
             if (args[2]) throw new Error("Do not pass a secret as a command-line argument. Run 'hetzer creds set <id>' and use the masked prompt.");
-            assertInteractiveHumanSession({ operation: "'hetzer creds set'" });
+            // Storing shows nothing back, so an editor terminal may add a credential. Replacing one keeps its
+            // grants (origins, raw injection), so that still needs a standalone terminal.
+            const session = assertInteractiveHumanSession({ operation: "'hetzer creds set'", allowEditorTerminal: true, ...(options.humanSession || {}) });
+            if (session.editorTerminal && listCredentials({ root, envFile }).some((item) => item.id === id && item.configured)) {
+                throw new Error(
+                    `Access Denied: 'hetzer creds set ${id}' would replace a stored credential and keep its grants.\n`
+                    + `Reason: ${session.editorTerminal}. New credentials can be added from an editor terminal; replacing one cannot.\n`
+                    + "If you are a person, run it from a standalone terminal (macOS Terminal, iTerm2, Windows Terminal).",
+                );
+            }
             const secret = await promptSecret(`Enter secret value for '${id}': `);
             if (!secret) throw new Error("Secret value is required.");
             const result = setCredential({ root, envFile, id, secret });
@@ -803,7 +856,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
             if (!names.length) throw new Error(usage);
             const option = (name) => { const index = opts.indexOf(name); return index >= 0 ? opts[index + 1] : undefined; };
             // The decoy values come from the person who obtained them, never from a command line or an agent.
-            assertInteractiveHumanSession({ operation: "'hetzer canary plant'" });
+            assertInteractiveHumanSession({ operation: "'hetzer canary plant'", allowEditorTerminal: true });
             const entries = [];
             for (const name of names) {
                 entries.push({ name, value: await promptSecret(`Decoy value for ${name} (input hidden): `) });

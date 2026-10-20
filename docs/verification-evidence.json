@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-10-20T04:28:56.818Z",
+  "timestamp": "2026-10-20T11:21:06.225Z",
   "nodeVersion": "v22.22.0",
   "platform": "linux",
   "results": [
@@ -30,14 +30,14 @@
     {
       "id": "VERIFY-SEC-003",
       "name": "Process Ancestry Name Heuristic",
-      "target": "cli/vault/creds.mjs -> detectAgentAncestor()",
+      "target": "cli/vault/creds.mjs -> detectAgentAncestor(), assertInteractiveHumanSession()",
       "threat": "Autonomous agent invoking 'hetzer creds reveal' through nested subprocess layers to steal plaintext",
-      "input": "Agent tree: [cmd.exe -> powershell.exe -> code.exe -> explorer.exe] vs Clean tree: [cmd.exe -> powershell.exe -> bash -> init]",
-      "method": "Feed representative process-name chains into the ancestry name classifier",
-      "expected": "Agent ancestors (code, cursor, claude, agy) detected and flagged with isAgent: true; clean trees pass",
-      "observed": "Agent chain flagged: true (code.exe). Clean chain flagged: false.",
+      "input": "Agent tree: [zsh -> Code Helper -> claude -> launchd], editor tree: [cmd.exe -> powershell.exe -> code.exe -> explorer.exe], clean tree: [cmd.exe -> powershell.exe -> bash -> init]",
+      "method": "Classify representative process-name chains, then run the human guard on each with and without allowEditorTerminal",
+      "expected": "An agent name (claude, agy, opencode, copilot) wins over an editor name and is refused everywhere; an editor-only tree (code, cursor) is refused for reveal and allowed only for input-only operations; a clean tree is allowed",
+      "observed": "Agent chain: isAgent true (claude), refused everywhere true. Editor chain: isAgent false, editor code.exe, refused for reveal true, allowed for input-only true. Clean chain allowed: true.",
       "verdict": "PASS",
-      "boundary": "This protocol tests name classification, not live Windows/macOS/Linux process collection or an OS security boundary."
+      "boundary": "This protocol tests name classification and the guard decision, not live Windows/macOS/Linux process collection or an OS security boundary. A process that detaches from its parent leaves the inspected ancestry."
     },
     {
       "id": "VERIFY-SEC-004",
@@ -59,7 +59,7 @@
       "input": "Small 30-byte build log line",
       "method": "Measure the median of 25 write-and-flush samples using dynamic retention and the bounded lexical scanner",
       "expected": "Median processing latency stays below 5ms and the complete line is emitted",
-      "observed": "Median processing latency: 0.021 ms. Output delivered: \"Compiling module auth.mjs...\".",
+      "observed": "Median processing latency: 0.012 ms. Output delivered: \"Compiling module auth.mjs...\".",
       "verdict": "PASS",
       "boundary": "Streams with secrets exceeding 128 chars scale buffer to 2x secret length to ensure boundary integrity."
     },

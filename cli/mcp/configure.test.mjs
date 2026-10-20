@@ -17,6 +17,27 @@ test("MCP configure preserves other servers and registers Hetzer", () => {
     fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("MCP configure registers only Hetzer in a fresh workspace and drops the old sample-mod placeholder", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-mcp-config-"));
+    try {
+        configureMcp(root);
+        assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(path.join(root, ".mcp.json"), "utf8")).mcpServers), ["hetzer"]);
+
+        const placeholder = { type: "http", url: "http://127.0.0.1:8001/mcp" };
+        fs.writeFileSync(path.join(root, ".mcp.json"), JSON.stringify({ mcpServers: { "sample-mod": placeholder, mine: { command: "mine" } } }));
+        configureMcp(root);
+        const cleaned = JSON.parse(fs.readFileSync(path.join(root, ".mcp.json"), "utf8")).mcpServers;
+        assert.deepEqual(Object.keys(cleaned).sort(), ["hetzer", "mine"]);
+
+        const userOwned = { type: "http", url: "http://127.0.0.1:9000/mcp" };
+        fs.writeFileSync(path.join(root, ".mcp.json"), JSON.stringify({ mcpServers: { "sample-mod": userOwned } }));
+        configureMcp(root);
+        assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, ".mcp.json"), "utf8")).mcpServers["sample-mod"], userOwned);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test("MCP configure registers enabled module HTTP servers", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-mcp-module-"));
     const recipe = path.join(root, "modules", "sample-mod");

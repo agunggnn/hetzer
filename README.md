@@ -23,20 +23,22 @@
 
 Hetzer runs instantly on any machine with Node.js installed without requiring global installation:
 
+Run these in your project folder:
+
 ```bash
-# 🔥 The 1-Command Speedrun for Vibe Coders: Arms skills, git hook, and vaults .env in 1.5s
+# 1. Create the encrypted vault. The master key goes to ~/.hetzer/keys/, outside the project,
+#    and .env, the vault and .hetzer/ are added to .gitignore.
+npx hetzer init
+
+# 2. Add agent guidance to this project, install the Git hooks, and move plaintext keys
+#    from .env into the vault (.env keeps secretRef:<id> references).
 npx hetzer protect
 
-# Or perform individual actions:
-# 1. Install credential-safety guidance for supported AI agents
-npx hetzer skill install
-
-# 2. Install Dual Git Guards (blocks staged tokens/.env via pre-commit, raw secrets in commit-msg)
-npx hetzer hook install
-
-# 3. Store credentials & API keys into encrypted Grimoire Vault (AES-256-GCM)
+# 3. Store another credential at a masked prompt.
 npx hetzer creds set openai-api-key
 ```
+
+`protect` changes only files in the project. To also add Hetzer to agent apps installed on your machine (Claude Desktop, Cline, Hermes, Antigravity), run `npx hetzer skill install`. To install only the Git hooks, run `npx hetzer hook install`.
 
 ### Permanent Installation Options:
 
@@ -241,7 +243,7 @@ Scanner latency varies with input length, candidate count, CPU, Node version, an
 
 ---
 
-## 🏦 Enterprise & Banking Readiness (PCI-DSS, SOC 2, ISO 27001, OJK)
+## 🏦 Using Hetzer in a Regulated Environment
 
 Hetzer can contribute technical evidence to a broader security program, but this repository has not been independently audited or certified against the frameworks below.
 
@@ -272,12 +274,14 @@ Hetzer acts as a client-side **Defense-in-Depth Armor**:
 Install credential-handling guidance across the supported AI coding agents. The installed files consume disk space and the CLI uses memory when invoked.
 
 ```bash
-# Install to all detected agents on your system:
+# Install into this project and into the agent apps installed on your system:
 hetzer skill install
 
 # Or run instantly via npx:
 npx hetzer skill install
 ```
+
+Files outside the project (Hermes, Antigravity's global skill, Claude Desktop and Cline settings) are written only when that app's directory already exists. `hetzer protect` installs the project files only.
 
 ### Supported Platforms:
 - **Hermes Agent**: Installed to `~/.hermes/skills/hetzer/SKILL.md` (`globalOnly: true`) and hooked into `~/.hermes/config.yaml`.

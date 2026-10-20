@@ -48,7 +48,8 @@ sequenceDiagram
 - AES-GCM round trips and access restrictions;
 - strict execution excludes unapproved inherited values and the master key;
 - execution policy enforcement restricts commands and credentials to declared JSON manifests;
-- same-user agentic direct Node imports cannot reveal credentials without an interactive human TTY;
+- reveal through a direct Node import is refused without an interactive TTY, with a known agent marker (including Claude Code's `CLAUDECODE` and `CLAUDE_CODE_ENTRYPOINT`), or with an agent process among five ancestors; these are heuristics that same-user code can imitate (see Known boundaries);
+- editor terminals (VS Code, Cursor) are refused for reveal, grant, approval and audit rotation; `creds set` may add a new credential there but not replace a stored one (which keeps its grants), and `canary plant` may run there;
 - process ancestry inspection caches results in-process to maintain sub-millisecond execution latency;
 - a key in the workspace `.env` (written by builds before 0.7.0) takes precedence over key files; `init` writes new keys to a per-instance file so workspaces never share or overwrite one another's key, and no workspace file holds the key (`VERIFY-SEC-016`);
 - non-interactive runners, HTTP brokers, and MCP proxies resolve capability-scoped secrets without TTY blockage;
@@ -56,6 +57,9 @@ sequenceDiagram
 - multiline PKCS#8 keys and credentialed database URLs are detected;
 - subprocess execution timeout guard terminates runaway/hanging processes within configured budgets and redacts emitted output;
 - generic high-entropy candidates are detected without duplicating overlapping provider matches;
+- `NAME=<hex>` identifiers and checksums are skipped like bare hex unless the name marks a secret (`KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `AUTH`, `CREDENTIAL`, `PRIVATE`, `SIGNATURE`), which keeps the whole token scored;
+- `init` adds a marked `.gitignore` block for `.env`, `.env.*` (not `.env.example`), the vault file and `.hetzer/`, and keeps the user's own lines;
+- `protect` writes agent guidance only inside the project, names (never values) of plaintext credentials it could not move, and leaves agent apps in the home directory to `hetzer skill install`, which updates only apps that are installed;
 - auto-vaulting a second provider token does not overwrite an existing provider credential;
 - canary errors carry exit code 43;
 - commit-msg hook blocks raw credentials in commit message text and exempts comment lines;
@@ -86,7 +90,8 @@ sequenceDiagram
 
 - Pattern and entropy scanning is heuristic and bounded. It cannot prove that text contains no secrets.
 - `hetzer exec` is not a sandbox. Raw-opted-out child code can transform a value, send it over the network, or access other same-user resources. Brokered clients can still make any operation permitted by their broker policy and upstream account.
-- TTY, environment-marker, process-name, and UI checks do not authenticate a human and can be imitated by same-user code.
+- TTY, environment-marker, process-name, and UI checks do not authenticate a human and can be imitated by same-user code. A process that detaches from its parent (for example with `setsid`) leaves the inspected ancestry, and an editor's agent that allocates a terminal can add a new credential with `creds set`. Run untrusted agents with `hetzer agent` so the sandbox, not these checks, keeps them from the key and the vault.
+- The generic high-entropy rule scores whole tokens against one threshold, so a short hex value under a secret name (for example `SESSION_TOKEN=<32 hex>`) can fall below it; provider rules cover known formats.
 - Key files under `~/.hetzer/keys` are outside the workspace but readable by any process running as the same user outside a sandbox.
 - Local canaries observe only guarded application paths. External decoys alert, through the issuing service, only when used.
 - The sandbox engines are process sandboxes, not virtual machines; kernel and engine vulnerabilities, and every path or host re-opened with `--sandbox-allow-*`, are outside them. Container engines leave outbound network open unless `--sandbox-network none`. srt 0.0.78 cannot deny a project path that does not exist yet on Linux, and does not reach the host broker. Interactive `hetzer agent` sessions are not redacted.

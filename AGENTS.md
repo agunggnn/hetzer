@@ -1,6 +1,6 @@
 # Hetzer Contributor & Agent Guidance
 
-> **Version**: v0.7.0 | **Verify**: `npm run check && npm test && npm run verify`
+> **Version**: v0.7.1 | **Verify**: `npm run check && npm test && npm run verify`
 
 ---
 

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -49,6 +50,32 @@ test("initializeProject keeps the master key outside the workspace and is repeat
         initializeProject(root, { homeDir });
         assert.equal(fs.readFileSync(path.join(root, ".env"), "utf8"), first);
         assert.equal(fs.readFileSync(keyFile, "utf8").trim(), masterKey);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+});
+
+test("initializeProject keeps .env, the vault and .hetzer/ out of Git and keeps the user's .gitignore lines", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-core-gitignore-"));
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-core-home-"));
+    try {
+        fs.writeFileSync(path.join(root, ".gitignore"), "node_modules/\ndist/", "utf8");
+        const result = initializeProject(root, { homeDir });
+        assert.equal(result.gitignore.changed, true);
+        const text = fs.readFileSync(path.join(root, ".gitignore"), "utf8");
+        assert.match(text, /^node_modules\/\ndist\/\n\n# hetzer:start\n/);
+        assert.match(text, /\n# hetzer:end\n$/);
+
+        assert.equal(initializeProject(root, { homeDir }).gitignore.changed, false);
+        assert.equal(fs.readFileSync(path.join(root, ".gitignore"), "utf8"), text);
+
+        const git = spawnSync("git", ["init", "-q", root], { encoding: "utf8" });
+        if (git.status === 0) {
+            const ignored = (file) => spawnSync("git", ["-C", root, "check-ignore", "-q", file]).status === 0;
+            for (const file of [".env", ".env.local", "data/hetzer-vault.db", ".hetzer/audit.log"]) assert.equal(ignored(file), true, `${file} must be ignored`);
+            for (const file of [".env.example", "data/users.csv", ".mcp.json"]) assert.equal(ignored(file), false, `${file} must stay committable`);
+        }
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
         fs.rmSync(homeDir, { recursive: true, force: true });
@@ -159,11 +186,15 @@ test("protect command arms workspace with universal skills and git hook", async 
         process.env.HETZER_INSTALL_HOME = path.join(tempDir, "home");
         await main(["protect"], { root: tempDir });
         assert.match(output, /HETZER CREDENTIAL GUARDS CONFIGURED/);
-        assert.match(output, /No credentials migrated/);
-        assert.doesNotMatch(output, /Plaintext tokens vaulted/);
+        // Without a vault nothing is moved, and the output says so instead of showing a check mark.
+        assert.match(output, /\[!\] Workspace \.env\s+: 1 plaintext credential\(s\) still in \.env \(SAMPLE_KEY\)/);
+        assert.match(output, /no vault yet: run 'hetzer init', then 'hetzer protect' again/);
+        assert.doesNotMatch(output, /test-token/, "protect prints names, never values");
         assert.equal(fs.existsSync(path.join(tempDir, ".cursor", "rules", "hetzer.mdc")), true);
         assert.equal(fs.existsSync(path.join(tempDir, ".git", "hooks", "pre-commit")), true);
         assert.equal(fs.existsSync(path.join(tempDir, "AGENTS.md")), true);
+        // protect changes only the project: no agent app settings in the home directory.
+        assert.equal(fs.existsSync(path.join(tempDir, "home")), false, "protect must not write outside the project");
     } finally {
         if (originalInstallHome === undefined) delete process.env.HETZER_INSTALL_HOME;
         else process.env.HETZER_INSTALL_HOME = originalInstallHome;
@@ -215,6 +246,29 @@ test("creds set fails closed when invoked without a human TTY", async () => {
         await assert.rejects(
             () => main(["creds", "set", "github-token"], { root: tempDir }),
             /requires a direct human interactive TTY/
+        );
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
+test("creds set in an editor terminal may add a credential but refuses to replace a stored one", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-creds-set-editor-"));
+    const masterKey = ["editor", "terminal", "test", "master", "key", "material"].join("-");
+    fs.writeFileSync(path.join(tempDir, ".env"), `HETZER_GRIMOIRE_KEY=${masterKey}\n`);
+    fs.mkdirSync(path.join(tempDir, "data"));
+    const vault = new Grimoire({ dbPath: path.join(tempDir, "data", "hetzer-vault.db"), masterKey });
+    vault.create({ id: "stored-key", secret: ["stored", "value", "abc"].join("-"), projectId: "editor-test" });
+    vault.close();
+    const editor = { input: { isTTY: true }, env: { VSCODE_PID: "123" }, ancestor: { isAgent: false } };
+    try {
+        await assert.rejects(
+            () => main(["creds", "set", "stored-key"], { root: tempDir, humanSession: editor }),
+            /would replace a stored credential[\s\S]*standalone terminal/,
+        );
+        await assert.rejects(
+            () => main(["creds", "set", "stored-key"], { root: tempDir, humanSession: { ...editor, env: { VSCODE_PID: "1", CLAUDECODE: "1" } } }),
+            /Claude Code session detected/,
         );
     } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });
