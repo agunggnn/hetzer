@@ -14,7 +14,16 @@ export const SRT_PACKAGE = "@anthropic-ai/sandbox-runtime";
 export const HOST_CREDENTIAL_PATHS = [
     ".ssh", ".aws", ".azure", ".config/gcloud", ".kube", ".docker", ".gnupg", ".config/gh",
     ".npmrc", ".netrc", ".git-credentials", ".pypirc", ".hetzer",
+    // OS keyrings and browser profiles (cookies, saved logins)
+    ".local/share/keyrings", "Library/Keychains", "Library/Cookies", ".mozilla", ".config/google-chrome",
+    ".config/chromium", ".config/BraveSoftware", "Library/Application Support/Google/Chrome",
+    "Library/Application Support/Firefox", "Library/Application Support/BraveSoftware",
 ];
+
+// Project files that other tools execute later on the host. srt itself protects .git/hooks, .git/config, shell rc
+// files, .mcp.json, .vscode/, .idea/, .claude/commands and .claude/agents relative to its working directory; these are
+// added when they exist (srt 0.0.78 cannot deny a path that does not exist yet on Linux).
+export const PROJECT_EXECUTED_PATHS = [".husky", ".githooks", ".envrc", ".claude/settings.json", ".claude/settings.local.json"];
 
 // A host, a `*.` wildcard host, or either with a `:port`. No bare `*`: the allowlist names destinations.
 const HOST_PATTERN = /^(?:\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::\d{1,5})?$/i;
@@ -151,7 +160,13 @@ export function buildSrtSettings({
             // A path the command may write is one it may read back.
             allowRead: [...new Set([mountDir, ...extraRead, ...extraWrite])],
             allowWrite: [...new Set([...writable, runTmp, ...extraWrite])],
-            denyWrite: [...new Set([hetzer, path.join(home, ".hetzer"), ...hidden, ...(settingsFile ? [settingsFile] : [])])],
+            denyWrite: [...new Set([
+                hetzer,
+                path.join(home, ".hetzer"),
+                ...hidden,
+                ...PROJECT_EXECUTED_PATHS.map((rel) => path.join(mountDir, rel)).filter((candidate) => fs.existsSync(candidate)),
+                ...(settingsFile ? [settingsFile] : []),
+            ])],
         },
     };
 }
@@ -202,9 +217,10 @@ export function findUnreadableCommand({ command, pathEnv = process.env.PATH, hom
         if (!candidate) continue;
         const real = realPathOrResolved(candidate);
         if (!isSameOrInside(real, home) || open.some((dir) => isSameOrInside(real, dir))) continue;
-        // Suggest the first directory below the home directory (~/.nvm, ~/.local), not the whole home.
-        const first = path.relative(home, real).split(path.sep)[0];
-        return { path: real, suggestion: path.join(home, first) };
+        // Suggest a narrow directory (~/.local/share/claude, ~/.nvm/versions/node): up to three levels below the
+        // home directory, and never the file itself.
+        const parts = path.relative(home, real).split(path.sep);
+        return { path: real, suggestion: path.join(home, ...parts.slice(0, Math.min(3, parts.length - 1))) };
     }
     return null;
 }

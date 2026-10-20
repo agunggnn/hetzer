@@ -137,9 +137,9 @@ test("findUnreadableCommand names a command or interpreter installed under the h
         const pathEnv = [binDir, nodeDir, "/usr/bin"].join(path.delimiter);
         const check = (readable) => findUnreadableCommand({ command: "agent-cli", pathEnv, homeDir: home, readable });
 
-        assert.deepEqual(check([]), { path: path.join(binDir, "agent-cli"), suggestion: path.join(home, ".local") });
-        assert.deepEqual(check([path.join(home, ".local")]), { path: path.join(nodeDir, "fake-node"), suggestion: path.join(home, ".nvm") });
-        assert.equal(check([path.join(home, ".local"), path.join(home, ".nvm")]), null);
+        assert.deepEqual(check([]), { path: path.join(binDir, "agent-cli"), suggestion: binDir });
+        assert.deepEqual(check([binDir]), { path: path.join(nodeDir, "fake-node"), suggestion: nodeDir });
+        assert.equal(check([binDir, nodeDir]), null);
         assert.equal(findUnreadableCommand({ command: "/bin/sh", pathEnv, homeDir: home }), null, "a system command is readable");
         assert.equal(findUnreadableCommand({ command: "does-not-exist", pathEnv, homeDir: home }), null);
     } finally {
@@ -245,6 +245,7 @@ test("executeSandboxedProcess with srt passes settings by file, keeps the master
         assert.equal(result.status, 0);
         assert.equal(captured.file, "srt");
         assert.equal(captured.options.shell, false);
+        assert.equal(captured.options.cwd, project, "srt runs from the project, where its built-in protections apply");
         assert.deepEqual(captured.args.slice(captured.args.indexOf("--")), ["--", "node", "-e", "1"]);
         assert.equal(captured.args.join("\n").includes(secret), false);
         assert.equal(captured.options.env.API_KEY, secret);
@@ -282,6 +283,10 @@ test("executeSandboxedProcess with srt refuses brokered credentials before resol
 // Runs against a real srt when one is installed (CI installs it on Linux and macOS). It checks the settings
 // Hetzer generates against the enforcement srt applies, using a temporary home directory.
 const realSrt = detectSrt();
+// CI sets HETZER_SRT_REQUIRED=1 on the job that installs srt, so a broken install fails instead of skipping.
+test("srt is installed where it is required", { skip: process.env.HETZER_SRT_REQUIRED === "1" ? false : "HETZER_SRT_REQUIRED is not set" }, () => {
+    assert.equal(realSrt.ok, true, realSrt.error);
+});
 test("srt enforces the generated settings: home and Hetzer files unreadable, writes confined", { skip: realSrt.ok ? false : "srt is not installed" }, () => {
     const home = tempDir("hetzer-srt-real-home-");
     const run = createSrtRunDir();
@@ -294,6 +299,9 @@ test("srt enforces the generated settings: home and Hetzer files unreadable, wri
         const envFile = path.join(project, ".env");
         fs.writeFileSync(envFile, "API_KEY=secretRef:x\n");
         fs.writeFileSync(path.join(project, "readme.txt"), "project-file\n");
+        fs.mkdirSync(path.join(project, ".git", "hooks"), { recursive: true });
+        fs.writeFileSync(path.join(project, ".git", "config"), "[core]\n");
+        fs.mkdirSync(path.join(project, ".husky"));
         writeSrtSettings(run.settingsFile, buildSrtSettings({
             mountDir: project,
             masks: { files: [{ hostPath: envFile }], dirs: [] },
@@ -318,6 +326,12 @@ test("srt enforces the generated settings: home and Hetzer files unreadable, wri
         assert.equal(fs.existsSync(path.join(home, "outside.txt")), false, "a write outside the project must not reach the host");
         sandboxed("touch", [path.join(os.tmpdir(), `hetzer-srt-escape-${process.pid}`)]);
         assert.equal(fs.existsSync(path.join(os.tmpdir(), `hetzer-srt-escape-${process.pid}`)), false, "the shared temporary directory is not writable");
+        for (const target of [path.join(project, ".git", "hooks", "pre-commit"), path.join(project, ".husky", "pre-commit")]) {
+            sandboxed("sh", ["-c", `echo 'exit 0' > ${JSON.stringify(target)}`]);
+            assert.equal(fs.existsSync(target), false, `${target} must not be writable: a hook would run on the host`);
+        }
+        sandboxed("sh", ["-c", `echo '[core] fsmonitor = x' >> ${JSON.stringify(path.join(project, ".git", "config"))}`]);
+        assert.equal(fs.readFileSync(path.join(project, ".git", "config"), "utf8"), "[core]\n", ".git/config must not be writable");
         sandboxed("sh", ["-c", `echo '{}' > ${JSON.stringify(run.settingsFile)}`]);
         assert.notEqual(fs.readFileSync(run.settingsFile, "utf8").trim(), "{}", "the settings file is not writable from inside");
     } finally {

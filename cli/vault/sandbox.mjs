@@ -471,10 +471,11 @@ function waitForInteractiveChild(child, { timeoutMs } = {}) {
     });
 }
 
-function runSandboxChild(spawnFn, file, args, { env, interactive, secretsToRedact, outStream, errStream, root, timeoutMs }) {
+function runSandboxChild(spawnFn, file, args, { env, cwd, interactive, secretsToRedact, outStream, errStream, root, timeoutMs }) {
     const child = spawnFn(file, args, {
         stdio: interactive ? "inherit" : ["inherit", "pipe", "pipe"],
         env,
+        ...(cwd ? { cwd } : {}),
         windowsHide: true,
         shell: false,
     });
@@ -533,6 +534,8 @@ async function runSrtSandbox({
             commandArgs: effectiveOptions.commandArgs,
         }), {
             env: childEnv,
+            // srt resolves its built-in write protections (.git/hooks, .git/config, rc files) against its working directory.
+            cwd: mountPlan.mountDir,
             interactive: Boolean(effectiveOptions.interactive),
             secretsToRedact,
             outStream,
