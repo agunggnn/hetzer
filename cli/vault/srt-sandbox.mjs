@@ -237,7 +237,9 @@ export function buildSrtArgs({ settingsFile, command, commandArgs = [] } = {}) {
  * sits beside it, outside the writable area. The caller removes `dir` afterwards.
  */
 export function createSrtRunDir() {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-srt-"));
+    // The real path: on macOS the temporary directory is reached through the /var -> /private/var link, and the
+    // sandbox rules and TMPDIR must name the same path.
+    const dir = realPathOrResolved(fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-srt-")));
     try { fs.chmodSync(dir, 0o700); } catch { /* best effort */ }
     const tmpDir = path.join(dir, "tmp");
     fs.mkdirSync(tmpDir, { mode: 0o700 });

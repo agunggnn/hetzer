@@ -41,6 +41,9 @@ Linux. Network access goes through a proxy that srt runs on the host and that on
 daemon, no image and no virtual machine are involved, which makes it the lighter choice on a laptop. Hetzer does not
 bundle it, so Hetzer keeps no runtime dependencies; it was written and tested against version 0.0.78.
 
+`HETZER_SRT_BIN` names the srt program when it is not `srt` on `PATH`. Whoever can set your environment or `PATH`
+decides which program that is, so treat both like any other part of your shell setup.
+
 Engine selection: `--sandbox-engine <auto|docker|podman|srt>` or `HETZER_SANDBOX_ENGINE`. `auto` (the default for
 `hetzer exec`) tries Docker, then Podman, then srt. `--sandbox-allow-host`, `--sandbox-allow-read` and
 `--sandbox-allow-write` select srt, and an image selects a container engine; asking for both is refused.
