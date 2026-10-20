@@ -89,7 +89,7 @@ test("assertInteractiveHumanSession blocks non-TTY or agent environments", () =>
     }), /Access Denied/);
     assert.throws(() => assertInteractiveHumanSession({
         input: { isTTY: true }, env: { CURSOR_PROJECT_DIR: "fixture" }, ancestor: { isAgent: false },
-    }), /Cursor IDE Agent runtime detected/);
+    }), /Cursor editor terminal detected[\s\S]*standalone terminal/);
     assert.doesNotThrow(() => assertInteractiveHumanSession({
         input: { isTTY: true }, env: {}, ancestor: { isAgent: false },
     }));

@@ -48,3 +48,24 @@ installed.
 - The allowlist options are refused with a container engine or an image (`ERR_SANDBOX_OPTIONS_CONFLICT`).
 - New audit events: `AGENT_EXIT`, `CANARY_PLANTED`, `CANARY_REMOVED`; `SANDBOX_EXEC` gains `engineVersion`,
   `allowHosts` and `agent`. See [audit-event-schema.md](audit-event-schema.md).
+
+## 0.7.1
+
+First-run fixes; no vault or key format change.
+
+- `hetzer init` adds a marked block to `.gitignore` for `.env`, `.env.*` (not `.env.example`), `data/hetzer-vault.db*` and
+  `.hetzer/`. Your own lines stay; a block already present is left alone.
+- `hetzer protect` writes agent guidance only inside the project. Use `hetzer skill install` to update agent apps
+  outside it; that command now writes only for apps whose directory exists, so it no longer creates a Claude Desktop
+  config or `~/.hermes` on a machine without them. When `.env` still holds plaintext credentials, `protect` names them
+  (never their values) and marks the line `[!]`.
+- The generated `.mcp.json` no longer lists the `sample-mod` placeholder (`http://127.0.0.1:8001/mcp`); `init` and
+  `mcp configure` remove that exact entry from existing files.
+- The Git hook no longer flags `NAME=<hex>` identifiers such as `HETZER_INSTANCE_ID` as high-entropy secrets. A hex
+  value under a secret-looking name (`API_KEY`, `*_SECRET`, `*_TOKEN`, ...) is still scored.
+- The human guard now recognises Claude Code (`CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`). In a VS Code or Cursor terminal,
+  `creds set` can add a new credential and `canary plant` can run; replacing a stored credential, `creds reveal`,
+  `creds grant`, `creds approve` and `audit rotate --yes` still need a standalone terminal.
+- `hetzer doctor` reports a missing Docker socket as "not running" instead of a permission problem, shows one
+  "No sandbox engine" issue instead of one per Docker component, and checks Compose only for a project's own Compose file.
+- New workspaces' `.env.example` no longer carries an unused `HETZER_VERSION` line.

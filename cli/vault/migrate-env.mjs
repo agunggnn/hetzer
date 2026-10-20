@@ -14,6 +14,15 @@ const BINDINGS = {
     NINE_ROUTER_MACHINE_ID_SALT: ["nine-router-machine-id-salt", "nine-router", "machine_id_salt"],
 };
 
+/** Names (never values) of .env entries that the migration would move into the vault. */
+export function listPlaintextCredentialNames(values) {
+    return Object.entries(values).filter(([name, value]) => {
+        if (!value || typeof value !== "string") return false;
+        if (value.startsWith("secretRef:") || value.startsWith("replace-") || name === "HETZER_GRIMOIRE_KEY") return false;
+        return Boolean(BINDINGS[name]) || /(?:_KEY|_SECRET|_TOKEN|_PASSWORD|_AUTH)$/i.test(name) || name === "NODE_AUTH_TOKEN";
+    }).map(([name]) => name);
+}
+
 function replaceValue(text, name, value) {
     const line = `${name}=${value}`;
     const pattern = new RegExp(`^${name}=.*$`, "m");

@@ -128,6 +128,36 @@ test("installToAntigravity writes workspace .agents/skills and AGENTS.md", () =>
     }
 });
 
+test("installSkill writes outside the project only on request and only for installed apps", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-skill-global-"));
+    const home = path.join(tempDir, "home");
+    const root = path.join(tempDir, "project");
+    const originalInstallHome = process.env.HETZER_INSTALL_HOME;
+    try {
+        fs.mkdirSync(home);
+        fs.mkdirSync(root);
+        process.env.HETZER_INSTALL_HOME = home;
+        const homeFiles = () => fs.readdirSync(home, { recursive: true }).filter((name) => fs.statSync(path.join(home, name)).isFile());
+
+        // No agent apps installed: even the system-wide install creates nothing in the home directory.
+        installSkill({ root, target: "all" });
+        assert.deepEqual(homeFiles(), []);
+        assert.equal(fs.existsSync(path.join(root, "CLAUDE.md")), true);
+
+        // Hermes installed: the project-only install still leaves it alone; the system-wide one updates it.
+        fs.mkdirSync(path.join(home, ".hermes"));
+        installSkill({ root, target: "all", includeGlobal: false });
+        assert.deepEqual(homeFiles(), []);
+        installSkill({ root, target: "all" });
+        assert.deepEqual(homeFiles(), [path.join(".hermes", "skills", "hetzer", "SKILL.md")]);
+        assert.deepEqual(installToHermes({ includeGlobal: false }), []);
+    } finally {
+        if (originalInstallHome === undefined) delete process.env.HETZER_INSTALL_HOME;
+        else process.env.HETZER_INSTALL_HOME = originalInstallHome;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
 test("installSkill dispatches target correctly", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-skill-dispatch-"));
     try {

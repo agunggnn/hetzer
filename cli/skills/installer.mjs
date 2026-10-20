@@ -160,7 +160,7 @@ export function detectPlatforms(root = process.cwd()) {
     return platforms;
 }
 
-export function installToAntigravity(root = process.cwd()) {
+export function installToAntigravity(root = process.cwd(), { includeGlobal = true } = {}) {
     const created = [];
     const home = getInstallHome();
 
@@ -171,12 +171,14 @@ export function installToAntigravity(root = process.cwd()) {
     fs.writeFileSync(wsSkill, ANTIGRAVITY_SKILL_CONTENT, "utf8");
     created.push(wsSkill);
 
-    // 2. Global skill (~/.gemini/config/skills/hetzer/SKILL.md)
-    const globalSkillDir = path.join(home, ".gemini", "config", "skills", "hetzer");
-    fs.mkdirSync(globalSkillDir, { recursive: true });
-    const globalSkill = path.join(globalSkillDir, "SKILL.md");
-    fs.writeFileSync(globalSkill, ANTIGRAVITY_SKILL_CONTENT, "utf8");
-    created.push(globalSkill);
+    // 2. Global skill (~/.gemini/config/skills/hetzer/SKILL.md), only where Gemini/Antigravity is installed
+    if (includeGlobal && fs.existsSync(path.join(home, ".gemini"))) {
+        const globalSkillDir = path.join(home, ".gemini", "config", "skills", "hetzer");
+        fs.mkdirSync(globalSkillDir, { recursive: true });
+        const globalSkill = path.join(globalSkillDir, "SKILL.md");
+        fs.writeFileSync(globalSkill, ANTIGRAVITY_SKILL_CONTENT, "utf8");
+        created.push(globalSkill);
+    }
 
     // 3. Workspace AGENTS.md entry pointer
     const agentsMd = path.join(root, "AGENTS.md");
@@ -186,9 +188,11 @@ export function installToAntigravity(root = process.cwd()) {
     return created;
 }
 
-export function installToHermes() {
+export function installToHermes({ includeGlobal = true } = {}) {
     const created = [];
     const home = getInstallHome();
+    // Hermes has no workspace files: install only on request and only where Hermes is installed.
+    if (!includeGlobal || !fs.existsSync(path.join(home, ".hermes"))) return created;
 
     // Hermes reads skills exclusively from ~/.hermes/skills/
     const skillDir = path.join(home, ".hermes", "skills", "hetzer");
@@ -280,28 +284,30 @@ export function installToCursor(root = process.cwd()) {
     return created;
 }
 
-export function installToClaudeDesktop(root = process.cwd()) {
+export function installToClaudeDesktop(root = process.cwd(), { includeGlobal = true } = {}) {
     const created = [];
     const configFile = getClaudeDesktopConfigPath();
-    fs.mkdirSync(path.dirname(configFile), { recursive: true });
 
-    let config = { mcpServers: {} };
-    if (fs.existsSync(configFile)) {
-        try {
-            config = JSON.parse(fs.readFileSync(configFile, "utf8"));
-            if (!config.mcpServers) config.mcpServers = {};
-        } catch {
-            config = { mcpServers: {} };
+    // Claude Desktop's config, only where the app has created its settings directory.
+    if (includeGlobal && fs.existsSync(path.dirname(configFile))) {
+        let config = { mcpServers: {} };
+        if (fs.existsSync(configFile)) {
+            try {
+                config = JSON.parse(fs.readFileSync(configFile, "utf8"));
+                if (!config.mcpServers) config.mcpServers = {};
+            } catch {
+                config = { mcpServers: {} };
+            }
         }
+
+        config.mcpServers["hetzer-vault"] = {
+            command: "node",
+            args: [hetzerBin, "mcp", "serve"],
+        };
+
+        fs.writeFileSync(configFile, JSON.stringify(config, null, 2), "utf8");
+        created.push(configFile);
     }
-
-    config.mcpServers["hetzer-vault"] = {
-        command: "node",
-        args: [hetzerBin, "mcp", "serve"],
-    };
-
-    fs.writeFileSync(configFile, JSON.stringify(config, null, 2), "utf8");
-    created.push(configFile);
 
     // Skill directory for Claude Code CLI (.claude/skills/hetzer/SKILL.md)
     const claudeSkillDir = path.join(root, ".claude", "skills", "hetzer");
@@ -318,7 +324,7 @@ export function installToClaudeDesktop(root = process.cwd()) {
     return created;
 }
 
-export function installToCline(root = process.cwd()) {
+export function installToCline(root = process.cwd(), { includeGlobal = true } = {}) {
     const created = [];
 
     // 1. Workspace .clinerules
@@ -327,7 +333,7 @@ export function installToCline(root = process.cwd()) {
     created.push(clineRules);
 
     // 2. MCP Settings injection
-    for (const { path: settingsPath } of getClineSettingsPaths()) {
+    for (const { path: settingsPath } of includeGlobal ? getClineSettingsPaths() : []) {
         if (fs.existsSync(path.dirname(settingsPath))) {
             let settings = { mcpServers: {} };
             if (fs.existsSync(settingsPath)) {
@@ -380,7 +386,11 @@ export function installToGeminiCli(root = process.cwd()) {
     return created;
 }
 
-export function installSkill({ root = process.cwd(), target = "all" } = {}) {
+/**
+ * Installs agent guidance into the workspace. includeGlobal also updates installed agent apps outside it
+ * (Claude Desktop, Cline, Hermes, Antigravity); `hetzer protect` passes false so it changes only the project.
+ */
+export function installSkill({ root = process.cwd(), target = "all", includeGlobal = true } = {}) {
     const installed = [];
     const normalized = String(target).toLowerCase();
 
@@ -388,16 +398,16 @@ export function installSkill({ root = process.cwd(), target = "all" } = {}) {
         installed.push(...installToCursor(root));
     }
     if (["all", "claude"].includes(normalized)) {
-        installed.push(...installToClaudeDesktop(root));
+        installed.push(...installToClaudeDesktop(root, { includeGlobal }));
     }
     if (["all", "cline", "roo"].includes(normalized)) {
-        installed.push(...installToCline(root));
+        installed.push(...installToCline(root, { includeGlobal }));
     }
     if (["all", "antigravity", "gemini-agy", "agy"].includes(normalized)) {
-        installed.push(...installToAntigravity(root));
+        installed.push(...installToAntigravity(root, { includeGlobal }));
     }
     if (["all", "hermes"].includes(normalized)) {
-        installed.push(...installToHermes());
+        installed.push(...installToHermes({ includeGlobal }));
     }
     if (["all", "opencode"].includes(normalized)) {
         installed.push(...installToOpenCode(root));
@@ -416,9 +426,11 @@ export function installSkill({ root = process.cwd(), target = "all" } = {}) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-    const args = process.argv.slice(2);
+    const flags = process.argv.slice(2).filter((arg) => arg.startsWith("--"));
+    const args = process.argv.slice(2).filter((arg) => !arg.startsWith("--"));
     const action = args[0] || "install";
     const target = args[1] || "all";
+    const projectOnly = flags.includes("--project-only");
     const root = process.cwd();
 
     if (["status", "list", "audit", "check"].includes(action)) {
@@ -455,14 +467,17 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         process.stdout.write("================================================================================\n");
         process.stdout.write("  HETZER - UNIVERSAL AI AGENT SKILL INSTALLER\n");
         process.stdout.write("================================================================================\n");
-        const results = installSkill({ root, target });
+        const results = installSkill({ root, target, includeGlobal: !projectOnly });
         for (const file of results) {
             const rel = path.relative(root, file);
             process.stdout.write(`  [v] Configured: ${rel.startsWith("..") ? file : rel}\n`);
         }
         process.stdout.write("--------------------------------------------------------------------------------\n");
-        process.stdout.write("  [v] Complete! Credential-safety guidance and supported MCP settings were installed for\n");
-        process.stdout.write("      Hermes, AGY, OpenCode, CommandCode, Cursor, Claude, Cline, Codex, and Gemini.\n");
+        process.stdout.write("  [v] Complete! Credential-safety guidance and supported MCP settings were written to the files above.\n");
+        if (projectOnly) {
+            process.stdout.write("  [i] Only files in this project were changed. To also update installed agent apps\n");
+            process.stdout.write("      outside it (Claude Desktop, Cline, Hermes, Antigravity), run: hetzer skill install all\n");
+        }
         if (!isGlobalCliInstalled()) {
             process.stdout.write("--------------------------------------------------------------------------------\n");
             process.stdout.write("  ℹ️  CLI PATH NOTICE:\n");

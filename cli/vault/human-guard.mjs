@@ -1,11 +1,11 @@
 import { spawnSync } from "node:child_process";
 
+// Set only when an agent or pipeline runs the command.
 const AGENT_ENV_VARS = [
   ["ANTIGRAVITY_AGENT", "Antigravity Agent runtime detected"],
-  ["CURSOR_PROJECT_DIR", "Cursor IDE Agent runtime detected"],
-  ["CURSOR_TRACE_ID", "Cursor Agent session detected"],
+  ["CLAUDECODE", "Claude Code session detected"],
+  ["CLAUDE_CODE_ENTRYPOINT", "Claude Code session detected"],
   ["CLAUDE_CODE", "Claude Code session detected"],
-  ["VSCODE_PID", "VS Code agent process runner detected"],
   ["HERMES_AGENT", "Hermes Agent session detected"],
   ["OPENCODE_CLIENT", "OpenCode Agent session detected"],
   ["AGENT_MODE", "Generic Agent Mode detected"],
@@ -13,10 +13,15 @@ const AGENT_ENV_VARS = [
   ["GITHUB_ACTIONS", "GitHub Actions pipeline detected"],
 ];
 
-const AGENT_PROCESS_NAMES = [
-  "opencode", "opencode.exe", "cursor", "cursor.exe", "code", "code.exe",
-  "antigravity", "agy", "claude", "hermes", "agent", "copilot", "electron", "ollama",
+// Set in every terminal an editor opens, for a person typing as much as for the editor's own agent.
+const EDITOR_ENV_VARS = [
+  ["CURSOR_PROJECT_DIR", "Cursor editor terminal detected"],
+  ["CURSOR_TRACE_ID", "Cursor editor terminal detected"],
+  ["VSCODE_PID", "VS Code editor terminal detected"],
 ];
+
+const AGENT_PROCESS_NAMES = ["opencode", "antigravity", "agy", "claude", "hermes", "agent", "copilot", "ollama"];
+const EDITOR_PROCESS_NAMES = ["cursor", "code", "electron"];
 
 function detectAgentEnv(env = process.env) {
   for (const [k, desc] of AGENT_ENV_VARS) {
@@ -25,13 +30,20 @@ function detectAgentEnv(env = process.env) {
   return { isAgent: false };
 }
 
-const AGENT_PROCESS_NAMES_LOWER = AGENT_PROCESS_NAMES.map((s) => s.toLowerCase());
-
-export function detectAgentAncestor(names = []) {
-  for (const raw of names) {
-    const n = String(raw).toLowerCase();
-    if (AGENT_PROCESS_NAMES_LOWER.some((a) => n.includes(a))) return { isAgent: true, processName: String(raw) };
+function detectEditorEnv(env = process.env) {
+  for (const [k, desc] of EDITOR_ENV_VARS) {
+    if (env[k]) return { isEditor: true, reason: desc, envVar: k };
   }
+  return { isEditor: false };
+}
+
+/** An agent name anywhere in the ancestry wins over an editor name, so an agent started from an editor terminal is an agent. */
+export function detectAgentAncestor(names = []) {
+  const lowered = names.map((raw) => [String(raw), String(raw).toLowerCase()]);
+  const agent = lowered.find(([, n]) => AGENT_PROCESS_NAMES.some((a) => n.includes(a)));
+  if (agent) return { isAgent: true, processName: agent[0] };
+  const editor = lowered.find(([, n]) => EDITOR_PROCESS_NAMES.some((e) => n.includes(e)));
+  if (editor) return { isAgent: false, editorProcess: editor[0] };
   return { isAgent: false };
 }
 
@@ -89,11 +101,19 @@ export function checkProcessAncestors({ platform = process.platform, pid = proce
   return result;
 }
 
-export function assertInteractiveHumanSession({ input = process.stdin, env = process.env, ancestor, operation = "'hetzer creds reveal'" } = {}) {
+/**
+ * Refuses unless a person at an interactive terminal is running the command. These are heuristics for
+ * same-user agents (environment markers and up to five process ancestors), not an OS privilege boundary.
+ *
+ * Editor terminals (VS Code, Cursor) are refused by default because the editor's own agent runs commands
+ * there too. allowEditorTerminal lets input-only operations, where nothing is shown back, run in one; the
+ * result's editorTerminal names it so the caller can apply a narrower rule.
+ */
+export function assertInteractiveHumanSession({ input = process.stdin, env = process.env, ancestor, operation = "'hetzer creds reveal'", allowEditorTerminal = false } = {}) {
   if (!input.isTTY) {
     throw new Error(
       `Access Denied: ${operation} requires a direct human interactive TTY terminal.\n` +
-      "Autonomous agent / non-interactive programmatic secret revelation is blocked to prevent context window leakage."
+      "Pipes, scripts and agents cannot use this command; run it yourself in a terminal."
     );
   }
   const envCheck = detectAgentEnv(env);
@@ -114,11 +134,23 @@ export function assertInteractiveHumanSession({ input = process.stdin, env = pro
       "To execute commands with injected secrets safely, use 'hetzer exec -- <command>'."
     );
   }
+  const editorEnv = detectEditorEnv(env);
+  const editorTerminal = editorEnv.isEditor ? editorEnv.reason : ancestry.editorProcess ? `Editor process '${ancestry.editorProcess}' detected in process tree ancestry` : null;
+  if (editorTerminal && !allowEditorTerminal) {
+    throw new Error(
+      `Access Denied: ${operation} blocked by the credential reveal guard.\n` +
+      `Reason: ${editorTerminal}${editorEnv.isEditor ? ` ($${editorEnv.envVar} is set)` : ""}.\n` +
+      "Editor terminals are refused for this operation because the editor's agent runs commands there too.\n" +
+      "If you are a person, run it from a standalone terminal (macOS Terminal, iTerm2, Windows Terminal)."
+    );
+  }
+  return { editorTerminal };
 }
 
 export function isAgenticContext({ input = process.stdin, env = process.env } = {}) {
   if (!input.isTTY) return true;
   if (detectAgentEnv(env).isAgent) return true;
-  if (checkProcessAncestors().isAgent) return true;
-  return false;
+  if (detectEditorEnv(env).isEditor) return true;
+  const ancestry = checkProcessAncestors();
+  return ancestry.isAgent || Boolean(ancestry.editorProcess);
 }

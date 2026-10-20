@@ -72,6 +72,40 @@ test("checkDockerDaemon handles stopped docker daemon", () => {
     assert.match(check.guide, /systemctl start docker/);
 });
 
+test("checkDockerDaemon reads a missing socket as a stopped daemon, not a permission problem", () => {
+    const missingSocketExec = () => ({
+        status: 1,
+        stderr: "failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory",
+    });
+    const linuxOs = { platform: "linux", arch: "x64", name: "Ubuntu 24.04 LTS", isUbuntu: true };
+    const check = checkDockerDaemon(missingSocketExec, linuxOs);
+    assert.equal(check.isPermissionDenied, false);
+    assert.equal(check.isNotRunning, true);
+    assert.match(check.guide, /systemctl start docker/);
+    assert.doesNotMatch(check.guide, /usermod/);
+});
+
+test("runDoctor reports one sandbox-engine issue, not one per Docker part, and skips Compose without a Compose file", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hetzer-doctor-noengine-"));
+    let output = "";
+    try {
+        const exec = (cmd, args) => {
+            if (cmd === "docker" && args.includes("--version")) return { status: 0, stdout: "Docker version 29.0.0\n" };
+            return { status: 1, stdout: "", stderr: "dial unix /var/run/docker.sock: connect: no such file or directory" };
+        };
+        const result = runDoctor({ root: tempRoot, defaultHome: "", exec, out: { write: (chunk) => { output += chunk; } } });
+        const dockerIssues = result.issues.filter((issue) => /Docker|sandbox/i.test(issue.title));
+        assert.equal(dockerIssues.length, 1);
+        assert.match(dockerIssues[0].title, /No sandbox engine/);
+        assert.match(dockerIssues[0].detail, /work without one/);
+        if (process.platform !== "win32") assert.match(dockerIssues[0].solution, /sandbox-runtime/);
+        assert.doesNotMatch(output, /Docker Compose/);
+        assert.match(output, /Docker Engine {5}: Not running \[FAIL\]/);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
 test("checkDockerCompose handles missing compose v2 plugin on Linux", () => {
     const missingExec = () => ({
         status: 1,
@@ -125,14 +159,17 @@ test("runDoctor treats Docker as optional when the srt sandbox engine is install
     try {
         const exec = (cmd) => (cmd === "srt" ? { status: 0, stdout: "0.0.78\n" } : { status: 1, stdout: "", stderr: "not found" });
         const result = runDoctor({ root: tempRoot, defaultHome: "", exec, out: { write: (chunk) => { output += chunk; } } });
-        assert.match(output, /Docker CLI {8}: Not detected \[FAIL\]/);
+        assert.match(output, process.platform === "win32" ? /Docker CLI {8}: Not detected \[FAIL\]/ : /Docker CLI {8}: Not detected \[INFO\]/);
         if (process.platform === "win32") {
-            // Hetzer does not run srt on Windows, so Docker stays a reported issue there.
+            // Hetzer does not run srt on Windows, so a missing Docker stays a reported issue there, pointing at Docker.
             assert.match(output, /Sandbox \(srt\) {5}: Not supported on this platform/);
-            assert.equal(result.issues.some((issue) => /Docker/.test(issue.title)), true);
+            const sandboxIssue = result.issues.find((issue) => /No sandbox engine/.test(issue.title));
+            assert.ok(sandboxIssue, "Windows without Docker reports the missing sandbox engine");
+            assert.match(sandboxIssue.solution, /Docker Desktop/);
+            assert.doesNotMatch(sandboxIssue.solution, /sandbox-runtime/);
         } else {
             assert.match(output, /Sandbox \(srt\) {5}: 0\.0\.78 \[OK\]/);
-            assert.equal(result.issues.some((issue) => /Docker/.test(issue.title)), false);
+            assert.equal(result.issues.some((issue) => /Docker|sandbox engine/i.test(issue.title)), false);
         }
     } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });

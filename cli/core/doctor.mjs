@@ -76,8 +76,11 @@ export function checkDockerDaemon(exec = spawnSync, osInfo = getOperatingSystemI
         }
         const errText = String(result.stderr || result.stdout || "");
         const errLower = errText.toLowerCase();
-        const isPermissionDenied = errLower.includes("permission denied") || errLower.includes("dial unix /var/run/docker.sock");
-        const isNotRunning = errLower.includes("is the docker daemon running") || errLower.includes("connection refused") || errLower.includes("cannot connect");
+        // "dial unix /var/run/docker.sock" appears in both cases; only "permission denied" means a group problem.
+        // "no such file or directory" on the socket means the daemon is not running (or not installed).
+        const isPermissionDenied = errLower.includes("permission denied");
+        const isNotRunning = !isPermissionDenied && (errLower.includes("is the docker daemon running") || errLower.includes("connection refused")
+            || errLower.includes("cannot connect") || errLower.includes("no such file or directory"));
 
         let guide = "";
         let errorSummary = "";
@@ -377,24 +380,23 @@ export function runDoctor({ root, defaultHome, exec = spawnSync, out = process.s
     const nodeTag = nodeCheck.ok ? "[OK]" : "[FAIL]";
     out.write(`  Node.js Runtime   : ${nodeCheck.message} ${nodeTag}\n`);
 
-    // Docker CLI
+    // Docker is optional: it backs container sandboxes, and Compose matters only for a project's own Compose file.
+    const dockerTag = containerOptional ? "[INFO]" : "[FAIL]";
     if (cliCheck.ok) {
         out.write(`  Docker CLI        : ${cliCheck.version} [OK]\n`);
     } else {
-        out.write(`  Docker CLI        : Not detected [FAIL]\n`);
+        out.write(`  Docker CLI        : Not detected ${dockerTag}\n`);
     }
 
-    // Docker Engine / Daemon
     if (daemonCheck.ok) {
         out.write(`  Docker Engine     : Running (v${daemonCheck.version}) [OK]\n`);
-    } else {
-        out.write(`  Docker Engine     : FAILED / Cannot connect [FAIL]\n`);
+    } else if (cliCheck.ok) {
+        out.write(`  Docker Engine     : ${daemonCheck.isPermissionDenied ? "Permission denied" : "Not running"} ${dockerTag}\n`);
     }
 
-    // Docker Compose
     if (composeCheck.ok) {
         out.write(`  Docker Compose    : ${composeCheck.version} [OK]\n`);
-    } else {
+    } else if (hasComposeFile) {
         out.write(`  Docker Compose    : Plugin v2 Not Found [FAIL]\n`);
     }
 
@@ -450,23 +452,22 @@ export function runDoctor({ root, defaultHome, exec = spawnSync, out = process.s
             solution: "Update Node.js to the current v22 LTS or v24 LTS (https://nodejs.org).",
         });
     }
-    if (!cliCheck.ok && !containerOptional) {
+    // One issue for a missing sandbox engine, not one per Docker component.
+    if ((!cliCheck.ok || !daemonCheck.ok) && !containerOptional) {
+        const dockerFix = !cliCheck.ok
+            ? (osInfo.platform === "linux"
+                ? "Install Docker:\n    sudo apt-get update && sudo apt-get install -y docker.io"
+                : "Install Docker Desktop from https://www.docker.com/products/docker-desktop")
+            : daemonCheck.guide;
         issues.push({
-            title: "Docker CLI Not Found",
-            detail: cliCheck.error,
-            solution: osInfo.platform === "linux"
-                ? "On Ubuntu run:\n    sudo apt-get update && sudo apt-get install -y docker.io"
-                : "Download and install Docker Desktop from https://www.docker.com/products/docker-desktop",
+            title: "No sandbox engine for 'hetzer exec --sandbox' and 'hetzer agent'",
+            detail: `${!cliCheck.ok ? "Docker is not installed" : daemonCheck.error}. The vault, 'hetzer exec' without --sandbox, 'hetzer protect' and the Git hooks work without one.`,
+            solution: srtCheck.unsupported
+                ? dockerFix
+                : `Install the container-free srt engine:\n    npm install -g ${SRT_PACKAGE}@${SRT_TESTED_VERSION}\nOr use Docker. ${dockerFix}`,
         });
     }
-    if (!daemonCheck.ok && !containerOptional) {
-        issues.push({
-            title: daemonCheck.error || "Docker Engine Not Connected",
-            detail: daemonCheck.rawError,
-            solution: daemonCheck.guide,
-        });
-    }
-    if (!composeCheck.ok && !containerOptional) {
+    if (!composeCheck.ok && hasComposeFile) {
         issues.push({
             title: "Docker Compose v2 Plugin Not Found",
             detail: composeCheck.error,
