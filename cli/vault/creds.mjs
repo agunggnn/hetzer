@@ -68,8 +68,8 @@ export const KNOWN_CREDENTIALS = Object.freeze({
         keyName: "auth_token",
         authType: "api-key",
         label: "NPM Registry Auth Token",
-        description: "NPM authentication token to publish hetzer package to npm registry.",
-        usage: "Used when publishing to https://registry.npmjs.org/. Run 'npm run publish-pkg' or 'hetzer publish'.",
+        description: "npm registry token, injected as NODE_AUTH_TOKEN for npm commands run through hetzer exec.",
+        usage: "Hetzer's own npmjs releases use trusted publishing from the release workflow and need no token.",
     }),
     "npm-auth-token": Object.freeze({
         envVar: "NODE_AUTH_TOKEN",
@@ -78,8 +78,8 @@ export const KNOWN_CREDENTIALS = Object.freeze({
         keyName: "auth_token",
         authType: "api-key",
         label: "NPM Auth Token (Alias)",
-        description: "NPM authentication token alias to publish hetzer package to npm registry.",
-        usage: "Used when publishing to https://registry.npmjs.org/. Run 'npm run publish-pkg' or 'hetzer publish'.",
+        description: "Alias of npm-token: npm registry token, injected as NODE_AUTH_TOKEN for npm commands run through hetzer exec.",
+        usage: "Hetzer's own npmjs releases use trusted publishing from the release workflow and need no token.",
     }),
     "github-token": Object.freeze({
         envVar: "GITHUB_TOKEN",
@@ -666,7 +666,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
                 process.stdout.write(`  Usage       : ${result.usage}\n`);
             }
             if (result.id.startsWith("npm-")) {
-                process.stdout.write("  Apply       : Run 'node scripts/publish.mjs' or 'npm run publish-pkg' to publish to npm.\n");
+                process.stdout.write(`  Apply       : After 'hetzer creds grant ${result.id} --raw allow', run 'hetzer exec --allow ${result.id} --allow-raw-unmediated ${result.id} -- npm whoami'.\n`);
             } else {
                 const upTarget = result.module && result.module !== "core" ? `hetzer up ${result.module}` : "hetzer up";
                 process.stdout.write(`  Apply       : Run '${upTarget}' (or 'hetzer up') to reload services.\n`);

@@ -219,7 +219,7 @@ function projectEnvironment(root) {
 }
 
 function handleDeprecatedCommand(command) {
-    process.stderr.write(`[!] DEPRECATED: Multi-container stack orchestration in Hetzer ('hetzer ${command}') has been removed. Use Jagdpanzer (https://github.com/agunggnn/jagdpanzer) for full ops stacks.\n`);
+    process.stderr.write(`[!] DEPRECATED: Multi-container stack orchestration in Hetzer ('hetzer ${command}') was removed in 0.6.0 and has no replacement in Hetzer. See docs/upgrade-0.6.md.\n`);
     process.exitCode = 1;
 }
 
@@ -317,9 +317,9 @@ Commands:
   mcp call <srv> <tool> [a] Call MCP tool directly from CLI without external AI client
   version                   Display Hetzer version
 
-Deprecated Commands (Delegated to Jagdpanzer):
+Removed Commands (removed in 0.6.0; see docs/upgrade-0.6.md):
   up, down, status, logs, modules, install, remove, module, validate, tui
-                            Use Jagdpanzer (https://github.com/agunggnn/jagdpanzer) for full ops stacks
+                            These print a removal notice and exit with code 1
 `;
 }
 
@@ -356,7 +356,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         return;
     }
     if (command === "publish") {
-        process.stderr.write("Package publishing is managed via release scripts: run 'node scripts/publish.mjs' or 'npm run publish:npm'.\n");
+        process.stderr.write("Hetzer releases are published by .github/workflows/release-main.yml when a change merges to main; npmjs versions are staged there and approved by a maintainer with 2FA.\n");
         process.exitCode = 1;
         return;
     }
