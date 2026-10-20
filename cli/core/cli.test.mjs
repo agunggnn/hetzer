@@ -390,7 +390,7 @@ test("agent command runs the agent through srt with no credentials and records i
     process.stderr.write = () => true;
     try {
         fs.writeFileSync(path.join(tempDir, ".env"), "API_KEY=secretRef:some-cred\n", "utf8");
-        await main(["agent", "--sandbox-mount", project, "--sandbox-allow-host", "api.example.com", "--", "/bin/true", "--flag"], { root: tempDir });
+        await main(["agent", "--sandbox-mount", project, "--sandbox-allow-host", "api.example.test", "--", "/bin/true", "--flag"], { root: tempDir });
         assert.equal(process.exitCode, 7, "the agent's exit status is returned");
         const srtArgs = fs.readFileSync(argsFile, "utf8").trim().split("\n");
         assert.deepEqual(srtArgs.slice(srtArgs.indexOf("--")), ["--", "/bin/true", "--flag"]);
@@ -398,7 +398,7 @@ test("agent command runs the agent through srt with no credentials and records i
         const start = events.find((event) => event.eventType === "SANDBOX_EXEC");
         assert.equal(start.details.engine, "srt");
         assert.equal(start.details.agent, true);
-        assert.deepEqual(start.details.allowHosts, ["api.example.com"]);
+        assert.deepEqual(start.details.allowHosts, ["api.example.test"]);
         const exit = events.find((event) => event.eventType === "AGENT_EXIT");
         assert.equal(exit.details.status, 7);
 
