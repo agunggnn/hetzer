@@ -55,7 +55,7 @@ sequenceDiagram
     Hetzer->>Vault: Encrypt with HKDF Master Key & store in SQLite
     Hetzer->>Hetzer: Update .env with secretRef:<id>
     Hetzer-->>Agent: Exit 0 (Sanitized metadata: "[v] Stored as secretRef:<id>")
-    Note over Agent: Continues automated execution<br/>Zero plaintext in context window!
+    Note over Agent: Continues automated execution<br/>Raw secret stays out of the context window.
 ```
 
 ---
