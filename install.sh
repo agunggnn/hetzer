@@ -13,7 +13,7 @@ NC='\033[0m'
 
 echo -e "${BLUE}${BOLD}"
 echo "================================================================================"
-echo "  HETZER - ZERO-PLAINTEXT SECURITY ARMOR FOR AI AGENTS"
+echo "  HETZER - CREDENTIAL GUARD FOR AI AGENTS"
 echo "  One-line Automated Installer (Linux & macOS)"
 echo "================================================================================"
 echo -e "${NC}"

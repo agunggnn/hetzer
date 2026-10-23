@@ -4,7 +4,7 @@
 $ErrorActionPreference = 'Stop'
 
 Write-Host "================================================================================" -ForegroundColor Cyan
-Write-Host "  HETZER - ZERO-PLAINTEXT SECURITY ARMOR FOR AI AGENTS" -ForegroundColor Cyan
+Write-Host "  HETZER - CREDENTIAL GUARD FOR AI AGENTS" -ForegroundColor Cyan
 Write-Host "  One-line Automated Installer (Windows)" -ForegroundColor Cyan
 Write-Host "================================================================================" -ForegroundColor Cyan
 

@@ -91,7 +91,7 @@ Understanding hardware security requires distinguishing between execution speed 
 - **Extreme Protection**:
   - Even if a cloud provider (AWS, GCP, Hetzner, DigitalOcean) or a malicious host administrator has physical root access or hypervisor privileges, **they cannot read the enclave's memory**.
   - Child processes or AI agents executing inside the enclave run in total hardware isolation from the outer OS.
-- **Hetzer Role**: Running the HTTP Credential Broker and Grimoire Vault inside a confidential enclave VM, guaranteeing zero plaintext credential leakage even in multi-tenant cloud environments.
+- **Hetzer Role**: Running the HTTP Credential Broker and Grimoire Vault inside a confidential enclave VM, reducing the risk of plaintext credential exposure to the host and other tenants in multi-tenant cloud environments (hardware-dependent; it does not protect against a compromised process inside the enclave).
 
 ### 1.4 Category C: Dedicated HSM (Hardware Security Module) & Cloud KMS
 - **Concept**: High-assurance cryptographic hardware complying with banking standards (**FIPS 140-2/3 Level 3**).

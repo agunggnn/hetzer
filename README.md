@@ -298,7 +298,7 @@ hetzer skill status
 
 ### 🔌 MCP Virtual Credential Proxy
 Hetzer includes a built-in FastMCP protocol server (`cli/mcp/protocol.mjs`) compatible with modern (`2026-07-28`) and legacy (`2025-11-25`) MCP specifications:
-- **Zero-Plaintext Tool Payloads**: AI agents pass abstract references (e.g. `secretRef:openai-api-key`) in tool call arguments. The proxy resolves secrets just-in-time in memory before upstream execution.
+- **Reference-Only Tool Payloads**: AI agents pass abstract references (e.g. `secretRef:openai-api-key`) in tool call arguments, keeping raw secrets out of the agent's context. The proxy resolves secrets just-in-time in memory before upstream execution.
 - **Canary Tripwire Guard**: Tool calls containing decoy canary references immediately trigger security alerts and abort with exit code 43.
 - **Response Sanitization**: All tool outputs are recursively sanitized through Hetzer's stream redactor before returning to the LLM agent, blocking credential leakage in tool responses.
 
