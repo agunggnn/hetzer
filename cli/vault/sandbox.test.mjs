@@ -566,6 +566,7 @@ test("executeSandboxedProcess refuses --sandbox-network none together with a bro
             baseUrlEnv: "UP_URL",
             tokenEnv: "UP_TOKEN",
         }));
+        fs.chmodSync(policyFile, 0o600);
         const vault = new Grimoire({ dbPath, masterKey });
         vault.create({
             id: "brokered-cred",
